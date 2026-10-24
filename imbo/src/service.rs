@@ -55,9 +55,10 @@ fn daemon_env(home: &Home) -> Vec<(String, String)> {
     env.push(("HOME".into(), user_home().to_string_lossy().into_owned()));
     for k in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "IMBO_FAULT_INJECT"] {
         if let Ok(v) = std::env::var(k)
-            && !v.is_empty() {
-                env.push((k.into(), v));
-            }
+            && !v.is_empty()
+        {
+            env.push((k.into(), v));
+        }
     }
     env
 }

@@ -194,8 +194,9 @@ pub async fn require(State(st): State<St>, mut req: Request, next: Next) -> Resp
     let mut res = next.run(req).await;
     if let Some(agent) = actor
         && let Ok(n) = unread_count(&st, agent).await
-            && let Ok(v) = HeaderValue::from_str(&n.to_string()) {
-                res.headers_mut().insert(HEADER_UNREAD, v);
-            }
+        && let Ok(v) = HeaderValue::from_str(&n.to_string())
+    {
+        res.headers_mut().insert(HEADER_UNREAD, v);
+    }
     res
 }

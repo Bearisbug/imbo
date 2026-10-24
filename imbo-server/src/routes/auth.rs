@@ -34,9 +34,10 @@ fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> String {
     // Only trust X-Forwarded-For when the peer is local (a reverse proxy on the box).
     if peer.ip().is_loopback()
         && let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
-            && let Some(first) = v.split(',').next() {
-                return first.trim().to_string();
-            }
+        && let Some(first) = v.split(',').next()
+    {
+        return first.trim().to_string();
+    }
     peer.ip().to_string()
 }
 

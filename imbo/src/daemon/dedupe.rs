@@ -51,8 +51,8 @@ impl Dedupe {
                 .create(true)
                 .append(true)
                 .open(&self.path)
-            {
-                let _ = writeln!(f, "{message} {agent} {}", chrono::Utc::now().timestamp());
-            }
+        {
+            let _ = writeln!(f, "{message} {agent} {}", chrono::Utc::now().timestamp());
+        }
     }
 }

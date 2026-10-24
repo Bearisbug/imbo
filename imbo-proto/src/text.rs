@@ -104,9 +104,11 @@ pub fn parse_address(to: &str) -> Option<Address> {
         return None;
     }
     if let Some(rest) = to.strip_prefix('#')
-        && rest.len() == 7 && rest.chars().all(|c| c.is_ascii_digit()) {
-            return rest.parse().ok().map(Address::Group);
-        }
+        && rest.len() == 7
+        && rest.chars().all(|c| c.is_ascii_digit())
+    {
+        return rest.parse().ok().map(Address::Group);
+    }
     if let Some((who, session)) = to.split_once('/') {
         let (who, session) = (who.trim(), session.trim());
         if who.is_empty() || session.is_empty() {

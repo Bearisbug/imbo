@@ -194,9 +194,10 @@ impl Sessions {
             if let Kind::Claude { pid, .. } = e.kind {
                 e.online = claude::alive(pid);
                 if e.online
-                    && let Some(t) = claude::title(pid, &e.session_id) {
-                        e.title = t;
-                    }
+                    && let Some(t) = claude::title(pid, &e.session_id)
+                {
+                    e.title = t;
+                }
             }
         }
     }

@@ -127,9 +127,10 @@ fn index_titles() -> HashMap<String, String> {
     if let Ok(s) = std::fs::read_to_string(codex_home().join("session_index.jsonl")) {
         for line in s.lines() {
             if let Ok(v) = serde_json::from_str::<Value>(line)
-                && let (Some(id), Some(name)) = (v["id"].as_str(), v["thread_name"].as_str()) {
-                    out.insert(id.to_string(), name.to_string());
-                }
+                && let (Some(id), Some(name)) = (v["id"].as_str(), v["thread_name"].as_str())
+            {
+                out.insert(id.to_string(), name.to_string());
+            }
         }
     }
     out
@@ -181,47 +182,51 @@ pub async fn deliver(thread: &str, text: &str) -> Result<&'static str, String> {
     }
     let input = json!([{ "type": "text", "text": text, "text_elements": [] }]);
     if socket_path().exists()
-        && let Ok(mut rpc) = Rpc::connect().await {
-            let loaded = rpc.loaded_ids().await.unwrap_or_default();
-            if loaded.iter().any(|id| id == thread) {
-                let read = rpc
-                    .call("thread/read", json!({ "threadId": thread }))
-                    .await?;
-                let active = read["thread"]["status"]["type"].as_str() == Some("active");
-                if active
-                    && let Ok(turns) = rpc
+        && let Ok(mut rpc) = Rpc::connect().await
+    {
+        let loaded = rpc.loaded_ids().await.unwrap_or_default();
+        if loaded.iter().any(|id| id == thread) {
+            let read = rpc
+                .call("thread/read", json!({ "threadId": thread }))
+                .await?;
+            let active = read["thread"]["status"]["type"].as_str() == Some("active");
+            if active
+                && let Ok(turns) = rpc
+                    .call(
+                        "thread/turns/list",
+                        json!({ "threadId": thread, "limit": 1, "itemsView": "notLoaded" }),
+                    )
+                    .await
+            {
+                let current = turns["data"]
+                    .as_array()
+                    .and_then(|d| {
+                        d.iter()
+                            .find(|t| t["status"].as_str() == Some("inProgress"))
+                    })
+                    .and_then(|t| t["id"].as_str())
+                    .map(str::to_string);
+                if let Some(turn) = current {
+                    let r = rpc
                         .call(
-                            "thread/turns/list",
-                            json!({ "threadId": thread, "limit": 1, "itemsView": "notLoaded" }),
+                            "turn/steer",
+                            json!({ "threadId": thread, "expectedTurnId": turn, "input": input }),
                         )
-                        .await
-                    {
-                        let current = turns["data"]
-                            .as_array()
-                            .and_then(|d| {
-                                d.iter()
-                                    .find(|t| t["status"].as_str() == Some("inProgress"))
-                            })
-                            .and_then(|t| t["id"].as_str())
-                            .map(str::to_string);
-                        if let Some(turn) = current {
-                            let r = rpc
-                                .call("turn/steer", json!({ "threadId": thread, "expectedTurnId": turn, "input": input }))
-                                .await;
-                            if r.is_ok() {
-                                rpc.close().await;
-                                return Ok("steer");
-                            }
-                        }
+                        .await;
+                    if r.is_ok() {
+                        rpc.close().await;
+                        return Ok("steer");
                     }
-                let r = rpc
-                    .call("turn/start", json!({ "threadId": thread, "input": input }))
-                    .await;
-                rpc.close().await;
-                return r.map(|_| "start");
+                }
             }
+            let r = rpc
+                .call("turn/start", json!({ "threadId": thread, "input": input }))
+                .await;
             rpc.close().await;
+            return r.map(|_| "start");
         }
+        rpc.close().await;
+    }
     queue(thread, text).await
 }
 

@@ -61,9 +61,10 @@ impl Daemon {
     pub fn http(&self, server: &str) -> reqwest::Client {
         let mut cache = self.http.lock().unwrap();
         if let Some((s, c)) = cache.as_ref()
-            && s == server {
-                return c.clone();
-            }
+            && s == server
+        {
+            return c.clone();
+        }
         let c = crate::net::http_client(server);
         *cache = Some((server.to_string(), c.clone()));
         c
@@ -98,9 +99,10 @@ impl Daemon {
         let key = (d.tool.clone(), d.session_id.clone());
         let mut queues = self.queues.lock().unwrap();
         if let Some(tx) = queues.get(&key)
-            && tx.send(d.clone()).is_ok() {
-                return;
-            }
+            && tx.send(d.clone()).is_ok()
+        {
+            return;
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         let _ = tx.send(d);
         queues.insert(key.clone(), tx);
@@ -167,9 +169,10 @@ impl Daemon {
                     }
                     let mut sessions = self.sessions.lock().unwrap();
                     if let Some(e) = sessions.get_mut(&key)
-                        && let Kind::Claude { failures, .. } = &mut e.kind {
-                            *failures = if done { 0 } else { MAX_INJECT_FAILURES };
-                        }
+                        && let Kind::Claude { failures, .. } = &mut e.kind
+                    {
+                        *failures = if done { 0 } else { MAX_INJECT_FAILURES };
+                    }
                     drop(sessions);
                     if done {
                         info!(msg = d.message.id, session = %key.1, "inserted into Claude Code session");

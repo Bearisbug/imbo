@@ -22,9 +22,10 @@ impl Database {
         self.pool.close().await;
         #[cfg(feature = "embedded-db")]
         if let Some(server) = self.embedded
-            && let Err(e) = server.close().await {
-                tracing::warn!(error = %e, "embedded postgres did not stop cleanly");
-            }
+            && let Err(e) = server.close().await
+        {
+            tracing::warn!(error = %e, "embedded postgres did not stop cleanly");
+        }
     }
 }
 

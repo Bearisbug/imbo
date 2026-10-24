@@ -99,12 +99,13 @@ async fn list() -> anyhow::Result<()> {
 
 async fn add(account_id: i32, note: Option<String>) -> anyhow::Result<()> {
     if let Some(n) = &note
-        && n.chars().count() > MAX_NOTE_CHARS {
-            ui::error_line(&format!(
-                "The note can be at most {MAX_NOTE_CHARS} characters."
-            ));
-            return Err(Reported.into());
-        }
+        && n.chars().count() > MAX_NOTE_CHARS
+    {
+        ui::error_line(&format!(
+            "The note can be at most {MAX_NOTE_CHARS} characters."
+        ));
+        return Err(Reported.into());
+    }
     let v = api(
         "POST",
         "/v1/contacts/requests",

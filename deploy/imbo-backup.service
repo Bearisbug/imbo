@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up the Imbo database to S3
+After=postgresql.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/imbo/backup.env
+ExecStart=/opt/imbo/backup.sh

@@ -109,9 +109,10 @@ async fn agents_of(db: &PgPool, account: i32) -> Result<Vec<AgentRow>, sqlx::Err
 
 fn by_name<'a>(contacts: &'a [AccountRef], who: &str) -> Vec<&'a AccountRef> {
     if let Ok(id) = who.parse::<i32>()
-        && who.len() == 8 {
-            return contacts.iter().filter(|c| c.id == id).collect();
-        }
+        && who.len() == 8
+    {
+        return contacts.iter().filter(|c| c.id == id).collect();
+    }
     let exact: Vec<_> = contacts.iter().filter(|c| c.name == who).collect();
     if !exact.is_empty() {
         return exact;
