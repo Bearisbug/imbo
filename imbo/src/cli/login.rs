@@ -88,11 +88,10 @@ fn ask_email(initial: Option<String>) -> anyhow::Result<String> {
 }
 
 /// Ask the server to email a code. Returns false when the email must be re-entered.
-async fn send_code(client: &net::HttpClient, server: &str, email: &str) -> anyhow::Result<bool> {
+async fn send_code(server: &str, email: &str) -> anyhow::Result<bool> {
     let sp = cliclack::spinner();
     sp.start(format!("Sending a code to {email}"));
     let r = net::request(
-        client,
         server,
         "POST",
         "/v1/auth/code",
@@ -169,14 +168,13 @@ pub async fn sign_in(
     server: &str,
     email: Option<String>,
 ) -> anyhow::Result<Credentials> {
-    let client = net::http_client(server);
     if server != crate::paths::DEFAULT_SERVER {
         cliclack::log::remark(format!("Server  {}", ui::dim(server)))?;
     }
     let mut email_arg = email;
     let email = loop {
         let e = ask_email(email_arg.take())?;
-        if send_code(&client, server, &e).await? {
+        if send_code(server, &e).await? {
             break e;
         }
     };
@@ -193,17 +191,7 @@ pub async fn sign_in(
         });
         let sp = cliclack::spinner();
         sp.start("Checking the code");
-        match net::request(
-            &client,
-            server,
-            "POST",
-            "/v1/auth/verify",
-            None,
-            None,
-            Some(&body),
-        )
-        .await
-        {
+        match net::request(server, "POST", "/v1/auth/verify", None, None, Some(&body)).await {
             Ok(res) => {
                 sp.clear();
                 break serde_json::from_value::<VerifyResponse>(res.body)?;
@@ -236,7 +224,7 @@ pub async fn sign_in(
                     cliclack::outro_cancel("Not signed in.")?;
                     return Err(Reported.into());
                 }
-                send_code(&client, server, &email).await?;
+                send_code(server, &email).await?;
                 code = ask_code()?;
             }
             Err(p) => {

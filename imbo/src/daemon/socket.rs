@@ -166,11 +166,9 @@ async fn call(
     if let Some(a) = &actor {
         ensure_session(d, a);
     }
-    let client = d.http(&creds.server);
     let mut attempt = 0;
     loop {
         let r = net::request(
-            &client,
             &creds.server,
             method,
             path,

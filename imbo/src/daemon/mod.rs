@@ -32,7 +32,6 @@ pub struct LinkState {
 pub struct Daemon {
     pub home: Home,
     creds: RwLock<Option<Credentials>>,
-    http: Mutex<Option<(String, crate::net::HttpClient)>>,
     pub sessions: Mutex<Sessions>,
     out: Mutex<Option<mpsc::UnboundedSender<ClientFrame>>>,
     pub link: Mutex<LinkState>,
@@ -56,18 +55,6 @@ impl Daemon {
         *self.creds.write().unwrap() = self.home.credentials();
         self.link.lock().unwrap().revoked = false;
         self.reload.notify_waiters();
-    }
-
-    pub fn http(&self, server: &str) -> crate::net::HttpClient {
-        let mut cache = self.http.lock().unwrap();
-        if let Some((s, c)) = cache.as_ref()
-            && s == server
-        {
-            return c.clone();
-        }
-        let c = crate::net::http_client(server);
-        *cache = Some((server.to_string(), c.clone()));
-        c
     }
 
     pub fn send_frame(&self, f: ClientFrame) -> bool {
@@ -241,7 +228,6 @@ pub async fn run() -> anyhow::Result<()> {
         creds: RwLock::new(home.credentials()),
         dedupe: Mutex::new(dedupe::Dedupe::load(home.state().join("delivered.log"))),
         home: home.clone(),
-        http: Mutex::new(None),
         sessions: Mutex::new(Sessions::default()),
         out: Mutex::new(None),
         link: Mutex::new(LinkState::default()),

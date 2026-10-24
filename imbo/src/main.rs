@@ -91,6 +91,9 @@ fn main() {
         Cmd::Mcp => run_current(mcp::run()),
         Cmd::Hook { event } => run_current(hook::run(event)),
         cmd => {
+            // Output piped into `head` or `grep -q`: end quietly when the reader
+            // goes away instead of panicking on the next print (TC-048).
+            unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
             ui::init();
             run_current(cli::dispatch(cmd))
         }

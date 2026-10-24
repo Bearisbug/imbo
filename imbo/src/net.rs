@@ -18,17 +18,6 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode};
 pub const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// REST client: one HTTP/1.1 connection per request, over the same TCP/TLS
-/// setup as the WebSocket. Don't switch to reqwest: its rustls path links the
-/// macOS Security framework, and with it CoreFoundation, which adds about 4 MB
-/// of resident memory to every `imbo mcp` process (DESIGN §15 memory budget).
-#[derive(Clone)]
-pub struct HttpClient;
-
-pub fn http_client(_server: &str) -> HttpClient {
-    HttpClient
-}
-
 pub struct ApiResponse {
     pub status: u16,
     pub body: Value,
@@ -44,8 +33,11 @@ pub fn unreachable(server: &str) -> Problem {
     )
 }
 
+/// REST call: one HTTP/1.1 connection per request, over the same TCP/TLS
+/// setup as the WebSocket. Don't switch to reqwest: its rustls path links the
+/// macOS Security framework, and with it CoreFoundation, which adds about 4 MB
+/// of resident memory to every `imbo mcp` process (DESIGN §15 memory budget).
 pub async fn request(
-    _client: &HttpClient,
     server: &str,
     method: &str,
     path: &str,
@@ -167,8 +159,8 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
     )
 }
 
-/// TCP (and TLS for https) to the server. Returns the stream and the
-/// `host:port` part of the URL.
+/// TCP (and TLS for https) to the server, both within `connect_timeout`.
+/// Returns the stream and the `host:port` part of the URL.
 async fn open(server: &str, connect_timeout: Duration) -> Result<(Box<dyn Io>, String), String> {
     let (tls, rest) = if let Some(r) = server.strip_prefix("https://") {
         (true, r)
@@ -184,22 +176,27 @@ async fn open(server: &str, connect_timeout: Duration) -> Result<(Box<dyn Io>, S
         }
         _ => (hostport.to_string(), if tls { 443 } else { 80 }),
     };
-    let tcp = tokio::time::timeout(connect_timeout, TcpStream::connect((host.as_str(), port)))
-        .await
-        .map_err(|_| "connect timed out".to_string())?
-        .map_err(|e| e.to_string())?;
-    tcp.set_nodelay(true).ok();
-    let stream: Box<dyn Io> = if tls {
-        let name =
-            rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
-        let conn = tokio_rustls::TlsConnector::from(tls_config())
-            .connect(name, tcp)
+    let connect = async {
+        let tcp = TcpStream::connect((host.as_str(), port))
             .await
-            .map_err(|e| format!("TLS: {e}"))?;
-        Box::new(conn)
-    } else {
-        Box::new(tcp)
+            .map_err(|e| e.to_string())?;
+        tcp.set_nodelay(true).ok();
+        let stream: Box<dyn Io> = if tls {
+            let name =
+                rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
+            let conn = tokio_rustls::TlsConnector::from(tls_config())
+                .connect(name, tcp)
+                .await
+                .map_err(|e| format!("TLS: {e}"))?;
+            Box::new(conn)
+        } else {
+            Box::new(tcp)
+        };
+        Ok::<_, String>(stream)
     };
+    let stream = tokio::time::timeout(connect_timeout, connect)
+        .await
+        .map_err(|_| "connect timed out".to_string())??;
     Ok((stream, hostport.to_string()))
 }
 
