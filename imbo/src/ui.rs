@@ -64,6 +64,16 @@ impl Theme for Brand {
         }
     }
 
+    fn state_symbol(&self, state: &ThemeState) -> String {
+        let symbol = match state {
+            ThemeState::Active => "◆",
+            ThemeState::Cancel => "■",
+            ThemeState::Submit => "✓",
+            ThemeState::Error(_) => "▲",
+        };
+        self.state_symbol_color(state).apply_to(symbol).to_string()
+    }
+
     fn radio_symbol(&self, state: &ThemeState, selected: bool) -> String {
         match state {
             ThemeState::Active if selected => rgb(SUCCESS).apply_to("●").to_string(),
@@ -100,11 +110,11 @@ impl Theme for Brand {
     }
 
     fn active_symbol(&self) -> String {
-        rgb(SUCCESS).apply_to("◆").to_string()
+        rgb(SUCCESS).apply_to("✓").to_string()
     }
 
     fn submit_symbol(&self) -> String {
-        rgb(SUCCESS).apply_to("◇").to_string()
+        rgb(SUCCESS).apply_to("✓").to_string()
     }
 }
 

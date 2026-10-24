@@ -5,7 +5,7 @@
 #   crates/scripts/local-env.sh down          # stop everything and delete $L
 # $L must stay short: macOS limits Unix socket paths to 104 bytes, and
 # Codex's control socket lives three levels under $L/codex-home.
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=$(cd "$(dirname "${BASH_SOURCE:-$0}")/.." && pwd)
 export L=/tmp/imbo-t
 export I="$ROOT/target/debug/imbo" S="$ROOT/target/debug/imbo-server" IMBO="$ROOT/target/debug/imbo"
 export M="$ROOT/scripts/mcp-call.py"

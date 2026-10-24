@@ -529,13 +529,14 @@ pub async fn list_inbox(
     .fetch_all(&st.db)
     .await?;
     let ids: Vec<i64> = rows.iter().map(|r| r.message_id).collect();
-    let mut views = views::messages(&st.db, &ids, c.account_id).await?;
+    let views = views::messages(&st.db, &ids, c.account_id).await?;
     let items = rows
         .into_iter()
         .rev()
         .filter_map(|r| {
-            let pos = views.iter().position(|v| v.id == r.message_id)?;
-            let message = views.swap_remove(pos);
+            // One message can have several deliveries here (a group message
+            // to two of my sessions), so each row gets its own copy.
+            let message = views.iter().find(|v| v.id == r.message_id)?.clone();
             Some(InboxItem {
                 message,
                 agent: AgentRef {

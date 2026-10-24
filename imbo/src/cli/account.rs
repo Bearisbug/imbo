@@ -15,7 +15,7 @@ use crate::ui;
 pub enum DeviceCmd {
     /// List computers signed in to your account.
     List,
-    /// Sign another computer out (ID prefix from `imbo device list`).
+    /// Sign another computer out (ID from `imbo device list`).
     Revoke {
         id: String,
         #[arg(long, short)]
@@ -101,7 +101,7 @@ pub async fn device(cmd: DeviceCmd) -> anyhow::Result<()> {
                     pad(&ui::heading(&d.name), 20),
                     ui::dim(pad(&d.platform, 14)),
                     pad(&seen, 16),
-                    ui::dim(&d.id.to_string()[..8])
+                    ui::dim(&d.id.to_string()[28..])
                 );
             }
             Ok(())
@@ -110,7 +110,7 @@ pub async fn device(cmd: DeviceCmd) -> anyhow::Result<()> {
             let hits: Vec<_> = r
                 .devices
                 .iter()
-                .filter(|d| d.id.to_string().starts_with(id.trim()))
+                .filter(|d| d.id.to_string().ends_with(id.trim()))
                 .collect();
             let d = match hits.as_slice() {
                 [one] => *one,
@@ -121,7 +121,7 @@ pub async fn device(cmd: DeviceCmd) -> anyhow::Result<()> {
                     return Err(Reported.into());
                 }
                 _ => {
-                    ui::error_line("More than one computer matches; give more of the ID.");
+                    ui::error_line("More than one computer matches; give the full ID.");
                     return Err(Reported.into());
                 }
             };

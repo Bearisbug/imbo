@@ -74,7 +74,7 @@ fn tools() -> Vec<Tool> {
         Tool::new(
             "send",
             "给别的会话或群发 Imbo 消息。to 写「名称/会话」或「账号ID/会话」（会话写短 ID 或标题），\
-群写群名或 #群ID；对方只有一个在线会话时可以只写名称或账号 ID。不知道对方会话时先用 contacts 工具查。",
+群写群名或 #群ID；发给人必须写到会话。不知道对方会话时先用 contacts 工具查。",
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -180,7 +180,7 @@ fn missing(what: &str) -> Problem {
 
 fn problem_text(p: &Problem) -> String {
     let mut s = format!("Imbo 出错（{}）：{}", p.title, p.detail);
-    if let Some(c) = &p.candidates {
+    if let Some(c) = p.candidates.as_ref().filter(|c| !c.is_empty()) {
         s.push_str("\n可选收件人：");
         for c in c {
             let state = match c.online {
@@ -190,6 +190,8 @@ fn problem_text(p: &Problem) -> String {
             };
             s.push_str(&format!("\n- {}（{}{}）", c.to, c.label, state));
         }
+    } else if p.is(ErrorCode::SessionRequired) {
+        s.push_str("\n对方现在没有在线会话，发不出去。");
     }
     if let Some(r) = p.retry_after_s {
         s.push_str(&format!("\n{r} 秒后再试。"));
@@ -198,16 +200,36 @@ fn problem_text(p: &Problem) -> String {
 }
 
 fn message_text(m: &MessageView) -> String {
+    let reply = if m.from.agent.is_none() && m.conversation.group.is_none() {
+        format!(
+            "{}/<会话>（发件人在终端发出，先用 contacts 工具看对方在线的会话）",
+            m.from.account_id
+        )
+    } else {
+        m.reply_to.clone()
+    };
     format!(
         "[Imbo 消息 #{}] 来自 {} · {}\n回复地址：{}\n\n{}",
         m.id,
         render::sender(m),
         m.created_at
-            .with_timezone(&chrono::Local)
+            .with_timezone(&local_offset(m.created_at))
             .format("%m-%d %H:%M"),
-        m.reply_to,
+        reply,
         m.body
     )
+}
+
+/// The local UTC offset at `t`, from the C library. chrono's `Local` links
+/// CoreFoundation on macOS, which adds about 4 MB of resident memory to every
+/// `imbo mcp` process (DESIGN §15 memory budget).
+fn local_offset(t: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
+    let secs = t.timestamp() as libc::time_t;
+    // SAFETY: localtime_r only writes into the tm we pass.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let found = !unsafe { libc::localtime_r(&secs, &mut tm) }.is_null();
+    let offset = if found { tm.tm_gmtoff as i32 } else { 0 };
+    chrono::FixedOffset::east_opt(offset).unwrap_or(chrono::FixedOffset::east_opt(0).unwrap())
 }
 
 fn group_line(g: &GroupView) -> String {

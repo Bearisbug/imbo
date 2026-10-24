@@ -32,7 +32,7 @@ pub struct LinkState {
 pub struct Daemon {
     pub home: Home,
     creds: RwLock<Option<Credentials>>,
-    http: Mutex<Option<(String, reqwest::Client)>>,
+    http: Mutex<Option<(String, crate::net::HttpClient)>>,
     pub sessions: Mutex<Sessions>,
     out: Mutex<Option<mpsc::UnboundedSender<ClientFrame>>>,
     pub link: Mutex<LinkState>,
@@ -58,7 +58,7 @@ impl Daemon {
         self.reload.notify_waiters();
     }
 
-    pub fn http(&self, server: &str) -> reqwest::Client {
+    pub fn http(&self, server: &str) -> crate::net::HttpClient {
         let mut cache = self.http.lock().unwrap();
         if let Some((s, c)) = cache.as_ref()
             && s == server

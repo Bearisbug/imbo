@@ -23,7 +23,7 @@ pub async fn send(to: String, body: String) -> anyhow::Result<()> {
             r.message_id,
             ui::heading(&g.name),
             ui::dim(format!("#{}", g.id)),
-            ui::dim(format!("{} sessions", r.recipients))
+            ui::dim(sessions(r.recipients))
         )),
         None => {
             let peer = r
@@ -36,11 +36,22 @@ pub async fn send(to: String, body: String) -> anyhow::Result<()> {
                 "Sent #{} to {}  {}",
                 r.message_id,
                 ui::heading(peer),
-                ui::dim("arrives when their session is online")
+                ui::dim(format!(
+                    "{} · arrives when their session is online",
+                    sessions(r.recipients)
+                ))
             ));
         }
     }
     Ok(())
+}
+
+fn sessions(n: u32) -> String {
+    if n == 1 {
+        "1 session".into()
+    } else {
+        format!("{n} sessions")
+    }
 }
 
 fn print_message(m: &MessageView, indent: &str, full: bool, state: &str) {

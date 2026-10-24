@@ -4,6 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper_util::rt::TokioIo;
 use imbo_proto::{ErrorCode, HEADER_ACTOR, HEADER_REQUEST_ID, HEADER_UNREAD, Problem};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -15,26 +18,15 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode};
 pub const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn is_loopback(server: &str) -> bool {
-    let host = server
-        .split("://")
-        .nth(1)
-        .unwrap_or(server)
-        .split(['/', ':'])
-        .next()
-        .unwrap_or("");
-    matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1")
-}
+/// REST client: one HTTP/1.1 connection per request, over the same TCP/TLS
+/// setup as the WebSocket. Don't switch to reqwest: its rustls path links the
+/// macOS Security framework, and with it CoreFoundation, which adds about 4 MB
+/// of resident memory to every `imbo mcp` process (DESIGN §15 memory budget).
+#[derive(Clone)]
+pub struct HttpClient;
 
-pub fn http_client(server: &str) -> reqwest::Client {
-    let mut b = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(TOTAL_TIMEOUT)
-        .user_agent(format!("imbo/{}", crate::VERSION));
-    if is_loopback(server) {
-        b = b.no_proxy();
-    }
-    b.build().expect("http client")
+pub fn http_client(_server: &str) -> HttpClient {
+    HttpClient
 }
 
 pub struct ApiResponse {
@@ -53,7 +45,7 @@ pub fn unreachable(server: &str) -> Problem {
 }
 
 pub async fn request(
-    client: &reqwest::Client,
+    _client: &HttpClient,
     server: &str,
     method: &str,
     path: &str,
@@ -61,60 +53,96 @@ pub async fn request(
     actor: Option<&str>,
     body: Option<&Value>,
 ) -> Result<ApiResponse, Problem> {
-    let method = reqwest::Method::from_bytes(method.as_bytes())
+    let method = hyper::Method::from_bytes(method.as_bytes())
         .map_err(|_| Problem::new(ErrorCode::InvalidRequest, "bad method"))?;
-    let url = format!("{}{}", server.trim_end_matches('/'), path);
-    let attempts = if method == reqwest::Method::GET { 2 } else { 1 };
+    let attempts = if method == hyper::Method::GET { 2 } else { 1 };
     let request_id = uuid::Uuid::now_v7().to_string();
-    let mut last = None;
+    let body = body.map(|b| b.to_string());
     for _ in 0..attempts {
-        let mut rb = client
-            .request(method.clone(), &url)
-            .header(HEADER_REQUEST_ID, &request_id);
-        if let Some(t) = token {
-            rb = rb.bearer_auth(t);
+        let call = send_once(
+            server,
+            &method,
+            path,
+            &request_id,
+            token,
+            actor,
+            body.as_deref(),
+        );
+        let Ok(Ok((status, unread, bytes))) = tokio::time::timeout(TOTAL_TIMEOUT, call).await
+        else {
+            continue;
+        };
+        let value: Value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        if (200..300).contains(&status) {
+            return Ok(ApiResponse {
+                status,
+                body: value,
+                unread,
+            });
         }
-        if let Some(a) = actor {
-            rb = rb.header(HEADER_ACTOR, a);
-        }
-        if let Some(b) = body {
-            rb = rb.json(b);
-        }
-        match rb.send().await {
-            Ok(res) => {
-                let status = res.status().as_u16();
-                let unread = res
-                    .headers()
-                    .get(HEADER_UNREAD)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse().ok());
-                let bytes = res.bytes().await.map_err(|_| unreachable(server))?;
-                let value: Value = if bytes.is_empty() {
-                    Value::Null
-                } else {
-                    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-                };
-                if (200..300).contains(&status) {
-                    return Ok(ApiResponse {
-                        status,
-                        body: value,
-                        unread,
-                    });
-                }
-                let problem = serde_json::from_value::<Problem>(value).unwrap_or_else(|_| {
-                    let mut p = Problem::new(
-                        ErrorCode::Unavailable,
-                        format!("The server answered HTTP {status}."),
-                    );
-                    p.status = status;
-                    p
-                });
-                return Err(problem);
-            }
-            Err(_) => last = Some(unreachable(server)),
-        }
+        let problem = serde_json::from_value::<Problem>(value).unwrap_or_else(|_| {
+            let mut p = Problem::new(
+                ErrorCode::Unavailable,
+                format!("The server answered HTTP {status}."),
+            );
+            p.status = status;
+            p
+        });
+        return Err(problem);
     }
-    Err(last.unwrap_or_else(|| unreachable(server)))
+    Err(unreachable(server))
+}
+
+async fn send_once(
+    server: &str,
+    method: &hyper::Method,
+    path: &str,
+    request_id: &str,
+    token: Option<&str>,
+    actor: Option<&str>,
+    body: Option<&str>,
+) -> Result<(u16, Option<u32>, Bytes), String> {
+    let (stream, hostport) = open(server, CONNECT_TIMEOUT).await?;
+    let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::spawn(conn);
+    let mut rb = hyper::Request::builder()
+        .method(method.clone())
+        .uri(path)
+        .header("host", hostport)
+        .header("user-agent", format!("imbo/{}", crate::VERSION))
+        .header(HEADER_REQUEST_ID, request_id);
+    if let Some(t) = token {
+        rb = rb.header("authorization", format!("Bearer {t}"));
+    }
+    if let Some(a) = actor {
+        rb = rb.header(HEADER_ACTOR, a);
+    }
+    if body.is_some() {
+        rb = rb.header("content-type", "application/json");
+    }
+    let req = rb
+        .body(Full::new(Bytes::from(body.unwrap_or("").to_owned())))
+        .map_err(|e| e.to_string())?;
+    let res = tx.send_request(req).await.map_err(|e| e.to_string())?;
+    let status = res.status().as_u16();
+    let unread = res
+        .headers()
+        .get(HEADER_UNREAD)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    let bytes = res
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?
+        .to_bytes();
+    Ok((status, unread, bytes))
 }
 
 pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -139,13 +167,15 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
     )
 }
 
-pub async fn ws_connect(server: &str, token: &str) -> Result<Ws, WsError> {
+/// TCP (and TLS for https) to the server. Returns the stream and the
+/// `host:port` part of the URL.
+async fn open(server: &str, connect_timeout: Duration) -> Result<(Box<dyn Io>, String), String> {
     let (tls, rest) = if let Some(r) = server.strip_prefix("https://") {
         (true, r)
     } else if let Some(r) = server.strip_prefix("http://") {
         (false, r)
     } else {
-        return Err(WsError::Other(format!("bad server URL {server}")));
+        return Err(format!("bad server URL {server}"));
     };
     let hostport = rest.split('/').next().unwrap_or(rest);
     let (host, port) = match hostport.rsplit_once(':') {
@@ -154,8 +184,35 @@ pub async fn ws_connect(server: &str, token: &str) -> Result<Ws, WsError> {
         }
         _ => (hostport.to_string(), if tls { 443 } else { 80 }),
     };
-    let url = format!("{}://{}/v1/ws", if tls { "wss" } else { "ws" }, hostport);
-    let mut req = url
+    let tcp = tokio::time::timeout(connect_timeout, TcpStream::connect((host.as_str(), port)))
+        .await
+        .map_err(|_| "connect timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    tcp.set_nodelay(true).ok();
+    let stream: Box<dyn Io> = if tls {
+        let name =
+            rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
+        let conn = tokio_rustls::TlsConnector::from(tls_config())
+            .connect(name, tcp)
+            .await
+            .map_err(|e| format!("TLS: {e}"))?;
+        Box::new(conn)
+    } else {
+        Box::new(tcp)
+    };
+    Ok((stream, hostport.to_string()))
+}
+
+pub async fn ws_connect(server: &str, token: &str) -> Result<Ws, WsError> {
+    let (stream, hostport) = open(server, CONNECT_TIMEOUT * 4)
+        .await
+        .map_err(WsError::Other)?;
+    let scheme = if server.starts_with("https://") {
+        "wss"
+    } else {
+        "ws"
+    };
+    let mut req = format!("{scheme}://{hostport}/v1/ws")
         .into_client_request()
         .map_err(|e| WsError::Other(e.to_string()))?;
     req.headers_mut().insert(
@@ -163,25 +220,6 @@ pub async fn ws_connect(server: &str, token: &str) -> Result<Ws, WsError> {
         HeaderValue::from_str(&format!("Bearer {token}"))
             .map_err(|e| WsError::Other(e.to_string()))?,
     );
-    let tcp = tokio::time::timeout(
-        CONNECT_TIMEOUT * 4,
-        TcpStream::connect((host.as_str(), port)),
-    )
-    .await
-    .map_err(|_| WsError::Other("connect timed out".into()))?
-    .map_err(|e| WsError::Other(e.to_string()))?;
-    tcp.set_nodelay(true).ok();
-    let stream: Box<dyn Io> = if tls {
-        let name = rustls::pki_types::ServerName::try_from(host.clone())
-            .map_err(|e| WsError::Other(e.to_string()))?;
-        let conn = tokio_rustls::TlsConnector::from(tls_config())
-            .connect(name, tcp)
-            .await
-            .map_err(|e| WsError::Other(format!("TLS: {e}")))?;
-        Box::new(conn)
-    } else {
-        Box::new(tcp)
-    };
     match tokio::time::timeout(
         TOTAL_TIMEOUT * 2,
         tokio_tungstenite::client_async(req, stream),

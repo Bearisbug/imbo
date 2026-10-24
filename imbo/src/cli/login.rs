@@ -88,7 +88,7 @@ fn ask_email(initial: Option<String>) -> anyhow::Result<String> {
 }
 
 /// Ask the server to email a code. Returns false when the email must be re-entered.
-async fn send_code(client: &reqwest::Client, server: &str, email: &str) -> anyhow::Result<bool> {
+async fn send_code(client: &net::HttpClient, server: &str, email: &str) -> anyhow::Result<bool> {
     let sp = cliclack::spinner();
     sp.start(format!("Sending a code to {email}"));
     let r = net::request(
@@ -132,7 +132,10 @@ async fn send_code(client: &reqwest::Client, server: &str, email: &str) -> anyho
 fn fail(p: &Problem) -> anyhow::Error {
     cliclack::outro_cancel(&p.detail).ok();
     if let Some(id) = p.request_id() {
-        eprintln!("  {}", ui::dim(format!("ref {}", &id[..id.len().min(8)])));
+        eprintln!(
+            "  {}",
+            ui::dim(format!("ref {}", &id[id.len().saturating_sub(8)..]))
+        );
     }
     Reported.into()
 }

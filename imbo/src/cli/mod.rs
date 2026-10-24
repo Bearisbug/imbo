@@ -69,7 +69,10 @@ pub fn report(p: &Problem) -> anyhow::Error {
         eprintln!("  {}", ui::dim(format!("Try again in {s}s.")));
     }
     if let Some(id) = p.request_id() {
-        eprintln!("  {}", ui::dim(format!("ref {}", &id[..id.len().min(8)])));
+        eprintln!(
+            "  {}",
+            ui::dim(format!("ref {}", &id[id.len().saturating_sub(8)..]))
+        );
     }
     Reported.into()
 }
