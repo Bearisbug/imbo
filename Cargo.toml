@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["imbo-proto", "imbo-server", "imbo"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/Bearisbug/imbo"
+homepage = "https://imbo.dev"
+rust-version = "1.90"
+
+[workspace.dependencies]
+imbo-proto = { path = "imbo-proto" }
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+hex = "0.4"
+libc = "0.2"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "rt", "net", "io-util", "time", "sync", "signal", "process", "fs"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 4
+
+[workspace.lints.clippy]
+# Problem bodies are big on purpose; errors are rare and not on hot paths.
+result_large_err = "allow"
+large_enum_variant = "allow"
+type_complexity = "allow"

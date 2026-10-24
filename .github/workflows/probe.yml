@@ -1,0 +1,26 @@
+name: probe
+# Health check of the hosted server every 15 minutes. A run fails, and
+# GitHub emails the repository owner, when two checks a minute apart both fail.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+jobs:
+  health:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: GET /v1/health
+        run: |
+          check() {
+            body=$(curl -fsS --max-time 10 https://api.imbo.dev/v1/health) || return 1
+            echo "$body"
+            # Alert thresholds from DESIGN §21.
+            echo "$body" | jq -e '.status == "ok" and .db == "ok"
+              and (.stuck_deliveries // 0) <= 20
+              and (.ack_p95_ms // 0) <= 10000
+              and (.backup_age_h // 0) <= 30
+              and (.disk_free_pct // 100) >= 15' > /dev/null
+          }
+          check && exit 0
+          sleep 60
+          check
