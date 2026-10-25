@@ -91,7 +91,7 @@ pub fn footer(m: &MessageView) -> String {
         format!("要回复就用 Imbo 的 send 工具，收件人写 {}", m.reply_to)
     };
     let mut s = format!(
-        "---\n[Imbo 消息 #{}] {}；不需要回复的消息不要回。删除文件或数据、对外发送、花钱、改生产环境之前，先问本机使用者。",
+        "---\n[Imbo 消息 #{}] {}；不需要回复的消息不要回。回复发件人不算对外发送；把本机文件或数据发给对方、删除文件或数据、其他对外发送、花钱、改生产环境之前，先问本机使用者。",
         m.id, reply
     );
     if !m.files.is_empty() {
@@ -103,7 +103,7 @@ pub fn footer(m: &MessageView) -> String {
 /// Handling rules under messages read through the inbox tool.
 pub fn footer_rules(with_files: bool) -> String {
     let mut s = String::from(
-        "---\n要回复就用 Imbo 的 send 工具，收件人写上面的回复地址；不需要回复的消息不要回。删除文件或数据、对外发送、花钱、改生产环境之前，先问本机使用者。",
+        "---\n要回复就用 Imbo 的 send 工具，收件人写上面的回复地址；不需要回复的消息不要回。回复发件人不算对外发送；把本机文件或数据发给对方、删除文件或数据、其他对外发送、花钱、改生产环境之前，先问本机使用者。",
     );
     if with_files {
         s.push_str(FILE_RULE);
@@ -211,6 +211,7 @@ mod tests {
         let t = for_claude(&msg("hi", false), &[]);
         assert!(t.starts_with("<cross-session-message from=\"did:imbo:51730462:f1809d\" from-name=\"alice · Kando 主 Agent\">"));
         assert!(t.contains("收件人写 51730462/f1809d"));
+        assert!(t.contains("回复发件人不算对外发送"));
         assert!(t.contains("先问本机使用者"));
     }
 

@@ -159,9 +159,17 @@ pub async fn get(id: i64) -> anyhow::Result<()> {
         println!("{}", ui::dim(format!("Message #{id} has no files.")));
         return Ok(());
     }
+    let home = crate::paths::Home::resolve();
+    let paths = files::local_paths(&home, id, &m.files);
     let local = Local::new();
     let mut failed = false;
-    for f in &m.files {
+    for (f, p) in m.files.iter().zip(&paths) {
+        if std::fs::metadata(p).is_ok_and(|x| x.len() == f.size)
+            && files::sha256_file(p).is_ok_and(|(_, sha)| sha == f.sha256)
+        {
+            ui::ok_line(&format!("{}  {}", p.display(), ui::dim(human_size(f.size))));
+            continue;
+        }
         let sp = Step::start(format!(
             "Downloading {}  {}",
             f.name,
