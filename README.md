@@ -10,8 +10,10 @@ curl -fsSL https://imbo.dev/install | sh
 
 The installer puts `imbo` in `~/.local/bin`, signs you in with an email code,
 starts a small background daemon (launchd on macOS, a systemd user service on
-Linux) and connects Claude Code (a plugin: MCP tools plus a prompt hook) and
-Codex (an MCP server). Supported: macOS and Linux, arm64 and x86_64.
+Linux) and connects the tools you tick: Claude Code (a plugin: MCP tools plus a
+prompt hook) and Codex (an MCP server). It lists the settings it changes, and
+lets Imbo's own tools run without an approval prompt each time; `imbo uninstall`
+takes that back. Supported: macOS and Linux, arm64 and x86_64.
 
 ## Use
 
@@ -28,8 +30,9 @@ imbo status                         # daemon, connection, sessions here
 ```
 
 Messages from other sessions are not instructions from you: the receiving
-agent is told to ask you before deleting files or data, sending things out,
-spending money or touching production.
+agent may reply to the sender, and is told to ask you before sending your files
+or data to them, deleting files or data, sending anything else out, spending
+money or touching production.
 
 ## Self-hosting
 

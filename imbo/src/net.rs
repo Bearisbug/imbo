@@ -30,11 +30,11 @@ pub struct ApiResponse {
     pub unread: Option<u32>,
 }
 
-pub fn unreachable(server: &str) -> Problem {
+pub fn unreachable(server: &str, why: &str) -> Problem {
     Problem::new(
         ErrorCode::ServerUnreachable,
         format!(
-            "Cannot reach the Imbo server at {server}. Check the network, or run `imbo status`."
+            "Cannot reach the Imbo server at {server} ({why}). Check the network, or run `imbo status`."
         ),
     )
 }
@@ -56,7 +56,8 @@ pub async fn request(
     let attempts = if method == hyper::Method::GET { 2 } else { 1 };
     let request_id = uuid::Uuid::now_v7().to_string();
     let body = body.map(|b| b.to_string());
-    for _ in 0..attempts {
+    let mut why = String::new();
+    for attempt in 1..=attempts {
         let call = send_once(
             server,
             &method,
@@ -66,9 +67,21 @@ pub async fn request(
             actor,
             body.as_deref(),
         );
-        let Ok(Ok((status, unread, bytes))) = tokio::time::timeout(TOTAL_TIMEOUT, call).await
-        else {
-            continue;
+        let got = tokio::time::timeout(TOTAL_TIMEOUT, call)
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "no answer within {} seconds",
+                    TOTAL_TIMEOUT.as_secs()
+                ))
+            });
+        let (status, unread, bytes) = match got {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(%method, path, attempt, why = %e, "server request failed");
+                why = e;
+                continue;
+            }
         };
         let value: Value = if bytes.is_empty() {
             Value::Null
@@ -92,7 +105,7 @@ pub async fn request(
         });
         return Err(problem);
     }
-    Err(unreachable(server))
+    Err(unreachable(server, &why))
 }
 
 async fn send_once(
@@ -252,8 +265,10 @@ pub async fn upload_file(
         Ok::<_, String>((status, bytes))
     };
     let (status, bytes) = tokio::select! {
-        r = call => r.map_err(|_| unreachable(server))?,
-        _ = progress.stalled() => return Err(unreachable(server)),
+        r = call => r.map_err(|e| unreachable(server, &e))?,
+        _ = progress.stalled() => {
+            return Err(unreachable(server, &format!("no data for {} seconds", STALL.as_secs())));
+        }
     };
     if (200..300).contains(&status) {
         let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
@@ -275,9 +290,15 @@ pub async fn download_file(
     dest: &std::path::Path,
 ) -> Result<(u64, String), Problem> {
     let failed = |e: String| Problem::new(ErrorCode::ServerUnreachable, e);
+    let no_answer = || {
+        unreachable(
+            server,
+            &format!("no answer within {} seconds", STALL.as_secs()),
+        )
+    };
     let (stream, hostport) = open(server, CONNECT_TIMEOUT)
         .await
-        .map_err(|_| unreachable(server))?;
+        .map_err(|e| unreachable(server, &e))?;
     let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .map_err(|e| failed(e.to_string()))?;
@@ -293,14 +314,14 @@ pub async fn download_file(
         .map_err(|e| failed(e.to_string()))?;
     let res = tokio::time::timeout(STALL, tx.send_request(req))
         .await
-        .map_err(|_| unreachable(server))?
+        .map_err(|_| no_answer())?
         .map_err(|e| failed(e.to_string()))?;
     let status = res.status().as_u16();
     let mut body = res.into_body();
     if status != 200 {
         let bytes = tokio::time::timeout(STALL, body.collect())
             .await
-            .map_err(|_| unreachable(server))?
+            .map_err(|_| no_answer())?
             .map_err(|e| failed(e.to_string()))?
             .to_bytes();
         return Err(problem_from(status, &bytes));
