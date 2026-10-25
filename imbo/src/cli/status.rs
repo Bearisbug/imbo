@@ -51,13 +51,14 @@ pub async fn status() -> anyhow::Result<()> {
     if st.sessions.is_empty() {
         println!(
             "{}",
-            ui::dim("No Claude Code or Codex sessions seen on this computer yet.")
+            ui::dim("No agent sessions seen on this computer yet.")
         );
     } else {
         println!("{}", ui::heading("Sessions on this computer"));
         for s in &st.sessions {
             let channel = match s.channel.as_str() {
                 "inject" => "live",
+                "listen" => "listening",
                 "prompt_hook" => "on next prompt",
                 "queue" => "queued",
                 _ => "no delivery",

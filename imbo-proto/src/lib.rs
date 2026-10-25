@@ -22,6 +22,10 @@ pub const HEADER_FILE_SHA256: &str = "imbo-file-sha256";
 
 pub const TOOL_CLAUDE: &str = "claude-code";
 pub const TOOL_CODEX: &str = "codex";
+pub const TOOL_OPENCODE: &str = "opencode";
+pub const TOOL_CURSOR: &str = "cursor";
+pub const TOOL_MCODE: &str = "minimax-code";
+pub const TOOL_ZCODE: &str = "zcode";
 /// The account's terminal inbox (ADR-010): an `agents` row that is never online.
 pub const TOOL_TERMINAL: &str = "terminal";
 

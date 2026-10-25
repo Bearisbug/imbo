@@ -18,7 +18,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tracing::{info, warn};
 
-use super::{Adapter, Connected, Found, Paste, PastedImage, Registration, env, run};
+use super::{
+    Adapter, Connected, Found, Install, Paste, PastedImage, Registration, env, hook_command,
+    on_path, run, server_env,
+};
 use crate::local::Local;
 use crate::paths::{Home, exe, tilde, user_home};
 use crate::{render, ui};
@@ -236,8 +239,8 @@ impl Adapter for Claude {
         })
     }
 
-    fn command(&self) -> &'static str {
-        "claude"
+    fn find(&self) -> Install {
+        on_path("claude")
     }
 
     fn changes(&self) -> String {
@@ -422,16 +425,6 @@ fn plugin_dir(home: &Home) -> PathBuf {
     home.dir.join("claude-plugin")
 }
 
-fn sh_quote(s: &str) -> String {
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/._-+:=@".contains(c))
-    {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
-}
-
 /// Write a Claude Code plugin (MCP server + prompt hook) at `root`.
 pub fn write_plugin(home: &Home, root: &Path) -> anyhow::Result<()> {
     let exe = exe().to_string_lossy().into_owned();
@@ -440,7 +433,7 @@ pub fn write_plugin(home: &Home, root: &Path) -> anyhow::Result<()> {
     let manifest = json!({
         "name": "imbo",
         "version": crate::VERSION,
-        "description": "Messages between Claude Code and Codex sessions, across people and computers.",
+        "description": "Messages between agent sessions, across people and computers.",
         "author": { "name": "Imbo" },
         "homepage": "https://imbo.dev",
         "license": "Apache-2.0"
@@ -449,13 +442,12 @@ pub fn write_plugin(home: &Home, root: &Path) -> anyhow::Result<()> {
         root.join(".claude-plugin/plugin.json"),
         serde_json::to_string_pretty(&manifest)?,
     )?;
-    let mut server = json!({ "command": exe, "args": ["mcp"] });
-    let mut hook_cmd = format!("{} hook prompt", sh_quote(&exe));
-    if !home.is_primary() {
-        let h = home.dir.to_string_lossy().into_owned();
-        server["env"] = json!({ "IMBO_HOME": h });
-        hook_cmd = format!("IMBO_HOME={} {hook_cmd}", sh_quote(&h));
-    }
+    let server = json!({
+        "command": exe,
+        "args": ["mcp"],
+        "env": server_env(home, imbo_proto::TOOL_CLAUDE),
+    });
+    let hook_cmd = hook_command(home, "hook prompt");
     let mcp = json!({ "mcpServers": { "imbo": server } });
     std::fs::write(root.join(".mcp.json"), serde_json::to_string_pretty(&mcp)?)?;
     let hooks = json!({
@@ -483,7 +475,7 @@ fn write_marketplace(home: &Home) -> anyhow::Result<PathBuf> {
         "plugins": [ {
             "name": "imbo",
             "source": "./plugin",
-            "description": "Messages between Claude Code and Codex sessions, across people and computers.",
+            "description": "Messages between agent sessions, across people and computers.",
             "version": crate::VERSION
         } ]
     });
@@ -610,17 +602,27 @@ pub async fn prompt_hook(event: String) -> anyhow::Result<()> {
     }
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
-    let session_id = serde_json::from_str::<Value>(&input)
-        .ok()
-        .and_then(|v| v["session_id"].as_str().map(str::to_string))
-        .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
-        .filter(|s| !s.is_empty());
+    let input = serde_json::from_str::<Value>(&input).unwrap_or_default();
+    // Cursor runs this plugin's hook too, and ZCode sets Claude Code's
+    // session variable for its hooks; both have hooks of their own (ADR-018).
+    if input.get("cursor_version").is_some()
+        || ["CURSOR_VERSION", "ZCODE_SESSION_ID", "ZCODE_RUNTIME_ENV"]
+            .iter()
+            .any(|v| env(v).is_some())
+    {
+        return Ok(());
+    }
+    let session_id = input["session_id"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| env("CLAUDE_CODE_SESSION_ID"));
     let Some(session_id) = session_id else {
         return Ok(());
     };
     let req = LocalRequest::HookPrompt {
         tool: imbo_proto::TOOL_CLAUDE.into(),
         session_id,
+        limit: None,
     };
     let local = Local::new();
     let Ok(Ok(res)) = tokio::time::timeout(

@@ -6,7 +6,7 @@
 # $L must stay short: macOS limits Unix socket paths to 104 bytes, and
 # Codex's control socket lives three levels under $L/codex-home.
 ROOT=$(cd "$(dirname "${BASH_SOURCE:-$0}")/.." && pwd)
-export L=/tmp/imbo-t
+export L=/tmp/imbo-t TH=/tmp/imbo-t/th
 export I="$ROOT/target/debug/imbo" S="$ROOT/target/debug/imbo-server" IMBO="$ROOT/target/debug/imbo"
 export M="$ROOT/scripts/mcp-call.py"
 unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDECODE \
@@ -43,7 +43,9 @@ case "${1:-}" in
     ;;
   down)
     tmux -L imbo-test kill-server 2>/dev/null
-    pkill -f "$I daemon"; pkill -f "$I mcp"; pkill -f "^$S"
+    pkill -f "$I daemon"; pkill -f "$I mcp"; pkill -f "$I hook"; pkill -f "$I wait"; pkill -f "^$S"
+    # Tools started with HOME=$TH, such as opencode's background service.
+    ps -axE -o pid=,command= | grep "HOME=$TH " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null
     ps -ax -o pid=,command= | grep "$L/codex-home" | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null
     sleep 1
     rm -rf "$L"

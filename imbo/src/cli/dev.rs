@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use imbo_proto::local::LocalRequest;
 
+use crate::adapters::Install;
 use crate::local::Local;
 use crate::paths::Home;
 use crate::ui;
@@ -13,6 +14,9 @@ use crate::ui;
 pub enum DevCmd {
     /// Write the Claude Code plugin to a directory (for `claude --plugin-dir`).
     WritePlugin { dir: PathBuf },
+    /// Connect one tool the way `imbo setup` does, without the daemon
+    /// service and sign-in steps.
+    Connect { tool: String },
     /// Pin a session with no live tool behind it.
     FakeSession {
         session_id: String,
@@ -30,6 +34,23 @@ pub async fn run(cmd: DevCmd) -> anyhow::Result<()> {
         DevCmd::WritePlugin { dir } => {
             crate::adapters::claude::write_plugin(&Home::resolve(), &dir)?;
             ui::ok_line(&format!("Plugin written to {}", dir.display()));
+        }
+        DevCmd::Connect { tool } => {
+            let Some(a) = crate::adapters::get(&tool) else {
+                anyhow::bail!("no adapter for `{tool}`");
+            };
+            let Install::Found(bin) = a.find() else {
+                anyhow::bail!("{} isn't installed", a.name());
+            };
+            match a.connect(&Home::resolve(), &bin) {
+                Ok(done) => {
+                    ui::ok_line(&format!("{} connected  {}", a.name(), done.detail));
+                    if let Some(w) = done.warning {
+                        ui::warn_line(&w);
+                    }
+                }
+                Err(e) => anyhow::bail!("{}: {e}", a.name()),
+            }
         }
         DevCmd::FakeSession {
             session_id,

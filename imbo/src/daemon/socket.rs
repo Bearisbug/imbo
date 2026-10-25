@@ -1,5 +1,5 @@
 //! `~/.imbo/daemon.sock`: one JSON request per line, one response per line
-//! (API-LOCAL-001..003).
+//! (API-LOCAL-001..011).
 
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
@@ -51,6 +51,13 @@ async fn conn(d: D, stream: UnixStream) {
                     .await;
                 d.shutdown.notify_one();
                 return;
+            }
+            Ok(LocalRequest::Wait {
+                tool,
+                session_id,
+                pid,
+            }) => {
+                return super::listen::serve(&d, tool, session_id, pid, lines, w).await;
             }
             Ok(req) => handle(&d, req).await,
             Err(e) => LocalResponse::err(Problem::new(
@@ -113,7 +120,23 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             message_id,
             file_id,
         } => super::files::fetch_request(d, message_id, file_id).await,
-        LocalRequest::HookPrompt { tool, session_id } => hook_prompt(d, &tool, &session_id).await,
+        LocalRequest::HookPrompt {
+            tool,
+            session_id,
+            limit,
+        } => hook_prompt(d, &tool, &session_id, limit).await,
+        LocalRequest::Listening { tool, session_id } => {
+            if adapters::get(&tool).is_none() {
+                return unknown_tool(&tool);
+            }
+            let st = super::listen::status(&tool, &session_id);
+            LocalResponse::ok(200, serde_json::to_value(st).unwrap_or_default(), None)
+        }
+        LocalRequest::Unlisten { tool, session_id } => {
+            super::listen::withdraw(&tool, &session_id);
+            d.flush_presence();
+            LocalResponse::ok(200, Value::Null, None)
+        }
         LocalRequest::FakeSession {
             tool,
             session_id,
@@ -149,7 +172,7 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             d.reload_creds();
             LocalResponse::ok(200, Value::Null, None)
         }
-        LocalRequest::Shutdown => unreachable!("handled in conn"),
+        LocalRequest::Shutdown | LocalRequest::Wait { .. } => unreachable!("handled in conn"),
     }
 }
 
@@ -180,7 +203,7 @@ fn ensure_session(d: &D, actor: &str) {
     }
 }
 
-async fn call(
+pub(super) async fn call(
     d: &D,
     method: &str,
     path: &str,
@@ -238,9 +261,14 @@ async fn call(
 /// How long the prompt hook waits for attachments (the hook itself stops at 8 s).
 const HOOK_FILE_BUDGET: Duration = Duration::from_secs(5);
 
-/// API-LOCAL-003. Only sessions without a working insert channel pull here,
-/// so a message is never both inserted and handed to the hook.
-async fn hook_prompt(d: &D, tool: &str, session_id: &str) -> LocalResponse {
+/// API-LOCAL-003. Only sessions without a working insert channel, and
+/// with a delivery sent back to the server, pull here: a message is never
+/// both inserted and handed to the hook, and hooks that run after every
+/// tool call don't ask the server each time.
+async fn hook_prompt(d: &D, tool: &str, session_id: &str, limit: Option<usize>) -> LocalResponse {
+    if adapters::get(tool).is_none() {
+        return unknown_tool(tool);
+    }
     let key = (tool.to_string(), session_id.to_string());
     let channel = {
         let mut s = d.sessions.lock().unwrap();
@@ -250,7 +278,7 @@ async fn hook_prompt(d: &D, tool: &str, session_id: &str) -> LocalResponse {
         s.get(&key).map(|e| e.channel())
     };
     d.flush_presence();
-    if channel == Some("inject") {
+    if channel == Some("inject") || !d.nacked.lock().unwrap().contains(&key) {
         return LocalResponse::ok(200, json!({ "context": null }), None);
     }
     let actor = format!("{tool}:{session_id}");
@@ -265,6 +293,7 @@ async fn hook_prompt(d: &D, tool: &str, session_id: &str) -> LocalResponse {
     if !r.ok {
         return r;
     }
+    d.nacked.lock().unwrap().remove(&key);
     let messages = serde_json::from_value::<PullResponse>(r.body)
         .map(|p| p.messages)
         .unwrap_or_default();
@@ -297,7 +326,7 @@ async fn hook_prompt(d: &D, tool: &str, session_id: &str) -> LocalResponse {
     );
     LocalResponse::ok(
         200,
-        json!({ "context": crate::render::for_hook(&messages, &files) }),
+        json!({ "context": crate::render::for_hook(&messages, &files, limit) }),
         None,
     )
 }

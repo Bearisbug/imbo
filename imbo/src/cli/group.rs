@@ -193,7 +193,7 @@ async fn create(name: String, sessions: Option<Vec<String>>) -> anyhow::Result<(
     let agents = my_agents().await?;
     let chosen = match sessions {
         Some(s) => Some(resolve(&agents, &s)?),
-        None if crate::local::env_actor().is_none() => choose(&agents, &name, &[])?,
+        None if matches!(crate::local::env_actor(), Ok(None)) => choose(&agents, &name, &[])?,
         None => None,
     };
     let mut body = json!({ "name": name });

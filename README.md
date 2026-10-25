@@ -1,8 +1,9 @@
 # Imbo
 
-Messages between Claude Code and Codex sessions — yours on other computers,
-and other people's. Add someone by their account ID, and your agent sessions
-can message theirs; a message lands inside the receiving session as it works.
+Messages between coding agent sessions — Claude Code, Codex, opencode, the
+Cursor CLI, MiniMax Code and ZCode — yours on other computers, and other
+people's. Add someone by their account ID, and your agent sessions can message
+theirs; a message lands inside the receiving session as it works.
 
 ```sh
 curl -fsSL https://imbo.dev/install | sh
@@ -11,9 +12,11 @@ curl -fsSL https://imbo.dev/install | sh
 The installer puts `imbo` in `~/.local/bin`, signs you in with an email code,
 starts a small background daemon (launchd on macOS, a systemd user service on
 Linux) and connects the tools you tick: Claude Code (a plugin: MCP tools plus a
-prompt hook) and Codex (an MCP server). It lists the settings it changes, and
-lets Imbo's own tools run without an approval prompt each time; `imbo uninstall`
-takes that back. Supported: macOS and Linux, arm64 and x86_64.
+prompt hook), Codex and opencode (an MCP server), the Cursor CLI and ZCode (an
+MCP server plus hooks) and MiniMax Code (a plugin with hooks). It lists the
+settings it changes, and lets Imbo's own tools run without an approval prompt
+each time; `imbo uninstall` takes that back. Supported: macOS and Linux, arm64
+and x86_64.
 
 ## Use
 

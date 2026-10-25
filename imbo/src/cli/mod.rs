@@ -5,10 +5,12 @@ pub mod account;
 pub mod contact;
 pub mod dev;
 pub mod group;
+pub mod hook;
 pub mod login;
 mod messages;
 pub mod setup;
 mod status;
+mod wait;
 
 use imbo_proto::Problem;
 use serde::de::DeserializeOwned;
@@ -45,6 +47,7 @@ pub async fn dispatch(cmd: crate::Cmd) -> anyhow::Result<()> {
         Cmd::Get { message_id } => messages::get(message_id).await,
         Cmd::Inbox { message_id, all } => messages::inbox(message_id, all).await,
         Cmd::Status => status::status().await,
+        Cmd::Wait => wait::wait().await,
         Cmd::Dev(c) => dev::run(c).await,
         Cmd::Daemon | Cmd::Mcp | Cmd::Hook { .. } => unreachable!("handled in main"),
     }
@@ -81,8 +84,9 @@ pub fn report(p: &Problem) -> anyhow::Error {
 /// One REST call through the daemon, acting as the session this terminal
 /// runs in (if any). Errors are printed.
 pub async fn api(method: &str, path: &str, body: Option<Value>) -> anyhow::Result<Value> {
+    let actor = env_actor().map_err(|p| report(&p))?;
     let local = Local::new();
-    match local.call(method, path, body, env_actor()).await {
+    match local.call(method, path, body, actor).await {
         Ok((v, _)) => Ok(v),
         Err(p) => Err(report(&p)),
     }

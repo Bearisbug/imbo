@@ -8,9 +8,9 @@ use imbo_proto::local::{DaemonStatus, LocalRequest};
 
 use super::Reported;
 use super::login::{choose_server, need_terminal, reload_daemon, sign_in};
-use crate::adapters::{self, Adapter};
+use crate::adapters::{self, Adapter, Install};
 use crate::local::Local;
-use crate::paths::{Home, exe, which};
+use crate::paths::{Home, exe};
 use crate::{service, ui};
 
 #[derive(Args)]
@@ -25,6 +25,40 @@ pub struct UninstallArgs {
     /// Don't ask for confirmation.
     #[arg(long, short)]
     pub yes: bool,
+}
+
+/// A step shown with a spinner while it runs. cliclack prints nothing of a
+/// spinner, its result line included, when stderr isn't a terminal; there
+/// the result is printed as a log line instead.
+struct Step(Option<cliclack::ProgressBar>);
+
+impl Step {
+    fn start(msg: impl std::fmt::Display) -> Self {
+        if !console::Term::stderr().is_term() {
+            return Step(None);
+        }
+        let sp = cliclack::spinner();
+        sp.start(msg);
+        Step(Some(sp))
+    }
+
+    fn done(self, msg: impl std::fmt::Display) {
+        match self.0 {
+            Some(sp) => sp.stop(msg),
+            None => {
+                let _ = cliclack::log::success(msg);
+            }
+        }
+    }
+
+    fn fail(self, msg: impl std::fmt::Display) {
+        match self.0 {
+            Some(sp) => sp.error(msg),
+            None => {
+                let _ = cliclack::log::error(msg);
+            }
+        }
+    }
 }
 
 async fn daemon_status() -> Option<DaemonStatus> {
@@ -59,12 +93,11 @@ pub async fn setup(a: SetupArgs) -> anyhow::Result<()> {
     };
 
     // 2. Background daemon.
-    let sp = cliclack::spinner();
-    sp.start("Starting the background daemon");
+    let sp = Step::start("Starting the background daemon");
     let how = match service::install(&home) {
         Ok(h) => h,
         Err(e) => {
-            sp.error(format!("Couldn't start the daemon: {e:#}"));
+            sp.fail(format!("Couldn't start the daemon: {e:#}"));
             return Err(Reported.into());
         }
     };
@@ -78,17 +111,17 @@ pub async fn setup(a: SetupArgs) -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     match &st {
-        Some(s) if s.connected => sp.stop(format!(
+        Some(s) if s.connected => sp.done(format!(
             "Background daemon running  {}",
             ui::dim(format!("{how} · connected to {}", s.server))
         )),
-        Some(s) => sp.stop(format!(
+        Some(s) => sp.done(format!(
             "{}  {}",
             ui::s(ui::warn(), "Background daemon running, not connected yet"),
             ui::dim(s.last_error.clone().unwrap_or_default())
         )),
         None => {
-            sp.error("The background daemon didn't start. See ~/.imbo/logs/daemon.log");
+            sp.fail("The background daemon didn't start. See ~/.imbo/logs/daemon.log");
             return Err(Reported.into());
         }
     }
@@ -98,13 +131,16 @@ pub async fn setup(a: SetupArgs) -> anyhow::Result<()> {
     // installed tool is connected.
     let mut chosen: Vec<(&dyn Adapter, PathBuf)> = vec![];
     for a in adapters::all() {
-        match which(a.command()) {
-            Some(bin) => chosen.push((*a, bin)),
-            None => cliclack::log::warning(format!(
+        match a.find() {
+            Install::Found(bin) => chosen.push((*a, bin)),
+            Install::Missing => cliclack::log::warning(format!(
                 "{} not installed, skipped  {}",
                 a.name(),
                 ui::dim("install it, then run `imbo setup` again")
             ))?,
+            Install::Unsupported(why) => {
+                cliclack::log::warning(format!("{} skipped  {}", a.name(), ui::dim(why)))?
+            }
         }
     }
     if !chosen.is_empty() && console::Term::stderr().is_term() {
@@ -125,17 +161,16 @@ pub async fn setup(a: SetupArgs) -> anyhow::Result<()> {
     }
     let mut connected_any = false;
     for (a, bin) in &chosen {
-        let sp = cliclack::spinner();
-        sp.start(format!("Connecting {}", a.name()));
+        let sp = Step::start(format!("Connecting {}", a.name()));
         match a.connect(&home, bin) {
             Ok(done) => {
                 connected_any = true;
-                sp.stop(format!("{} connected  {}", a.name(), ui::dim(done.detail)));
+                sp.done(format!("{} connected  {}", a.name(), ui::dim(done.detail)));
                 if let Some(w) = done.warning {
                     cliclack::log::warning(w)?;
                 }
             }
-            Err(e) => sp.error(format!("{}: {e}", a.name())),
+            Err(e) => sp.fail(format!("{}: {e}", a.name())),
         }
     }
     if connected_any {
@@ -167,7 +202,10 @@ pub async fn uninstall(a: UninstallArgs) -> anyhow::Result<()> {
         }
     }
     for a in adapters::all() {
-        let bin = which(a.command());
+        let bin = match a.find() {
+            Install::Found(b) => Some(b),
+            _ => None,
+        };
         a.disconnect(&home, bin.as_deref());
         if bin.is_some() {
             ui::ok_line(&format!("{} disconnected", a.name()));

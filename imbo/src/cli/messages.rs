@@ -277,7 +277,7 @@ pub async fn inbox(id: Option<i64>, all: bool) -> anyhow::Result<()> {
     // Outside a session, new terminal-inbox messages are shown once and
     // count as read (ADR-010); inside one, only that session is listed.
     let mut fresh: Vec<MessageView> = vec![];
-    if env_actor().is_none() {
+    if matches!(env_actor(), Ok(None)) {
         match Local::new()
             .call("POST", "/v1/inbox/pull", None, None)
             .await

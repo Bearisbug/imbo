@@ -156,6 +156,59 @@ async fn send_once(
     Ok((status, unread, bytes))
 }
 
+/// A plain-HTTP call to a tool's service on this computer, such as
+/// opencode's. Returns the status and the JSON body (`Null` when there is
+/// none).
+pub async fn local_http(
+    url: &str,
+    method: &str,
+    path: &str,
+    auth: Option<&str>,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
+    let call = async {
+        let (stream, hostport) = open(url, CONNECT_TIMEOUT).await?;
+        let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::spawn(conn);
+        let mut rb = hyper::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("host", hostport);
+        if let Some(a) = auth {
+            rb = rb.header("authorization", a);
+        }
+        let body = body.map(Value::to_string).unwrap_or_default();
+        if !body.is_empty() {
+            rb = rb.header("content-type", "application/json");
+        }
+        let req = rb
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| e.to_string())?;
+        let res = tx.send_request(req).await.map_err(|e| e.to_string())?;
+        let status = res.status().as_u16();
+        let bytes = res
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| e.to_string())?
+            .to_bytes();
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
+    };
+    tokio::time::timeout(TOTAL_TIMEOUT, call)
+        .await
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "no answer within {} seconds",
+                TOTAL_TIMEOUT.as_secs()
+            ))
+        })
+}
+
 /// A file transfer with no bytes moving for this long is dropped
 /// (DESIGN §8 传文件); there is no overall time limit.
 pub const STALL: Duration = Duration::from_secs(30);

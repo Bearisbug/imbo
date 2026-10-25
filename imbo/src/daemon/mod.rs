@@ -4,6 +4,7 @@
 mod dedupe;
 mod files;
 mod link;
+pub mod listen;
 mod sessions;
 mod socket;
 
@@ -39,8 +40,14 @@ pub struct Daemon {
     dedupe: Mutex<dedupe::Dedupe>,
     queues: Mutex<HashMap<Key, mpsc::UnboundedSender<Delivery>>>,
     canceled: Mutex<HashSet<(i64, Uuid)>>,
+    /// Sessions with a delivery sent back to the server: only these pull in
+    /// the prompt hooks (API-LOCAL-003).
+    pub nacked: Mutex<HashSet<Key>>,
     uploads: Mutex<files::Recent>,
     fetch_locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
+    /// One upload at a time per file (SHA-256, name): a caller that gave up
+    /// waiting and asks again joins the upload still running.
+    upload_locks: Mutex<HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
     pub reload: Notify,
     pub presence_dirty: Notify,
     pub shutdown: Notify,
@@ -109,7 +116,18 @@ impl Daemon {
         });
     }
 
+    /// Send the delivery back to the server; the session's prompt hooks
+    /// then take its messages (API-LOCAL-003).
     fn nack(&self, d: &Delivery, reason: &str) {
+        self.nacked
+            .lock()
+            .unwrap()
+            .insert((d.tool.clone(), d.session_id.clone()));
+        self.send_back(d, reason);
+    }
+
+    /// Send the delivery back to the server, which pushes it again later.
+    fn send_back(&self, d: &Delivery, reason: &str) {
         self.send_frame(ClientFrame::Nack {
             message_id: d.message.id,
             agent_id: d.agent_id,
@@ -125,16 +143,25 @@ impl Daemon {
         files::fetch(self, &d.message, None).await
     }
 
+    /// Canceled or already put in: nothing to deliver (acked when it was put
+    /// in before).
+    fn settled(&self, d: &Delivery) -> bool {
+        let id = (d.message.id, d.agent_id);
+        if self.canceled.lock().unwrap().remove(&id) {
+            info!(msg = id.0, "skipped canceled delivery");
+            return true;
+        }
+        if self.dedupe.lock().unwrap().contains(id.0, id.1) {
+            self.ack(d, "inject");
+            return true;
+        }
+        false
+    }
+
     /// One queue per session so its messages go in one at a time, in order.
     async fn worker(self: Arc<Self>, key: Key, mut rx: mpsc::UnboundedReceiver<Delivery>) {
         while let Some(d) = rx.recv().await {
-            let id = (d.message.id, d.agent_id);
-            if self.canceled.lock().unwrap().remove(&id) {
-                info!(msg = id.0, "skipped canceled delivery");
-                continue;
-            }
-            if self.dedupe.lock().unwrap().contains(id.0, id.1) {
-                self.ack(&d, "inject");
+            if self.settled(&d) {
                 continue;
             }
             let entry = self.sessions.lock().unwrap().get(&key).cloned();
@@ -146,8 +173,43 @@ impl Daemon {
                 self.nack(&d, "no-channel");
                 continue;
             };
+            if tool.listens() && !listen::waiting(&key.0, &key.1) {
+                self.nack(&d, "no-listener");
+                continue;
+            }
             if let Err(reason) = tool.ready(&key.1) {
                 self.nack(&d, reason);
+                continue;
+            }
+            if tool.listens() {
+                // Whatever arrived together goes into one notice. The
+                // messages stay on the server until the agent takes them
+                // with the inbox tool; ones announced too often wait for
+                // the session's next prompt instead.
+                let mut batch = vec![d];
+                while let Ok(more) = rx.try_recv() {
+                    if !self.settled(&more) {
+                        batch.push(more);
+                    }
+                }
+                let (batch, spent): (Vec<_>, Vec<_>) = batch
+                    .into_iter()
+                    .partition(|d| listen::may_notice(&key, d.message.id));
+                spent.iter().for_each(|d| self.nack(d, "notice-limit"));
+                if batch.is_empty() {
+                    continue;
+                }
+                let ms: Vec<_> = batch.iter().map(|d| &d.message).collect();
+                let text = crate::render::for_listen(&ms);
+                match listen::hand_over(&key, text).await {
+                    Ok(()) => {
+                        info!(session = %key.1, count = batch.len(), "listener told of messages");
+                        let ids: Vec<_> = batch.iter().map(|d| d.message.id).collect();
+                        listen::noticed(&key, &ids);
+                        batch.iter().for_each(|d| self.send_back(d, "noticed"));
+                    }
+                    Err(reason) => batch.iter().for_each(|d| self.nack(d, &reason)),
+                }
                 continue;
             }
             let files = self.download(&d).await;
@@ -204,8 +266,10 @@ pub async fn run() -> anyhow::Result<()> {
         notices: Mutex::new(VecDeque::new()),
         queues: Mutex::new(HashMap::new()),
         canceled: Mutex::new(HashSet::new()),
+        nacked: Mutex::new(HashSet::new()),
         uploads: Mutex::new(HashMap::new()),
         fetch_locks: Mutex::new(HashMap::new()),
+        upload_locks: Mutex::new(HashMap::new()),
         reload: Notify::new(),
         presence_dirty: Notify::new(),
         shutdown: Notify::new(),

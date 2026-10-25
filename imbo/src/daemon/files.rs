@@ -82,11 +82,21 @@ async fn try_upload(d: &D, path: &str) -> Result<FileView, Problem> {
     );
     let (mut size, mut sha) = hash(file).await?;
     let key = (sha.clone(), name.clone());
+    let lock = {
+        let mut locks = d.upload_locks.lock().unwrap();
+        locks.retain(|_, l| Arc::strong_count(l) > 1);
+        locks.entry(key.clone()).or_default().clone()
+    };
+    let _guard = lock.lock().await;
     if let Some((f, at)) = d.uploads.lock().unwrap().get(&key)
         && at.elapsed() < REUSE
     {
         info!(file = %f.id, "reusing an upload not sent yet");
         return Ok(f.clone());
+    }
+    // Tests of the early return in tools with a short call limit.
+    if crate::adapters::fault("slow-upload") {
+        tokio::time::sleep(Duration::from_secs(55)).await;
     }
     for attempt in 0..2 {
         if size > MAX_MESSAGE_FILE_BYTES {

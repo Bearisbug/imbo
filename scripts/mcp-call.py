@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Call one tool on `imbo mcp` over stdio and print the result.
 
-usage: mcp-call.py <IMBO_HOME> <tool> '<json args>' [--session claude-code:<id>|codex:<id>] [--hold SECONDS]
+usage: mcp-call.py <IMBO_HOME> <tool> '<json args>' [--session <kind>:<id>] [--hold SECONDS]
 
 The binary is $IMBO, or `imbo` on PATH. --session makes the call act as that
-session: Claude Code sessions through CLAUDE_CODE_SESSION_ID, Codex threads
-through the request's _meta, as the real tools do.
+session the way the real tool does: claude-code through
+CLAUDE_CODE_SESSION_ID; codex and zcode through the request's _meta; cursor
+and minimax-code through the imbo_session argument their hooks add (Cursor
+also names every tool with an imbo_ prefix).
 """
 import json
 import os
@@ -33,16 +35,29 @@ def main():
     params = json.loads(args[2]) if len(args) > 2 else {}
 
     env = dict(os.environ)
-    for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CODEX_THREAD_ID"):
+    for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CODEX_THREAD_ID",
+              "IMBO_HOST", "CURSOR_CONVERSATION_ID", "CURSOR_AGENT", "ZCODE_SESSION_ID", "ZCODE_RUNTIME_ENV",
+              "__MAVIS_MCODE_TOOLS_BROKER_ENDPOINT"):
         env.pop(k, None)
     env["IMBO_HOME"] = home
     meta = None
+    client = "mcp-call"
     if session:
         kind, _, sid = session.partition(":")
         if kind == "claude-code":
             env["CLAUDE_CODE_SESSION_ID"] = sid
         elif kind == "codex":
             meta = {"x-codex-turn-metadata": json.dumps({"thread_id": sid})}
+        elif kind == "zcode":
+            env["IMBO_HOST"] = kind
+            client = "zcode"
+            meta = {"com.zcode/request-context": {"session_id": sid, "runtime_scope": "local"}}
+        elif kind in ("cursor", "minimax-code"):
+            env["IMBO_HOST"] = kind
+            client = "Cursor" if kind == "cursor" else "mavis-local-runtime-mcp"
+            params["imbo_session"] = sid
+            if kind == "cursor":
+                tool = "imbo_" + tool
         else:
             sys.exit(f"unknown session kind {kind}")
 
@@ -63,7 +78,7 @@ def main():
                 return msg
 
     send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "mcp-call", "version": "0"}}})
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": client, "version": "0"}}})
     recv(1)
     send({"jsonrpc": "2.0", "method": "notifications/initialized"})
     if session and session.startswith("claude-code:"):

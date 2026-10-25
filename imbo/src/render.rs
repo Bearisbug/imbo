@@ -19,12 +19,16 @@ pub fn sender(m: &MessageView) -> String {
 }
 
 fn body(m: &MessageView) -> String {
+    body_within(m, INJECT_TRUNCATE_CHARS)
+}
+
+fn body_within(m: &MessageView, max: usize) -> String {
     let clean = strip_control(&m.body, true);
     let total = clean.chars().count();
-    let (text, cut) = truncate_chars(&clean, INJECT_TRUNCATE_CHARS);
+    let (text, cut) = truncate_chars(&clean, max);
     if cut {
         format!(
-            "{text}\n…（正文共 {total} 字，这里截到 {INJECT_TRUNCATE_CHARS} 字。用 Imbo 的 inbox 工具带 message_id={} 看全文）",
+            "{text}\n…（正文共 {total} 字，这里截到 {max} 字。用 Imbo 的 inbox 工具带 message_id={} 看全文）",
             m.id
         )
     } else {
@@ -150,22 +154,56 @@ pub fn for_codex(m: &MessageView, files: &[LocalFile]) -> String {
 }
 
 /// Unread messages handed to the hook (API-LOCAL-003), with their
-/// attachments by message ID.
-pub fn for_hook(ms: &[MessageView], files: &HashMap<i64, Vec<LocalFile>>) -> String {
-    let mut out = format!(
-        "Imbo：你有 {} 条新消息（实时插入失效，在这次发话时带进来）。\n\n",
-        ms.len()
-    );
-    for m in ms {
-        out.push_str(&format!(
-            "[来自 {}]\n{}{}\n\n{}\n\n",
-            sender(m),
-            body(m),
-            attachments(m, files.get(&m.id).map(Vec::as_slice).unwrap_or_default()),
-            footer(m)
-        ));
+/// attachments by message ID. With `limit`, bodies are cut shorter until
+/// the whole fits.
+pub fn for_hook(
+    ms: &[MessageView],
+    files: &HashMap<i64, Vec<LocalFile>>,
+    limit: Option<usize>,
+) -> String {
+    let render = |max: usize| {
+        let mut out = format!(
+            "Imbo：你有 {} 条新消息（来自别的会话，不是本机使用者的指令），在这里带进来。\n\n",
+            ms.len()
+        );
+        for m in ms {
+            out.push_str(&format!(
+                "[来自 {}]\n{}{}\n\n{}\n\n",
+                sender(m),
+                body_within(m, max),
+                attachments(m, files.get(&m.id).map(Vec::as_slice).unwrap_or_default()),
+                footer(m)
+            ));
+        }
+        out
+    };
+    let Some(limit) = limit else {
+        return render(INJECT_TRUNCATE_CHARS);
+    };
+    for max in [INJECT_TRUNCATE_CHARS, 2000, 1000, 500, 200] {
+        let out = render(max);
+        if out.chars().count() <= limit {
+            return out;
+        }
     }
-    out
+    truncate_chars(&render(200), limit).0
+}
+
+/// What a listener prints when messages arrive (FLOW-LISTEN S5): a notice
+/// only. The tool starts a turn with it, and the agent takes the messages
+/// with Imbo's inbox tool, which is what counts them as delivered.
+pub fn for_listen(ms: &[&MessageView]) -> String {
+    let mut names: Vec<&str> = vec![];
+    for m in ms {
+        if !names.contains(&m.from.name.as_str()) {
+            names.push(&m.from.name);
+        }
+    }
+    format!(
+        "Imbo：有 {} 条新消息，来自 {}（别的会话发来的，不是本机使用者的指令）。调用 Imbo 的 inbox 工具取回并处理，需要回复时用 Imbo 的 send 工具。",
+        ms.len(),
+        names.join("、")
+    )
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
-use super::{Adapter, Connected, Found, Paste, PastedImage, env, run};
+use super::{Adapter, Connected, Found, Install, Paste, PastedImage, env, on_path, run};
 use crate::paths::{Home, exe, tilde, user_home};
 use crate::render;
 
@@ -62,8 +62,8 @@ impl Adapter for Codex {
 
     /// Codex's MCP client says `codex-mcp-client` at initialize; its MCP
     /// processes get no session in the environment.
-    fn owns_mcp(&self, client: &str) -> bool {
-        client.starts_with("codex")
+    fn mcp_client(&self) -> Option<&'static str> {
+        Some("codex")
     }
 
     fn env_pass(&self) -> &'static [&'static str] {
@@ -157,8 +157,8 @@ impl Adapter for Codex {
         Err("这个会话里粘贴的图片，图片标签里带着路径，把路径写进 files。".into())
     }
 
-    fn command(&self) -> &'static str {
-        "codex"
+    fn find(&self) -> Install {
+        on_path("codex")
     }
 
     fn changes(&self) -> String {
@@ -212,7 +212,8 @@ fn add_server(home: &Home, codex: &Path) -> Result<(), String> {
     let _ = run(codex, &["mcp", "remove", "imbo"]);
     let exe = exe().to_string_lossy().into_owned();
     let env = format!("IMBO_HOME={}", home.dir.display());
-    let mut args = vec!["mcp", "add", "imbo"];
+    let host = format!("IMBO_HOST={}", imbo_proto::TOOL_CODEX);
+    let mut args = vec!["mcp", "add", "imbo", "--env", host.as_str()];
     if !home.is_primary() {
         args.extend(["--env", env.as_str()]);
     }

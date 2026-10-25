@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use imbo_proto::local::{LocalRequest, LocalResponse};
+use imbo_proto::local::{LocalRequest, LocalResponse, WaitReply};
 use imbo_proto::{ErrorCode, Problem};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -15,10 +15,29 @@ pub struct Local {
     pub home: Home,
 }
 
+/// How a listener ended (API-LOCAL-010).
+pub enum Heard {
+    /// Messages, handed to `show` and confirmed.
+    Messages,
+    /// Another listener already waits for this session.
+    Already,
+    /// Replaced, withdrawn, or the tool went away: nothing to show.
+    Nothing,
+}
+
 /// Acting session from the environment (ADR-008): a terminal command run
-/// inside an agent session acts as that session.
-pub fn env_actor() -> Option<String> {
-    crate::adapters::actor(&[])
+/// inside an agent session acts as that session. `Err` inside a tool's
+/// session that can't be told apart: the command must not act as the
+/// person (RULE-005).
+pub fn env_actor() -> Result<Option<String>, Problem> {
+    crate::adapters::terminal_actor().map_err(|tool| {
+        Problem::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "This command runs inside a {tool} session, but Imbo can't tell which one. Use Imbo's tools in that session instead."
+            ),
+        )
+    })
 }
 
 impl Local {
@@ -97,6 +116,76 @@ impl Local {
         match tokio::time::timeout(reply_within, reader.read_line(&mut buf)).await {
             Ok(Ok(n)) if n > 0 => serde_json::from_str(&buf).map_err(|_| lost()),
             _ => Err(lost()),
+        }
+    }
+
+    /// API-LOCAL-010: wait for the session's next messages, give them to
+    /// `show`, then confirm; `show` returns `false` when it didn't print
+    /// them, and nothing is confirmed. Registers again when the daemon
+    /// restarts, and ends quietly once the tool process `pid` is gone.
+    pub async fn listen(
+        &self,
+        tool: &str,
+        session_id: &str,
+        pid: Option<u32>,
+        show: impl FnOnce(&str) -> bool,
+    ) -> Result<Heard, Problem> {
+        let req = LocalRequest::Wait {
+            tool: tool.into(),
+            session_id: session_id.into(),
+            pid,
+        };
+        let mut line = serde_json::to_vec(&req).unwrap_or_default();
+        line.push(b'\n');
+        let gone = || pid.is_some_and(|p| !crate::procs::alive(p));
+        loop {
+            if gone() {
+                return Ok(Heard::Nothing);
+            }
+            let (r, mut w) = self
+                .connect_or_start(Duration::from_millis(1500))
+                .await?
+                .into_split();
+            let mut buf = String::new();
+            let got = w.write_all(&line).await.is_ok() && {
+                let mut reader = BufReader::new(r);
+                let read = reader.read_line(&mut buf);
+                tokio::pin!(read);
+                loop {
+                    tokio::select! {
+                        n = &mut read => break matches!(n, Ok(n) if n > 0),
+                        _ = tokio::time::sleep(Duration::from_secs(2)) => if gone() {
+                            return Ok(Heard::Nothing);
+                        },
+                    }
+                }
+            };
+            if !got {
+                // The daemon stopped, as in an upgrade: register again.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            let v: Value = serde_json::from_str(&buf).unwrap_or_default();
+            if v.get("ok") == Some(&Value::Bool(false)) {
+                let problem = serde_json::from_value::<LocalResponse>(v)
+                    .ok()
+                    .and_then(|r| r.problem);
+                return Err(problem.unwrap_or_else(|| {
+                    Problem::new(ErrorCode::Unavailable, "Unknown error from the daemon.")
+                }));
+            }
+            let reply: WaitReply = serde_json::from_value(v).unwrap_or_default();
+            if reply.already {
+                return Ok(Heard::Already);
+            }
+            let Some(text) = reply.text else {
+                return Ok(Heard::Nothing);
+            };
+            if !show(&text) {
+                return Ok(Heard::Nothing);
+            }
+            let _ = w.write_all(b"printed\n").await;
+            return Ok(Heard::Messages);
         }
     }
 

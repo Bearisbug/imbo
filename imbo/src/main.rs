@@ -9,6 +9,7 @@ mod local;
 mod mcp;
 mod net;
 mod paths;
+mod procs;
 mod render;
 mod service;
 mod ui;
@@ -21,7 +22,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     name = "imbo",
     version,
-    about = "Messages between Claude Code and Codex sessions, across people and computers.",
+    about = "Messages between AI agent sessions, across people and computers.",
     after_help = "Docs: https://imbo.dev"
 )]
 struct Cli {
@@ -31,7 +32,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Sign in, start the background daemon, and connect Claude Code and Codex.
+    /// Sign in, start the background daemon, and connect your AI coding tools.
     Setup(cli::setup::SetupArgs),
     /// Disconnect the tools, stop the daemon and sign this computer out.
     Uninstall(cli::setup::UninstallArgs),
@@ -79,9 +80,13 @@ enum Cmd {
     /// Run the MCP server for one agent session (started by the tool).
     #[command(hide = true)]
     Mcp,
-    /// Claude Code hook entry points.
+    /// Wait for this session's next messages (run in the background by
+    /// MiniMax Code and ZCode agents).
     #[command(hide = true)]
-    Hook { event: String },
+    Wait,
+    /// Hook entry points: `imbo hook prompt` (Claude Code), `imbo hook <tool> <event>`.
+    #[command(hide = true)]
+    Hook { args: Vec<String> },
     /// Development helpers.
     #[command(hide = true, subcommand)]
     Dev(cli::dev::DevCmd),
@@ -93,7 +98,7 @@ fn main() {
     let code = match cli.cmd {
         Cmd::Daemon => run_async(daemon::run()),
         Cmd::Mcp => run_current(mcp::run()),
-        Cmd::Hook { event } => run_current(adapters::claude::prompt_hook(event)),
+        Cmd::Hook { args } => run_current(cli::hook::hook(args)),
         cmd => {
             // Output piped into `head` or `grep -q`: end quietly when the reader
             // goes away instead of panicking on the next print (TC-048).
