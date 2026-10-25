@@ -1,6 +1,8 @@
 //! `imbo send` and `imbo inbox`.
 
-use imbo_proto::api::{InboxResponse, MessageResponse, MessageView, PullResponse, SendResponse};
+use imbo_proto::api::{
+    InboxItem, InboxResponse, MessageResponse, MessageView, PullResponse, SendResponse,
+};
 use imbo_proto::{ErrorCode, MAX_BODY_CHARS, TOOL_TERMINAL};
 use serde_json::json;
 
@@ -149,34 +151,37 @@ pub async fn inbox(id: Option<i64>, all: bool) -> anyhow::Result<()> {
     if !fresh.is_empty() {
         println!();
     }
-    let mut last: Option<uuid::Uuid> = None;
+    // One block per session (or the terminal inbox), in the order each first appears.
+    let mut groups: Vec<Vec<&InboxItem>> = vec![];
     for it in items {
-        if last != Some(it.agent.id) {
-            if last.is_some() {
-                println!();
-            }
-            if it.agent.tool == TOOL_TERMINAL {
-                println!("{}", ui::heading("Terminal inbox"));
-            } else {
-                println!(
-                    "{}  {}",
-                    ui::heading(&it.agent.title),
-                    ui::dim(format!(
-                        "{} · {}",
-                        tool_name(&it.agent.tool),
-                        it.agent.short_id
-                    ))
-                );
-            }
-            last = Some(it.agent.id);
+        match groups.iter_mut().find(|g| g[0].agent.id == it.agent.id) {
+            Some(g) => g.push(it),
+            None => groups.push(vec![it]),
         }
-        let state = match it.state.as_str() {
-            "delivered" if it.agent.tool == TOOL_TERMINAL => ui::dim("read"),
-            "delivered" => ui::s(ui::ok(), "delivered").to_string(),
-            "canceled" => ui::dim("canceled"),
-            _ => ui::s(ui::unread(), "waiting").to_string(),
-        };
-        print_message(&it.message, "  ", false, &state);
+    }
+    for (i, group) in groups.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let agent = &group[0].agent;
+        if agent.tool == TOOL_TERMINAL {
+            println!("{}", ui::heading("Terminal inbox"));
+        } else {
+            println!(
+                "{}  {}",
+                ui::heading(&agent.title),
+                ui::dim(format!("{} · {}", tool_name(&agent.tool), agent.short_id))
+            );
+        }
+        for it in group {
+            let state = match it.state.as_str() {
+                "delivered" if agent.tool == TOOL_TERMINAL => ui::dim("read"),
+                "delivered" => ui::s(ui::ok(), "delivered").to_string(),
+                "canceled" => ui::dim("canceled"),
+                _ => ui::s(ui::unread(), "waiting").to_string(),
+            };
+            print_message(&it.message, "  ", false, &state);
+        }
     }
     Ok(())
 }
