@@ -16,6 +16,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Through a proxy to the Hong Kong server the TLS handshake often takes 1–2 s.
+pub const TLS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct ApiResponse {
@@ -159,7 +161,8 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
     )
 }
 
-/// TCP (and TLS for https) to the server, both within `connect_timeout`.
+/// TCP to the server within `connect_timeout`, then TLS for https within
+/// `TLS_TIMEOUT`.
 /// Returns the stream and the `host:port` part of the URL.
 async fn open(server: &str, connect_timeout: Duration) -> Result<(Box<dyn Io>, String), String> {
     let (tls, rest) = if let Some(r) = server.strip_prefix("https://") {
@@ -176,27 +179,23 @@ async fn open(server: &str, connect_timeout: Duration) -> Result<(Box<dyn Io>, S
         }
         _ => (hostport.to_string(), if tls { 443 } else { 80 }),
     };
-    let connect = async {
-        let tcp = TcpStream::connect((host.as_str(), port))
-            .await
-            .map_err(|e| e.to_string())?;
-        tcp.set_nodelay(true).ok();
-        let stream: Box<dyn Io> = if tls {
-            let name =
-                rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
-            let conn = tokio_rustls::TlsConnector::from(tls_config())
-                .connect(name, tcp)
-                .await
-                .map_err(|e| format!("TLS: {e}"))?;
-            Box::new(conn)
-        } else {
-            Box::new(tcp)
-        };
-        Ok::<_, String>(stream)
-    };
-    let stream = tokio::time::timeout(connect_timeout, connect)
+    let tcp = tokio::time::timeout(connect_timeout, TcpStream::connect((host.as_str(), port)))
         .await
-        .map_err(|_| "connect timed out".to_string())??;
+        .map_err(|_| "connect timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    tcp.set_nodelay(true).ok();
+    let stream: Box<dyn Io> = if tls {
+        let name =
+            rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
+        let handshake = tokio_rustls::TlsConnector::from(tls_config()).connect(name, tcp);
+        let conn = tokio::time::timeout(TLS_TIMEOUT, handshake)
+            .await
+            .map_err(|_| "TLS handshake timed out".to_string())?
+            .map_err(|e| format!("TLS: {e}"))?;
+        Box::new(conn)
+    } else {
+        Box::new(tcp)
+    };
     Ok((stream, hostport.to_string()))
 }
 
