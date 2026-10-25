@@ -13,7 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
 use super::D;
-use crate::adapters::Registration;
+use crate::adapters::{self, Registration};
 use crate::net;
 use crate::paths::Home;
 
@@ -81,7 +81,9 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
                 messaging_token,
                 pid,
             };
-            d.sessions.lock().unwrap().register(&tool, r);
+            if !d.sessions.lock().unwrap().register(&tool, r) {
+                return unknown_tool(&tool);
+            }
             d.flush_presence();
             LocalResponse::ok(200, Value::Null, None)
         }
@@ -151,6 +153,14 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
     }
 }
 
+/// A tool without an adapter: refused rather than guessed (ADR-016).
+fn unknown_tool(tool: &str) -> LocalResponse {
+    LocalResponse::err(Problem::new(
+        ErrorCode::InvalidRequest,
+        format!("Imbo doesn't know the tool `{tool}`."),
+    ))
+}
+
 /// Make sure the acting session is known and online before the server is
 /// asked to act as it.
 fn ensure_session(d: &D, actor: &str) {
@@ -177,6 +187,12 @@ async fn call(
     body: Option<Value>,
     actor: Option<String>,
 ) -> LocalResponse {
+    if let Some(a) = &actor {
+        let tool = a.split_once(':').map_or(a.as_str(), |(t, _)| t);
+        if adapters::get(tool).is_none() {
+            return unknown_tool(tool);
+        }
+    }
     let Some(creds) = d.creds() else {
         return LocalResponse::err(Problem::new(
             ErrorCode::NotLoggedIn,
