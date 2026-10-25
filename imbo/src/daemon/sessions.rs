@@ -1,37 +1,14 @@
 //! Which agent sessions are open on this computer.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use imbo_proto::frames::PresenceItem;
 use imbo_proto::local::LocalSession;
 use imbo_proto::text::{clean_title, short_id};
-use imbo_proto::{TOOL_CLAUDE, TOOL_CODEX};
 
-use crate::adapters::{claude, codex};
-
-/// Inserts that may fail in a row before a Claude Code session falls back to
-/// the prompt hook (FLOW-DELIVER).
-pub const MAX_INJECT_FAILURES: u32 = 3;
-/// A Codex session seen only through its own tool calls stays online this long.
-const ADOPTED_TTL: Duration = Duration::from_secs(30 * 60);
+use crate::adapters::{self, Found, Registration};
 
 pub type Key = (String, String);
-
-#[derive(Debug, Clone)]
-pub enum Kind {
-    Claude {
-        pid: u32,
-        socket: Option<String>,
-        token: Option<String>,
-        failures: u32,
-    },
-    Codex {
-        loaded: bool,
-        adopted_at: Option<Instant>,
-    },
-    Fake,
-}
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -39,23 +16,16 @@ pub struct Entry {
     pub session_id: String,
     pub title: String,
     pub online: bool,
-    pub kind: Kind,
+    /// Pinned by API-LOCAL-007 with no live tool behind it.
+    pub fake: bool,
 }
 
 impl Entry {
     /// How messages reach this session right now.
     pub fn channel(&self) -> &'static str {
-        match &self.kind {
-            Kind::Claude {
-                socket: Some(_),
-                token: Some(_),
-                failures,
-                ..
-            } if *failures < MAX_INJECT_FAILURES => "inject",
-            Kind::Claude { .. } => "prompt_hook",
-            Kind::Codex { loaded: true, .. } => "inject",
-            Kind::Codex { .. } => "queue",
-            Kind::Fake => "none",
+        match adapters::get(&self.tool) {
+            Some(a) if !self.fake => a.channel(&self.session_id),
+            _ => "none",
         }
     }
 
@@ -81,91 +51,49 @@ impl Sessions {
         self.map.get(key)
     }
 
-    pub fn get_mut(&mut self, key: &Key) -> Option<&mut Entry> {
-        self.map.get_mut(key)
+    /// What an adapter found, kept as a real session; an empty title keeps
+    /// the one already known.
+    fn put(&mut self, tool: &str, f: Found) {
+        let key = (tool.to_string(), f.session_id.clone());
+        let e = self.map.entry(key).or_insert_with(|| Entry {
+            tool: tool.into(),
+            session_id: f.session_id,
+            title: String::new(),
+            online: f.online,
+            fake: false,
+        });
+        e.fake = false;
+        e.online = f.online;
+        if !f.title.is_empty() {
+            e.title = f.title;
+        }
     }
 
-    /// API-LOCAL-001 from a Claude Code session's MCP process.
-    pub fn register_claude(
-        &mut self,
-        session_id: &str,
-        pid: u32,
-        socket: Option<String>,
-        token: Option<String>,
-    ) {
-        let title = claude::title(pid, session_id).unwrap_or_default();
-        let key = (TOOL_CLAUDE.to_string(), session_id.to_string());
-        let entry = self.map.entry(key).or_insert_with(|| Entry {
-            tool: TOOL_CLAUDE.into(),
-            session_id: session_id.into(),
-            title: String::new(),
-            online: true,
-            kind: Kind::Fake,
-        });
-        let failures = match &entry.kind {
-            Kind::Claude {
-                pid: p,
-                socket: s,
-                token: t,
-                failures,
-            } if *p == pid && *s == socket && *t == token => *failures,
-            _ => 0,
+    /// API-LOCAL-001. `false` when the tool has no adapter.
+    pub fn register(&mut self, tool: &str, r: Registration) -> bool {
+        let Some(a) = adapters::get(tool) else {
+            return false;
         };
-        entry.kind = Kind::Claude {
-            pid,
-            socket,
-            token,
-            failures,
-        };
-        entry.online = claude::alive(pid);
-        if !title.is_empty() {
-            entry.title = title;
+        if let Some(f) = a.register(r) {
+            self.put(tool, f);
         }
+        true
     }
 
     /// A session that called us but isn't known (CLI inside a session, or a
-    /// Codex session outside the shared app-server).
+    /// Codex session outside the shared app-server). Returns whether it is
+    /// online now.
     pub fn adopt(&mut self, tool: &str, session_id: &str) -> bool {
         let key = (tool.to_string(), session_id.to_string());
-        if let Some(e) = self.map.get_mut(&key) {
-            if let Kind::Codex { adopted_at, .. } = &mut e.kind {
-                *adopted_at = Some(Instant::now());
-                e.online = true;
-            }
+        if let Some(e) = self.map.get(&key).filter(|e| e.fake) {
             return e.online;
         }
-        let entry = match tool {
-            TOOL_CLAUDE => {
-                let Some(pid) = claude::pid_for(session_id) else {
-                    return false;
-                };
-                Entry {
-                    tool: tool.into(),
-                    session_id: session_id.into(),
-                    title: claude::title(pid, session_id).unwrap_or_default(),
-                    online: true,
-                    kind: Kind::Claude {
-                        pid,
-                        socket: None,
-                        token: None,
-                        failures: 0,
-                    },
-                }
-            }
-            TOOL_CODEX => Entry {
-                tool: tool.into(),
-                session_id: session_id.into(),
-                title: String::new(),
-                online: true,
-                kind: Kind::Codex {
-                    loaded: false,
-                    adopted_at: Some(Instant::now()),
-                },
-            },
-            _ => return false,
+        let Some(f) = adapters::get(tool).and_then(|a| a.adopt(session_id)) else {
+            return self.map.get(&key).is_some_and(|e| e.online);
         };
-        self.map.insert(key, entry);
-        true
+        let online = f.online;
+        self.put(tool, f);
+        online
     }
 
     pub fn set_fake(&mut self, tool: &str, session_id: &str, title: &str, remove: bool) {
@@ -183,53 +111,22 @@ impl Sessions {
                 session_id: session_id.into(),
                 title: title.into(),
                 online: true,
-                kind: Kind::Fake,
+                fake: true,
             },
         );
     }
 
-    /// Re-check Claude Code processes and titles.
-    pub fn refresh_claude(&mut self) {
+    /// A tool's discovery result: its sessions not in `found` are closed.
+    pub fn apply(&mut self, tool: &str, found: Vec<Found>) {
         for e in self.map.values_mut() {
-            if let Kind::Claude { pid, .. } = e.kind {
-                e.online = claude::alive(pid);
-                if e.online
-                    && let Some(t) = claude::title(pid, &e.session_id)
-                {
-                    e.title = t;
-                }
+            if e.tool == tool && !e.fake {
+                e.online = false;
             }
         }
-    }
-
-    /// Apply the shared app-server's loaded threads (`None`: app-server not running).
-    pub fn apply_codex(&mut self, threads: Option<Vec<codex::Thread>>) {
-        let threads = threads.unwrap_or_default();
-        let now = Instant::now();
-        for e in self.map.values_mut() {
-            if let Kind::Codex { loaded, adopted_at } = &mut e.kind {
-                *loaded = false;
-                e.online = adopted_at.is_some_and(|t| now.duration_since(t) < ADOPTED_TTL);
-            }
-        }
-        for t in threads {
-            let key = (TOOL_CODEX.to_string(), t.id.clone());
-            let e = self.map.entry(key).or_insert_with(|| Entry {
-                tool: TOOL_CODEX.into(),
-                session_id: t.id.clone(),
-                title: String::new(),
-                online: true,
-                kind: Kind::Codex {
-                    loaded: true,
-                    adopted_at: None,
-                },
-            });
-            if let Kind::Codex { loaded, .. } = &mut e.kind {
-                *loaded = true;
-            }
-            e.online = true;
-            if !t.title.is_empty() {
-                e.title = t.title;
+        for f in found {
+            let key = (tool.to_string(), f.session_id.clone());
+            if !self.map.get(&key).is_some_and(|e| e.fake) {
+                self.put(tool, f);
             }
         }
     }
@@ -297,5 +194,37 @@ impl Sessions {
             .collect();
         v.sort_by(|a, b| (b.online, &a.tool, &a.title).cmp(&(a.online, &b.tool, &b.title)));
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn found(id: &str, title: &str) -> Found {
+        Found {
+            session_id: id.into(),
+            title: title.into(),
+            online: true,
+        }
+    }
+
+    #[test]
+    fn discovery_closes_missing_sessions_and_leaves_pinned_ones() {
+        let key = |id: &str| ("codex".to_string(), id.to_string());
+        let mut s = Sessions::default();
+        s.set_fake("codex", "pin", "pinned", false);
+        s.apply("codex", vec![found("a", "Alpha"), found("b", "Beta")]);
+        assert_eq!(s.changes().len(), 3);
+
+        s.apply("codex", vec![found("a", "")]);
+        let a = s.get(&key("a")).unwrap();
+        assert_eq!((a.title.as_str(), a.online), ("Alpha", true));
+        assert!(s.get(&key("pin")).unwrap().online);
+        assert_eq!(s.get(&key("pin")).unwrap().channel(), "none");
+        let gone = s.changes();
+        assert_eq!(gone.len(), 1);
+        assert_eq!((gone[0].session_id.as_str(), gone[0].online), ("b", false));
+        assert!(s.get(&key("b")).is_none());
     }
 }

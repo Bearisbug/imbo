@@ -2,24 +2,46 @@
 //! Busy sessions get `turn/steer`, idle ones `turn/start`; sessions not on
 //! the shared app-server get `codex queue`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
+use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
+use imbo_proto::api::MessageView;
+use imbo_proto::local::LocalFile;
 use serde_json::{Map, Value, json};
 use tokio::net::UnixStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
+use tracing::{info, warn};
 
-use super::{Adapter, Paste, PastedImage, env};
+use super::{Adapter, Found, Paste, PastedImage, env};
 use crate::paths::user_home;
+use crate::render;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// A session seen only through its own tool calls stays online this long.
+const ADOPTED_TTL: Duration = Duration::from_secs(30 * 60);
 
-pub static CODEX: Codex = Codex;
+pub static CODEX: Codex = Codex {
+    state: Mutex::new(State {
+        adopted: BTreeMap::new(),
+        loaded: BTreeSet::new(),
+    }),
+};
 
-pub struct Codex;
+pub struct Codex {
+    state: Mutex<State>,
+}
+
+struct State {
+    /// Threads that called the daemon, and when they last did.
+    adopted: BTreeMap<String, Instant>,
+    /// Threads loaded in the shared app-server at the last discovery.
+    loaded: BTreeSet<String>,
+}
 
 impl Adapter for Codex {
     fn id(&self) -> &'static str {
@@ -50,6 +72,77 @@ impl Adapter for Codex {
 
     fn env_session(&self) -> &'static [&'static str] {
         &["CODEX_THREAD_ID"]
+    }
+
+    /// A thread outside the shared app-server, seen through its own calls.
+    fn adopt(&self, session_id: &str) -> Option<Found> {
+        let mut st = self.state.lock().unwrap();
+        st.adopted.insert(session_id.into(), Instant::now());
+        Some(Found {
+            session_id: session_id.into(),
+            title: String::new(),
+            online: true,
+        })
+    }
+
+    fn poll_every(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    /// Threads loaded in the shared app-server, plus threads that called
+    /// within `ADOPTED_TTL`.
+    fn discover(&self) -> BoxFuture<'_, Result<Vec<Found>, String>> {
+        Box::pin(async move {
+            let threads = loaded_threads().await?.unwrap_or_default();
+            let mut st = self.state.lock().unwrap();
+            st.adopted.retain(|_, t| t.elapsed() < ADOPTED_TTL);
+            st.loaded = threads.iter().map(|t| t.id.clone()).collect();
+            let mut list: Vec<Found> = st
+                .adopted
+                .keys()
+                .filter(|id| !st.loaded.contains(*id))
+                .map(|id| Found {
+                    session_id: id.clone(),
+                    title: String::new(),
+                    online: true,
+                })
+                .collect();
+            list.extend(threads.into_iter().map(|t| Found {
+                session_id: t.id,
+                title: t.title,
+                online: true,
+            }));
+            Ok(list)
+        })
+    }
+
+    fn channel(&self, session_id: &str) -> &'static str {
+        if self.state.lock().unwrap().loaded.contains(session_id) {
+            "inject"
+        } else {
+            "queue"
+        }
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        session_id: &'a str,
+        m: &'a MessageView,
+        files: &'a [LocalFile],
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let text = render::for_codex(m, files);
+            match deliver(session_id, &text).await {
+                Ok(how) => {
+                    info!(msg = m.id, session = %session_id, how, "delivered into Codex session");
+                    Ok(())
+                }
+                Err(e) => {
+                    warn!(msg = m.id, session = %session_id, error = %e, "codex delivery failed");
+                    Err(e)
+                }
+            }
+        })
     }
 
     fn paste(&self) -> Paste {
@@ -185,7 +278,7 @@ impl Rpc {
 }
 
 #[derive(Debug, Clone)]
-pub struct Thread {
+struct Thread {
     pub id: String,
     pub title: String,
 }
@@ -207,7 +300,7 @@ fn index_titles() -> HashMap<String, String> {
 
 /// Top-level threads loaded in the shared app-server, with titles.
 /// `Ok(None)` when the app-server isn't running.
-pub async fn loaded_threads() -> Result<Option<Vec<Thread>>, String> {
+async fn loaded_threads() -> Result<Option<Vec<Thread>>, String> {
     if !socket_path().exists() {
         return Ok(None);
     }
@@ -245,8 +338,8 @@ pub async fn loaded_threads() -> Result<Option<Vec<Thread>>, String> {
 }
 
 /// Deliver into one thread. Returns how ("steer", "start" or "queue").
-pub async fn deliver(thread: &str, text: &str) -> Result<&'static str, String> {
-    if super::fault("codex") {
+async fn deliver(thread: &str, text: &str) -> Result<&'static str, String> {
+    if super::fault(imbo_proto::TOOL_CODEX) {
         return Err("fault injected".into());
     }
     let input = json!([{ "type": "text", "text": text, "text_elements": [] }]);

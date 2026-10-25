@@ -18,10 +18,9 @@ use tokio::sync::{Notify, mpsc};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::adapters::{claude, codex};
+use crate::adapters;
 use crate::paths::{Credentials, Home};
-use crate::render;
-use sessions::{Key, Kind, MAX_INJECT_FAILURES, Sessions};
+use sessions::{Key, Sessions};
 
 #[derive(Default)]
 pub struct LinkState {
@@ -143,61 +142,18 @@ impl Daemon {
                 self.nack(&d, "session-offline");
                 continue;
             };
-            match entry.kind {
-                Kind::Claude {
-                    socket: Some(sock),
-                    token: Some(tok),
-                    failures,
-                    ..
-                } if failures < MAX_INJECT_FAILURES => {
-                    let files = self.download(&d).await;
-                    let text = render::for_claude(&d.message, &files);
-                    let mut last_err = String::new();
-                    let mut done = false;
-                    for attempt in 0..MAX_INJECT_FAILURES {
-                        match claude::inject(&sock, &tok, &text).await {
-                            Ok(()) => {
-                                done = true;
-                                break;
-                            }
-                            Err(e) => {
-                                warn!(msg = d.message.id, session = %key.1, attempt = attempt + 1, error = %e, "claude insert failed");
-                                last_err = e;
-                                tokio::time::sleep(Duration::from_millis(300)).await;
-                            }
-                        }
-                    }
-                    let mut sessions = self.sessions.lock().unwrap();
-                    if let Some(e) = sessions.get_mut(&key)
-                        && let Kind::Claude { failures, .. } = &mut e.kind
-                    {
-                        *failures = if done { 0 } else { MAX_INJECT_FAILURES };
-                    }
-                    drop(sessions);
-                    if done {
-                        info!(msg = d.message.id, session = %key.1, "inserted into Claude Code session");
-                        self.ack(&d, "inject");
-                    } else {
-                        warn!(session = %key.1, "insert failed 3 times; this session now gets messages through the prompt hook");
-                        self.nack(&d, &format!("inject-failed: {last_err}"));
-                    }
-                }
-                Kind::Claude { .. } => self.nack(&d, "prompt-hook-fallback"),
-                Kind::Codex { .. } => {
-                    let files = self.download(&d).await;
-                    let text = render::for_codex(&d.message, &files);
-                    match codex::deliver(&key.1, &text).await {
-                        Ok(how) => {
-                            info!(msg = d.message.id, session = %key.1, how, "delivered into Codex session");
-                            self.ack(&d, "inject");
-                        }
-                        Err(e) => {
-                            warn!(msg = d.message.id, session = %key.1, error = %e, "codex delivery failed");
-                            self.nack(&d, &format!("inject-failed: {e}"));
-                        }
-                    }
-                }
-                Kind::Fake => self.nack(&d, "no-channel"),
+            let Some(tool) = adapters::get(&key.0).filter(|_| !entry.fake) else {
+                self.nack(&d, "no-channel");
+                continue;
+            };
+            if let Err(reason) = tool.ready(&key.1) {
+                self.nack(&d, reason);
+                continue;
+            }
+            let files = self.download(&d).await;
+            match tool.deliver(&key.1, &d.message, &files).await {
+                Ok(()) => self.ack(&d, "inject"),
+                Err(e) => self.nack(&d, &format!("inject-failed: {e}")),
             }
         }
     }
@@ -273,23 +229,26 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Session discovery: Claude Code every 2.5 s, Codex every 5 s, and right
-/// after a registration.
+/// Session discovery: each tool as often as its adapter asks, counted in
+/// ticks of 2.5 s.
 async fn monitor(d: D) {
+    const TICK: Duration = Duration::from_millis(2500);
     let mut tick: u64 = 0;
     loop {
-        let codex_due = tick.is_multiple_of(2);
-        tick += 1;
-        d.sessions.lock().unwrap().refresh_claude();
-        if codex_due {
-            match codex::loaded_threads().await {
-                Ok(threads) => d.sessions.lock().unwrap().apply_codex(threads),
-                Err(e) => warn!(error = %e, "codex discovery failed"),
+        for a in adapters::all() {
+            let every = (a.poll_every().as_millis() / TICK.as_millis()).max(1) as u64;
+            if !tick.is_multiple_of(every) {
+                continue;
+            }
+            match a.discover().await {
+                Ok(found) => d.sessions.lock().unwrap().apply(a.id(), found),
+                Err(e) => warn!(tool = a.id(), error = %e, "session discovery failed"),
             }
         }
+        tick += 1;
         d.flush_presence();
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(2500)) => {}
+            _ = tokio::time::sleep(TICK) => {}
             _ = d.presence_dirty.notified() => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }

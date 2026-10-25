@@ -5,6 +5,11 @@
 pub mod claude;
 pub mod codex;
 
+use std::time::Duration;
+
+use futures::future::BoxFuture;
+use imbo_proto::api::MessageView;
+use imbo_proto::local::LocalFile;
 use serde_json::{Map, Value};
 
 /// Every tool Imbo works with. A session is recognised by the first
@@ -35,6 +40,14 @@ pub struct Registration {
     pub messaging_socket: Option<String>,
     pub messaging_token: Option<String>,
     pub pid: u32,
+}
+
+/// A session an adapter knows of.
+pub struct Found {
+    pub session_id: String,
+    /// Empty when the tool has no title for it (yet).
+    pub title: String,
+    pub online: bool,
 }
 
 /// How an agent hands over pictures pasted into its session (ADR-014). The
@@ -90,6 +103,40 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    /// API-LOCAL-001 in the daemon; `None` when the session can't be found.
+    fn register(&self, r: Registration) -> Option<Found> {
+        self.adopt(&r.session_id)
+    }
+
+    /// A session that called the daemon before discovery found it; `None`
+    /// when the session can't be found.
+    fn adopt(&self, session_id: &str) -> Option<Found>;
+
+    /// How often the daemon runs `discover`.
+    fn poll_every(&self) -> Duration;
+
+    /// Every session of this tool the daemon should know of, with titles.
+    /// Sessions left out count as closed; an error keeps the last list.
+    fn discover(&self) -> BoxFuture<'_, Result<Vec<Found>, String>>;
+
+    /// How messages reach the session now, for `imbo status`: `inject`,
+    /// `prompt_hook` or `queue`.
+    fn channel(&self, session_id: &str) -> &'static str;
+
+    /// `Err(reason)` when messages can't be put into the session now; the
+    /// delivery goes back to the server with that reason.
+    fn ready(&self, _session_id: &str) -> Result<(), &'static str> {
+        Ok(())
+    }
+
+    /// Put a message into the session, written the way this tool shows it.
+    fn deliver<'a>(
+        &'a self,
+        session_id: &'a str,
+        m: &'a MessageView,
+        files: &'a [LocalFile],
+    ) -> BoxFuture<'a, Result<(), String>>;
+
     fn paste(&self) -> Paste;
 
     /// Picture `[Image #n]` pasted into the session; the error is for the
@@ -97,8 +144,9 @@ pub trait Adapter: Send + Sync {
     fn pasted_image(&self, session_id: &str, n: u32) -> Result<PastedImage, String>;
 }
 
-/// `IMBO_FAULT_INJECT=claude,codex` makes inserts fail and `download` makes
-/// attachment downloads fail (tests of the fallbacks).
+/// `IMBO_FAULT_INJECT=claude-code,codex` (tool IDs) makes those tools'
+/// inserts fail and `download` makes attachment downloads fail (tests of
+/// the fallbacks).
 pub fn fault(tool: &str) -> bool {
     std::env::var("IMBO_FAULT_INJECT")
         .map(|v| v.split(',').any(|t| t.trim() == tool))

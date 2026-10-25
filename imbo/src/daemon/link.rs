@@ -67,11 +67,7 @@ pub async fn run(d: D) {
 async fn session(d: &D, ws: crate::net::Ws) {
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientFrame>();
-    let hello = {
-        let mut s = d.sessions.lock().unwrap();
-        s.refresh_claude();
-        s.hello()
-    };
+    let hello = d.sessions.lock().unwrap().hello();
     let n = hello.len();
     let frame = ClientFrame::Hello {
         client_version: crate::VERSION.into(),

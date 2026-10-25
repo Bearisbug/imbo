@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use imbo_proto::api::PullResponse;
 use imbo_proto::local::{DaemonStatus, LocalRequest, LocalResponse};
-use imbo_proto::{ErrorCode, Problem, TOOL_CLAUDE};
+use imbo_proto::{ErrorCode, Problem};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
 use super::D;
+use crate::adapters::Registration;
 use crate::net;
 use crate::paths::Home;
 
@@ -74,14 +75,13 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             messaging_token,
             pid,
         } => {
-            {
-                let mut s = d.sessions.lock().unwrap();
-                if tool == TOOL_CLAUDE {
-                    s.register_claude(&session_id, pid, messaging_socket, messaging_token);
-                } else {
-                    s.adopt(&tool, &session_id);
-                }
-            }
+            let r = Registration {
+                session_id,
+                messaging_socket,
+                messaging_token,
+                pid,
+            };
+            d.sessions.lock().unwrap().register(&tool, r);
             d.flush_presence();
             LocalResponse::ok(200, Value::Null, None)
         }

@@ -5,7 +5,6 @@ mod adapters;
 mod cli;
 mod daemon;
 mod files;
-mod hook;
 mod local;
 mod mcp;
 mod net;
@@ -94,7 +93,7 @@ fn main() {
     let code = match cli.cmd {
         Cmd::Daemon => run_async(daemon::run()),
         Cmd::Mcp => run_current(mcp::run()),
-        Cmd::Hook { event } => run_current(hook::run(event)),
+        Cmd::Hook { event } => run_current(adapters::claude::prompt_hook(event)),
         cmd => {
             // Output piped into `head` or `grep -q`: end quietly when the reader
             // goes away instead of panicking on the next print (TC-048).
