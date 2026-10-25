@@ -228,6 +228,9 @@ pub struct SendResponse {
     pub message_id: MessageId,
     pub conversation: ConversationRef,
     pub recipients: u32,
+    /// Went to the peer's terminal inbox instead of a session.
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 /// Who sent a message, as determined by the server.

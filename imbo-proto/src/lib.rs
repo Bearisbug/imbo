@@ -18,6 +18,8 @@ pub const HEADER_REQUEST_ID: &str = "imbo-request-id";
 
 pub const TOOL_CLAUDE: &str = "claude-code";
 pub const TOOL_CODEX: &str = "codex";
+/// The account's terminal inbox (ADR-010): an `agents` row that is never online.
+pub const TOOL_TERMINAL: &str = "terminal";
 
 /// Body limits from the data dictionary.
 pub const MAX_BODY_CHARS: usize = 32_000;

@@ -8,7 +8,7 @@ use imbo_proto::api::{
     PullResponse, SendResponse,
 };
 use imbo_proto::text::{Address, parse_address};
-use imbo_proto::{Candidate, ErrorCode, MAX_BODY_CHARS};
+use imbo_proto::{Candidate, ErrorCode, MAX_BODY_CHARS, TOOL_TERMINAL};
 use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -99,12 +99,44 @@ async fn my_groups(db: &PgPool, me: i32) -> Result<Vec<GroupRef>, sqlx::Error> {
 
 async fn agents_of(db: &PgPool, account: i32) -> Result<Vec<AgentRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, short_id, title, tool, online FROM agents WHERE account_id = $1
+        "SELECT id, short_id, title, tool, online FROM agents WHERE account_id = $1 AND tool <> 'terminal'
          ORDER BY online DESC, last_online_at DESC NULLS LAST",
     )
     .bind(account)
     .fetch_all(db)
     .await
+}
+
+/// The account's terminal inbox row (ADR-010), created on first use.
+async fn terminal_of(db: &PgPool, account: i32) -> Result<AgentRow, sqlx::Error> {
+    sqlx::query_as(
+        "INSERT INTO agents (id, account_id, tool, session_id, short_id, title)
+         VALUES ($1, $2, $3, $3, $3, $3)
+         ON CONFLICT (account_id, tool, session_id) DO UPDATE SET online = false
+         RETURNING id, short_id, title, tool, online",
+    )
+    .bind(Uuid::now_v7())
+    .bind(account)
+    .bind(TOOL_TERMINAL)
+    .fetch_one(db)
+    .await
+}
+
+/// `who` matched no contact; an existing 8-digit account ID means "not a contact".
+async fn not_contact(db: &PgPool, who: &str) -> Result<Option<ApiError>, sqlx::Error> {
+    if who.len() != 8 || !who.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(None);
+    }
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1)")
+        .bind(who.parse::<i32>().unwrap_or_default())
+        .fetch_one(db)
+        .await?;
+    Ok(exists.then(|| {
+        err(
+            ErrorCode::NotContact,
+            format!("{who} is not your contact. Add them first."),
+        )
+    }))
 }
 
 fn by_name<'a>(contacts: &'a [AccountRef], who: &str) -> Vec<&'a AccountRef> {
@@ -160,19 +192,8 @@ async fn resolve(db: &PgPool, me: i32, to: &str) -> ApiResult<Target> {
             let peer = match matched.as_slice() {
                 [one] => (*one).clone(),
                 [] => {
-                    if who.len() == 8 && who.chars().all(|c| c.is_ascii_digit()) {
-                        let exists: bool = sqlx::query_scalar(
-                            "SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1)",
-                        )
-                        .bind(who.parse::<i32>().unwrap_or_default())
-                        .fetch_one(db)
-                        .await?;
-                        if exists {
-                            return Err(err(
-                                ErrorCode::NotContact,
-                                format!("{who} is not your contact. Add them first."),
-                            ));
-                        }
+                    if let Some(e) = not_contact(db, &who).await? {
+                        return Err(e);
                     }
                     return Err(err(
                         ErrorCode::RecipientNotFound,
@@ -249,23 +270,22 @@ async fn resolve(db: &PgPool, me: i32, to: &str) -> ApiResult<Target> {
             let people: Vec<AccountRef> = by_name(&contacts, &name).into_iter().cloned().collect();
             match (groups.len(), people.len()) {
                 (1, 0) => Ok(Target::Group(groups.into_iter().next().unwrap())),
-                (0, 0) => Err(err(
-                    ErrorCode::RecipientNotFound,
-                    format!(
-                        "No group or contact called {name}. Contacts take name/session; groups take their name or #ID."
-                    ),
-                )),
+                (0, 0) => {
+                    if let Some(e) = not_contact(db, &name).await? {
+                        return Err(e);
+                    }
+                    Err(err(
+                        ErrorCode::RecipientNotFound,
+                        format!(
+                            "No group or contact called {name}. Contacts take name or name/session; groups take their name or #ID."
+                        ),
+                    ))
+                }
+                // Account only: the peer's terminal inbox (ADR-010).
                 (0, 1) => {
                     let peer = people.into_iter().next().unwrap();
-                    let agents = agents_of(db, peer.id).await?;
-                    Err(err(
-                        ErrorCode::SessionRequired,
-                        format!(
-                            "Say which of {}'s sessions should get it: {}/<session>.",
-                            peer.name, peer.name
-                        ),
-                    )
-                    .candidates(session_candidates(&peer, &agents)))
+                    let agent = terminal_of(db, peer.id).await?;
+                    Ok(Target::Direct { peer, agent })
                 }
                 _ => {
                     let mut c: Vec<Candidate> = groups.iter().map(group_candidate).collect();
@@ -290,16 +310,19 @@ async fn existing_result(st: &St, me: i32, client_msg_id: &str) -> ApiResult<Opt
     .fetch_optional(&st.db)
     .await?;
     let Some((id, _)) = row else { return Ok(None) };
-    let recipients: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM deliveries WHERE message_id = $1")
-            .bind(id)
-            .fetch_one(&st.db)
-            .await?;
+    let (recipients, terminal): (i64, bool) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE a.tool <> 'terminal'), coalesce(bool_or(a.tool = 'terminal'), false)
+         FROM deliveries d JOIN agents a ON a.id = d.agent_id WHERE d.message_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
     let view = views::messages(&st.db, &[id], me).await?.into_iter().next();
     Ok(view.map(|v| SendResponse {
         message_id: id,
         conversation: v.conversation,
         recipients: recipients as u32,
+        terminal,
     }))
 }
 
@@ -452,6 +475,7 @@ pub async fn send(
         Target::Direct { agent, .. } => Some(agent.id),
         Target::Group(_) => None,
     };
+    let terminal = matches!(&target, Target::Direct { agent, .. } if agent.tool == TOOL_TERMINAL);
     let message_id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO messages (conversation_id, from_account, from_agent_id, to_agent_id, body, client_msg_id)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -489,7 +513,8 @@ pub async fn send(
         Json(SendResponse {
             message_id,
             conversation,
-            recipients: recipients.len() as u32,
+            recipients: if terminal { 0 } else { recipients.len() as u32 },
+            terminal,
         }),
     ))
 }
@@ -562,22 +587,21 @@ pub async fn pull(
     Extension(c): Extension<Caller>,
     Query(q): Query<PullQuery>,
 ) -> ApiResult<Json<PullResponse>> {
-    let Some(actor) = &c.actor else {
-        return Err(err(
-            ErrorCode::Forbidden,
-            "Only an agent session can pull its unread messages.",
-        ));
-    };
     let via = if q.via.as_deref() == Some("prompt_hook") {
         "prompt_hook"
     } else {
         "pull"
     };
+    // An agent takes its own unread; the person takes the terminal inbox.
     let ids: Vec<i64> = sqlx::query_scalar(
-        "UPDATE deliveries SET state = 'delivered', delivered_at = now(), via = $2
-         WHERE agent_id = $1 AND state IN ('pending', 'pushed') RETURNING message_id",
+        "UPDATE deliveries d SET state = 'delivered', delivered_at = now(), via = $3
+         FROM agents a
+         WHERE a.id = d.agent_id AND d.state IN ('pending', 'pushed')
+           AND (a.id = $1 OR ($1 IS NULL AND a.account_id = $2 AND a.tool = 'terminal'))
+         RETURNING d.message_id",
     )
-    .bind(actor.id)
+    .bind(c.actor.as_ref().map(|a| a.id))
+    .bind(c.account_id)
     .bind(via)
     .fetch_all(&st.db)
     .await?;

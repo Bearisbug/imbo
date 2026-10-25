@@ -25,12 +25,13 @@ async fn owned_sessions(st: &St, c: &Caller, ids: &[Uuid]) -> ApiResult<Vec<Uuid
     if want.is_empty() {
         return Ok(want);
     }
-    let owned: Vec<Uuid> =
-        sqlx::query_scalar("SELECT id FROM agents WHERE account_id = $1 AND id = ANY($2)")
-            .bind(c.account_id)
-            .bind(&want)
-            .fetch_all(&st.db)
-            .await?;
+    let owned: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM agents WHERE account_id = $1 AND id = ANY($2) AND tool <> 'terminal'",
+    )
+    .bind(c.account_id)
+    .bind(&want)
+    .fetch_all(&st.db)
+    .await?;
     if owned.len() != want.len() {
         return Err(err(
             ErrorCode::SessionNotFound,

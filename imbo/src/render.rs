@@ -31,8 +31,8 @@ fn body(m: &MessageView) -> String {
 pub fn footer(m: &MessageView) -> String {
     let reply = if m.from.agent.is_none() && m.conversation.group.is_none() {
         format!(
-            "发件人是在终端发出的，没有会话；要回复，先用 contacts 工具看对方在线的会话，收件人写 {}/<会话>",
-            m.from.account_id
+            "发件人是在终端发出的；要回复就用 Imbo 的 send 工具，收件人只写账号 ID {}，回复会进对方的终端收件箱",
+            m.reply_to
         )
     } else {
         format!("要回复就用 Imbo 的 send 工具，收件人写 {}", m.reply_to)

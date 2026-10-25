@@ -74,11 +74,12 @@ fn tools() -> Vec<Tool> {
         Tool::new(
             "send",
             "给别的会话或群发 Imbo 消息。to 写「名称/会话」或「账号ID/会话」（会话写短 ID 或标题），\
-群写群名或 #群ID；发给人必须写到会话。不知道对方会话时先用 contacts 工具查。",
+群写群名或 #群ID。只写账号（名称或账号ID）时消息进对方的终端收件箱，由本人在终端用 imbo inbox 看；\
+要发给对方的 agent 就写到会话，不知道对方会话时先用 contacts 工具查。",
             schema(json!({
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "收件人：alice/f1809d、51730462/f1809d、kando-dev 或 #5520183" },
+                    "to": { "type": "string", "description": "收件人：alice/f1809d、51730462/f1809d、kando-dev、#5520183，或只写 alice（进对方的终端收件箱）" },
                     "body": { "type": "string", "description": "正文，最长 32000 字" }
                 },
                 "required": ["to", "body"]
@@ -190,8 +191,6 @@ fn problem_text(p: &Problem) -> String {
             };
             s.push_str(&format!("\n- {}（{}{}）", c.to, c.label, state));
         }
-    } else if p.is(ErrorCode::SessionRequired) {
-        s.push_str("\n对方现在没有在线会话，发不出去。");
     }
     if let Some(r) = p.retry_after_s {
         s.push_str(&format!("\n{r} 秒后再试。"));
@@ -201,10 +200,7 @@ fn problem_text(p: &Problem) -> String {
 
 fn message_text(m: &MessageView) -> String {
     let reply = if m.from.agent.is_none() && m.conversation.group.is_none() {
-        format!(
-            "{}/<会话>（发件人在终端发出，先用 contacts 工具看对方在线的会话）",
-            m.from.account_id
-        )
+        format!("{}（发件人在终端发出，回复进对方的终端收件箱）", m.reply_to)
     } else {
         m.reply_to.clone()
     };
@@ -359,10 +355,17 @@ impl Imbo {
                             .as_ref()
                             .map(|p| p.name.clone())
                             .unwrap_or_else(|| to.clone());
-                        format!(
-                            "已发出：消息 #{} 发给 {}。对方会话离线时，上线后送达。",
-                            r.message_id, peer
-                        )
+                        if r.terminal {
+                            format!(
+                                "已发出：消息 #{} 进了 {} 的终端收件箱，本人在终端用 imbo inbox 看。要发给对方的 agent，收件人写「账号/会话」（先用 contacts 工具查）。",
+                                r.message_id, peer
+                            )
+                        } else {
+                            format!(
+                                "已发出：消息 #{} 发给 {}。对方会话离线时，上线后送达。",
+                                r.message_id, peer
+                            )
+                        }
                     }
                 };
                 Ok((text, unread))

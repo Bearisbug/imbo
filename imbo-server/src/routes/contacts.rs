@@ -292,12 +292,13 @@ async fn my_session_choice(st: &St, c: &Caller, asked: Option<Vec<Uuid>>) -> Api
     if wanted.is_empty() {
         return Ok(wanted);
     }
-    let owned: Vec<Uuid> =
-        sqlx::query_scalar("SELECT id FROM agents WHERE account_id = $1 AND id = ANY($2)")
-            .bind(c.account_id)
-            .bind(&wanted)
-            .fetch_all(&st.db)
-            .await?;
+    let owned: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM agents WHERE account_id = $1 AND id = ANY($2) AND tool <> 'terminal'",
+    )
+    .bind(c.account_id)
+    .bind(&wanted)
+    .fetch_all(&st.db)
+    .await?;
     if owned.len() != {
         let mut w = wanted.clone();
         w.sort();
@@ -510,7 +511,7 @@ pub async fn list_contacts(
         "SELECT a.id AS peer_id, a.name AS peer_name, ag.short_id, ag.title, ag.tool, ag.online, ag.last_online_at
          FROM contacts ct
          JOIN accounts a ON a.id = ct.peer_id
-         LEFT JOIN agents ag ON ag.account_id = a.id
+         LEFT JOIN agents ag ON ag.account_id = a.id AND ag.tool <> 'terminal'
               AND (ag.online OR ($2 AND ag.last_online_at > now() - interval '7 days'))
          WHERE ct.account_id = $1
          ORDER BY a.name, a.id, ag.online DESC, ag.title",

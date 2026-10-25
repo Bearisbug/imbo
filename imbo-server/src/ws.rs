@@ -178,6 +178,7 @@ async fn apply_presence(
             || item.session_id.len() > 128
             || item.tool.is_empty()
             || item.tool.len() > 32
+            || item.tool == imbo_proto::TOOL_TERMINAL
         {
             continue;
         }

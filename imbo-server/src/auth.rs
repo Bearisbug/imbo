@@ -128,7 +128,7 @@ async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
                 )
             })?;
             let row: Option<(Uuid, String, String)> = sqlx::query_as(
-                "SELECT id, short_id, title FROM agents WHERE account_id = $1 AND tool = $2 AND session_id = $3",
+                "SELECT id, short_id, title FROM agents WHERE account_id = $1 AND tool = $2 AND session_id = $3 AND tool <> 'terminal'",
             )
             .bind(account_id)
             .bind(tool)

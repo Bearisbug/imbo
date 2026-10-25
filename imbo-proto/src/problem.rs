@@ -26,7 +26,6 @@ pub enum ErrorCode {
     NameRequired,
     InvalidName,
     CannotAddSelf,
-    SessionRequired,
     UnknownSession,
     BodyInvalid,
     RateLimited,
@@ -39,7 +38,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 32] = [
+    pub const ALL: [ErrorCode; 31] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -62,7 +61,6 @@ impl ErrorCode {
         Self::NameRequired,
         Self::InvalidName,
         Self::CannotAddSelf,
-        Self::SessionRequired,
         Self::UnknownSession,
         Self::BodyInvalid,
         Self::RateLimited,
@@ -98,7 +96,6 @@ impl ErrorCode {
             Self::NameRequired => "name-required",
             Self::InvalidName => "invalid-name",
             Self::CannotAddSelf => "cannot-add-self",
-            Self::SessionRequired => "session-required",
             Self::UnknownSession => "unknown-session",
             Self::BodyInvalid => "body-invalid",
             Self::RateLimited => "rate-limited",
@@ -138,7 +135,6 @@ impl ErrorCode {
             Self::NameRequired
             | Self::InvalidName
             | Self::CannotAddSelf
-            | Self::SessionRequired
             | Self::UnknownSession
             | Self::BodyInvalid => 422,
             Self::RateLimited | Self::CodeLocked => 429,
@@ -172,7 +168,6 @@ impl ErrorCode {
             Self::NameRequired => "Name required",
             Self::InvalidName => "Invalid name",
             Self::CannotAddSelf => "Cannot add yourself",
-            Self::SessionRequired => "Session required",
             Self::UnknownSession => "Unknown sending session",
             Self::BodyInvalid => "Invalid message body",
             Self::RateLimited => "Too many requests",

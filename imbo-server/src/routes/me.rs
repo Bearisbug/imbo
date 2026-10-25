@@ -139,7 +139,7 @@ pub async fn list_agents(
 ) -> ApiResult<Json<AgentsResponse>> {
     let rows: Vec<(Uuid, String, String, String, String, bool, Option<Uuid>)> = sqlx::query_as(
         "SELECT id, short_id, session_id, title, tool, online, device_id FROM agents
-         WHERE account_id = $1 AND (online OR last_online_at > now() - interval '7 days')
+         WHERE account_id = $1 AND tool <> 'terminal' AND (online OR last_online_at > now() - interval '7 days')
          ORDER BY online DESC, last_online_at DESC NULLS LAST",
     )
     .bind(c.account_id)
