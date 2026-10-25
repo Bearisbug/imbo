@@ -36,6 +36,19 @@ pub fn user_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
+/// This program, for writing into other tools' configs.
+pub fn exe() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("imbo"))
+}
+
+/// `p` with the home directory written as `~`.
+pub fn tilde(p: &Path) -> String {
+    match p.strip_prefix(user_home()) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
 impl Home {
     pub fn resolve() -> Self {
         let dir = match std::env::var_os("IMBO_HOME").filter(|v| !v.is_empty()) {
@@ -75,9 +88,6 @@ impl Home {
     }
     pub fn state(&self) -> PathBuf {
         self.dir.join("state")
-    }
-    pub fn plugin_dir(&self) -> PathBuf {
-        self.dir.join("claude-plugin")
     }
 
     pub fn ensure(&self) -> anyhow::Result<()> {

@@ -3,7 +3,7 @@
 //! the shared app-server get `codex queue`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -17,8 +17,8 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
-use super::{Adapter, Found, Paste, PastedImage, env};
-use crate::paths::user_home;
+use super::{Adapter, Connected, Found, Paste, PastedImage, env, run};
+use crate::paths::{Home, exe, tilde, user_home};
 use crate::render;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -156,6 +156,32 @@ impl Adapter for Codex {
     fn pasted_image(&self, _session_id: &str, _n: u32) -> Result<PastedImage, String> {
         Err("这个会话里粘贴的图片，图片标签里带着路径，把路径写进 files。".into())
     }
+
+    fn command(&self) -> &'static str {
+        "codex"
+    }
+
+    fn changes(&self) -> String {
+        format!(
+            "Codex  {}  [mcp_servers.imbo] with {}",
+            tilde(&config_file()),
+            keys_text()
+        )
+    }
+
+    fn connect(&self, home: &Home, bin: &Path) -> Result<Connected, String> {
+        add_server(home, bin)?;
+        Ok(Connected {
+            detail: "MCP server imbo",
+            warning: None,
+        })
+    }
+
+    fn disconnect(&self, _home: &Home, bin: Option<&Path>) {
+        if let Some(bin) = bin {
+            let _ = run(bin, &["mcp", "remove", "imbo"]);
+        }
+    }
 }
 
 /// `_meta["x-codex-turn-metadata"]`, an object or a JSON string.
@@ -172,10 +198,82 @@ fn turn_thread(meta: &Map<String, Value>) -> Option<String> {
 }
 
 /// Codex's home directory (`~/.codex`).
-pub fn config_dir() -> PathBuf {
+fn config_dir() -> PathBuf {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| user_home().join(".codex"))
+}
+
+fn config_file() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+fn add_server(home: &Home, codex: &Path) -> Result<(), String> {
+    let _ = run(codex, &["mcp", "remove", "imbo"]);
+    let exe = exe().to_string_lossy().into_owned();
+    let env = format!("IMBO_HOME={}", home.dir.display());
+    let mut args = vec!["mcp", "add", "imbo"];
+    if !home.is_primary() {
+        args.extend(["--env", env.as_str()]);
+    }
+    args.extend(["--", exe.as_str(), "mcp"]);
+    run(codex, &args)?;
+    let config = config_file();
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    let with_keys = add_keys(&text);
+    if with_keys != text {
+        std::fs::write(&config, with_keys).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Keys `codex mcp add` has no flags for: uploads can outlast Codex's default
+/// 60 s tool timeout (API-MCP-001), and Imbo's tools run without asking each
+/// time (ADR-013).
+const CODEX_KEYS: [(&str, &str); 2] = [
+    ("tool_timeout_sec", "600"),
+    ("default_tools_approval_mode", "\"approve\""),
+];
+
+fn keys_text() -> String {
+    CODEX_KEYS
+        .iter()
+        .map(|(k, v)| format!("{k} = {v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Put the missing `CODEX_KEYS` into the `[mcp_servers.imbo]` table that
+/// `codex mcp add` wrote.
+fn add_keys(config: &str) -> String {
+    let lines: Vec<&str> = config.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim() == "[mcp_servers.imbo]") else {
+        return config.to_string();
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |i| start + 1 + i);
+    let missing: Vec<String> = CODEX_KEYS
+        .iter()
+        .filter(|(k, _)| {
+            !lines[start + 1..end]
+                .iter()
+                .any(|l| l.trim_start().starts_with(k))
+        })
+        .map(|(k, v)| format!("{k} = {v}"))
+        .collect();
+    if missing.is_empty() {
+        return config.to_string();
+    }
+    let mut out = lines[..=start].to_vec();
+    out.extend(missing.iter().map(String::as_str));
+    out.extend(&lines[start + 1..]);
+    let mut s = out.join("\n");
+    if config.ends_with('\n') {
+        s.push('\n');
+    }
+    s
 }
 
 pub fn socket_path() -> PathBuf {
@@ -409,5 +507,22 @@ async fn queue(thread: &str, text: &str) -> Result<&'static str, String> {
             "codex queue failed: {}",
             msg.trim().chars().take(300).collect::<String>()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_keys_go_into_the_imbo_table() {
+        let before = "[mcp_servers.other]\ntool_timeout_sec = 30\n\n[mcp_servers.imbo]\ncommand = \"/bin/imbo\"\nargs = [\"mcp\"]\n";
+        let after = add_keys(before);
+        assert_eq!(
+            after,
+            "[mcp_servers.other]\ntool_timeout_sec = 30\n\n[mcp_servers.imbo]\ntool_timeout_sec = 600\ndefault_tools_approval_mode = \"approve\"\ncommand = \"/bin/imbo\"\nargs = [\"mcp\"]\n"
+        );
+        assert_eq!(add_keys(&after), after);
+        assert_eq!(add_keys("model = \"x\"\n"), "model = \"x\"\n");
     }
 }

@@ -28,7 +28,7 @@ pub enum DevCmd {
 pub async fn run(cmd: DevCmd) -> anyhow::Result<()> {
     match cmd {
         DevCmd::WritePlugin { dir } => {
-            super::setup::write_plugin(&Home::resolve(), &dir)?;
+            crate::adapters::claude::write_plugin(&Home::resolve(), &dir)?;
             ui::ok_line(&format!("Plugin written to {}", dir.display()));
         }
         DevCmd::FakeSession {

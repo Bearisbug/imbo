@@ -18,10 +18,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tracing::{info, warn};
 
-use super::{Adapter, Found, Paste, PastedImage, Registration, env};
+use super::{Adapter, Connected, Found, Paste, PastedImage, Registration, env, run};
 use crate::local::Local;
-use crate::paths::user_home;
-use crate::render;
+use crate::paths::{Home, exe, tilde, user_home};
+use crate::{render, ui};
 
 pub static CLAUDE: Claude = Claude {
     sessions: Mutex::new(BTreeMap::new()),
@@ -235,10 +235,47 @@ impl Adapter for Claude {
             format!("会话记录里找不到粘贴的图片 [Image #{n}]，请让使用者重新粘贴后再发。")
         })
     }
+
+    fn command(&self) -> &'static str {
+        "claude"
+    }
+
+    fn changes(&self) -> String {
+        format!(
+            "Claude Code  {}  plugin imbo; {CLAUDE_RULE} in permissions.allow",
+            tilde(&settings())
+        )
+    }
+
+    /// The plugin brings the MCP server and the prompt hook; the allow rule
+    /// lets its tools run without asking (ADR-013).
+    fn connect(&self, home: &Home, bin: &Path) -> Result<Connected, String> {
+        add_plugin(home, bin)?;
+        let warning = allow_tools(true).err().map(|e| {
+            format!(
+                "Couldn't edit {} ({e})  {}",
+                tilde(&settings()),
+                ui::dim(format!(
+                    "add \"{CLAUDE_RULE}\" to permissions.allow there, or Claude Code asks before each Imbo tool"
+                ))
+            )
+        });
+        Ok(Connected {
+            detail: "plugin imbo: tools + prompt hook",
+            warning,
+        })
+    }
+
+    fn disconnect(&self, home: &Home, bin: Option<&Path>) {
+        if let Some(bin) = bin {
+            remove_plugin(home, bin);
+        }
+        let _ = allow_tools(false);
+    }
 }
 
 /// Directory holding the Claude Code state we read (`~/.claude`).
-pub fn config_dir() -> PathBuf {
+fn config_dir() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| user_home().join(".claude"))
@@ -380,6 +417,189 @@ fn image_in(v: &Value, n: u32) -> Option<PastedImage> {
     })
 }
 
+/// Where `imbo setup` keeps the plugin marketplace it registers.
+fn plugin_dir(home: &Home) -> PathBuf {
+    home.dir.join("claude-plugin")
+}
+
+fn sh_quote(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-+:=@".contains(c))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// Write a Claude Code plugin (MCP server + prompt hook) at `root`.
+pub fn write_plugin(home: &Home, root: &Path) -> anyhow::Result<()> {
+    let exe = exe().to_string_lossy().into_owned();
+    std::fs::create_dir_all(root.join(".claude-plugin"))?;
+    std::fs::create_dir_all(root.join("hooks"))?;
+    let manifest = json!({
+        "name": "imbo",
+        "version": crate::VERSION,
+        "description": "Messages between Claude Code and Codex sessions, across people and computers.",
+        "author": { "name": "Imbo" },
+        "homepage": "https://imbo.dev",
+        "license": "Apache-2.0"
+    });
+    std::fs::write(
+        root.join(".claude-plugin/plugin.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    let mut server = json!({ "command": exe, "args": ["mcp"] });
+    let mut hook_cmd = format!("{} hook prompt", sh_quote(&exe));
+    if !home.is_primary() {
+        let h = home.dir.to_string_lossy().into_owned();
+        server["env"] = json!({ "IMBO_HOME": h });
+        hook_cmd = format!("IMBO_HOME={} {hook_cmd}", sh_quote(&h));
+    }
+    let mcp = json!({ "mcpServers": { "imbo": server } });
+    std::fs::write(root.join(".mcp.json"), serde_json::to_string_pretty(&mcp)?)?;
+    let hooks = json!({
+        "hooks": {
+            "UserPromptSubmit": [
+                { "hooks": [ { "type": "command", "command": hook_cmd, "timeout": 10 } ] }
+            ]
+        }
+    });
+    std::fs::write(
+        root.join("hooks/hooks.json"),
+        serde_json::to_string_pretty(&hooks)?,
+    )?;
+    Ok(())
+}
+
+/// The local marketplace `imbo setup` registers with Claude Code.
+fn write_marketplace(home: &Home) -> anyhow::Result<PathBuf> {
+    let dir = plugin_dir(home);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".claude-plugin"))?;
+    let market = json!({
+        "name": marketplace_name(home),
+        "owner": { "name": "Imbo" },
+        "plugins": [ {
+            "name": "imbo",
+            "source": "./plugin",
+            "description": "Messages between Claude Code and Codex sessions, across people and computers.",
+            "version": crate::VERSION
+        } ]
+    });
+    std::fs::write(
+        dir.join(".claude-plugin/marketplace.json"),
+        serde_json::to_string_pretty(&market)?,
+    )?;
+    write_plugin(home, &dir.join("plugin"))?;
+    Ok(dir)
+}
+
+fn marketplace_name(home: &Home) -> String {
+    if home.is_primary() {
+        "imbo".into()
+    } else {
+        home.label().replace("dev.imbo.daemon.", "imbo-")
+    }
+}
+
+fn add_plugin(home: &Home, claude: &Path) -> Result<(), String> {
+    let dir = write_marketplace(home).map_err(|e| e.to_string())?;
+    let market = marketplace_name(home);
+    let _ = run(claude, &["plugin", "marketplace", "remove", &market]);
+    run(
+        claude,
+        &["plugin", "marketplace", "add", &dir.to_string_lossy()],
+    )?;
+    run(
+        claude,
+        &[
+            "plugin",
+            "install",
+            &format!("imbo@{market}"),
+            "--scope",
+            "user",
+        ],
+    )?;
+    Ok(())
+}
+
+fn remove_plugin(home: &Home, claude: &Path) {
+    let market = marketplace_name(home);
+    let _ = run(
+        claude,
+        &[
+            "plugin",
+            "uninstall",
+            &format!("imbo@{market}"),
+            "--scope",
+            "user",
+        ],
+    );
+    let _ = run(claude, &["plugin", "marketplace", "remove", &market]);
+    let _ = std::fs::remove_dir_all(plugin_dir(home));
+}
+
+/// Claude Code permission rule covering every tool of the imbo plugin's MCP server.
+const CLAUDE_RULE: &str = "mcp__plugin_imbo_imbo";
+
+fn settings() -> PathBuf {
+    config_dir().join("settings.json")
+}
+
+/// Claude Code settings text with `CLAUDE_RULE` added to (or removed from)
+/// `permissions.allow`, everything else kept; `None` when nothing changes.
+fn edit_allow(text: &str, add: bool) -> Result<Option<String>, String> {
+    let mut v: Value = if text.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(text).map_err(|e| format!("not valid JSON: {e}"))?
+    };
+    let root = v.as_object_mut().ok_or("not a JSON object")?;
+    if !add && !root.contains_key("permissions") {
+        return Ok(None);
+    }
+    let perms = root
+        .entry("permissions")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("`permissions` isn't an object")?;
+    if !add && !perms.contains_key("allow") {
+        return Ok(None);
+    }
+    let allow = perms
+        .entry("allow")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or("`permissions.allow` isn't a list")?;
+    match (add, allow.iter().any(|r| r == CLAUDE_RULE)) {
+        (true, false) => allow.push(json!(CLAUDE_RULE)),
+        (false, true) => allow.retain(|r| r != CLAUDE_RULE),
+        _ => return Ok(None),
+    }
+    let mut out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    out.push('\n');
+    Ok(Some(out))
+}
+
+/// Let Claude Code run Imbo's tools without asking each time (ADR-013), or
+/// take that back.
+fn allow_tools(add: bool) -> Result<(), String> {
+    let path = settings();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    if let Some(new) = edit_allow(&text, add)? {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, new).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// `imbo hook prompt`: Claude Code's UserPromptSubmit hook (API-LOCAL-003).
 /// Hands unread messages to the session as additional context when live
 /// insertion isn't working. Never blocks the prompt: any failure exits 0
@@ -436,6 +656,34 @@ mod tests {
 
     fn image(data: &[u8], media_type: &str) -> Value {
         json!({ "type": "image", "source": { "type": "base64", "media_type": media_type, "data": b64(data) } })
+    }
+
+    #[test]
+    fn claude_allow_rule_is_added_once_and_removed() {
+        let before =
+            r#"{"model":"sonnet","permissions":{"allow":["Bash(ls:*)"],"deny":[]},"hooks":{}}"#;
+        let added = edit_allow(before, true).unwrap().unwrap();
+        let v: Value = serde_json::from_str(&added).unwrap();
+        assert_eq!(
+            v["permissions"]["allow"],
+            json!(["Bash(ls:*)", "mcp__plugin_imbo_imbo"])
+        );
+        let keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, ["model", "permissions", "hooks"]);
+        assert_eq!(edit_allow(&added, true).unwrap(), None);
+
+        let removed = edit_allow(&added, false).unwrap().unwrap();
+        let v: Value = serde_json::from_str(&removed).unwrap();
+        assert_eq!(v, serde_json::from_str::<Value>(before).unwrap());
+        assert_eq!(edit_allow(&removed, false).unwrap(), None);
+
+        let fresh = edit_allow("", true).unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&fresh).unwrap(),
+            json!({ "permissions": { "allow": ["mcp__plugin_imbo_imbo"] } })
+        );
+        assert_eq!(edit_allow("", false).unwrap(), None);
+        assert!(edit_allow("{ not json", true).is_err());
     }
 
     #[test]

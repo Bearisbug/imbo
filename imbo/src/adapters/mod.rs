@@ -5,12 +5,16 @@
 pub mod claude;
 pub mod codex;
 
+use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use imbo_proto::api::MessageView;
 use imbo_proto::local::LocalFile;
 use serde_json::{Map, Value};
+
+use crate::paths::Home;
 
 /// Every tool Imbo works with. A session is recognised by the first
 /// adapter that claims it, so the order matters when two tools leave the
@@ -57,6 +61,15 @@ pub enum Paste {
     Numbered(&'static str),
     /// By the path the tool shows, in send's `files`.
     Path(&'static str),
+}
+
+/// What `imbo setup` shows once a tool is connected.
+pub struct Connected {
+    /// Shown after "<tool> connected".
+    pub detail: &'static str,
+    /// A step besides the connection itself that failed, and how to do it
+    /// by hand.
+    pub warning: Option<String>,
 }
 
 /// A picture the user pasted into a session (ADR-014).
@@ -142,6 +155,19 @@ pub trait Adapter: Send + Sync {
     /// Picture `[Image #n]` pasted into the session; the error is for the
     /// agent.
     fn pasted_image(&self, session_id: &str, n: u32) -> Result<PastedImage, String>;
+
+    /// The tool's command; `imbo setup` connects only tools on PATH.
+    fn command(&self) -> &'static str;
+
+    /// One line on what connecting changes, shown before it's done
+    /// (ADR-013).
+    fn changes(&self) -> String;
+
+    /// Connect Imbo and let its tools run without asking each time.
+    fn connect(&self, home: &Home, bin: &Path) -> Result<Connected, String>;
+
+    /// Undo `connect`; `bin` is `None` when the tool isn't installed any more.
+    fn disconnect(&self, home: &Home, bin: Option<&Path>);
 }
 
 /// `IMBO_FAULT_INJECT=claude-code,codex` (tool IDs) makes those tools'
@@ -151,6 +177,25 @@ pub fn fault(tool: &str) -> bool {
     std::env::var("IMBO_FAULT_INJECT")
         .map(|v| v.split(',').any(|t| t.trim() == tool))
         .unwrap_or(false)
+}
+
+/// Run a tool's command; the error is the last line it printed.
+fn run(cmd: &Path, args: &[&str]) -> Result<String, String> {
+    match Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+        Ok(o) => {
+            let mut e = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            if e.is_empty() {
+                e = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            }
+            Err(e.lines().last().unwrap_or("failed").to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// A non-empty environment variable.
