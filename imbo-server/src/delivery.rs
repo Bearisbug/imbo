@@ -49,21 +49,85 @@ pub fn spawn_tasks(st: St) {
                 Ok(_) => {}
                 Err(e) => warn!(error = %e, "email_code.cleanup"),
             }
+            if let Err(e) = file_cleanup(&st).await {
+                warn!(error = %e, "file.cleanup");
+            }
         }
     });
 }
 
-/// pushed → pending when no ack within 30 seconds.
+/// How long a pushed delivery waits for its ack: 30 s, plus 4 s per MB of
+/// attachments, which the receiving computer downloads first (ADR-012).
+pub fn ack_timeout_secs(file_bytes: i64) -> f64 {
+    30.0 + 4.0 * file_bytes.max(0) as f64 / 1_048_576.0
+}
+
+/// pushed → pending when no ack within the ack timeout.
 async fn requeue(st: &St) -> Result<(), sqlx::Error> {
+    let rows: Vec<(i64, Uuid, f64, i64)> = sqlx::query_as(
+        "SELECT d.message_id, d.agent_id, extract(epoch FROM now() - d.pushed_at)::float8,
+                coalesce((SELECT sum(f.size) FROM files f WHERE f.message_id = d.message_id), 0)::bigint
+         FROM deliveries d WHERE d.state = 'pushed' AND d.pushed_at < now() - interval '30 seconds'",
+    )
+    .fetch_all(&st.db)
+    .await?;
+    let (messages, agents): (Vec<i64>, Vec<Uuid>) = rows
+        .into_iter()
+        .filter(|(_, _, age, bytes)| *age > ack_timeout_secs(*bytes))
+        .map(|(m, a, _, _)| (m, a))
+        .unzip();
+    if messages.is_empty() {
+        return Ok(());
+    }
     let sql = format!(
         "UPDATE deliveries SET state = 'pending', next_push_at = {BACKOFF_SQL}
-         WHERE state = 'pushed' AND pushed_at < now() - interval '30 seconds'"
+         FROM unnest($1::bigint[], $2::uuid[]) AS t(message_id, agent_id)
+         WHERE deliveries.message_id = t.message_id AND deliveries.agent_id = t.agent_id
+           AND deliveries.state = 'pushed'"
     );
     let r = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(&messages)
+        .bind(&agents)
         .execute(&st.db)
         .await?;
     if r.rows_affected() > 0 {
         info!(count = r.rows_affected(), "delivery.requeue: ack timed out");
+    }
+    Ok(())
+}
+
+/// `file.cleanup`: content of files not sent within the hour, and of sent
+/// files past their 7 days, is deleted; rows stay so the day's upload total
+/// stays right (ENT-File).
+pub async fn file_cleanup(st: &St) -> Result<(), sqlx::Error> {
+    let gone: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE files SET state = CASE state WHEN 'ready' THEN 'discarded' ELSE 'expired' END
+         WHERE (state = 'ready' AND created_at < now() - interval '1 hour')
+            OR (state = 'sent' AND expires_at < now())
+         RETURNING id",
+    )
+    .fetch_all(&st.db)
+    .await?;
+    // Uploads cut off by a server restart.
+    let stale: Vec<Uuid> = sqlx::query_scalar(
+        "DELETE FROM files WHERE state = 'uploading' AND created_at < now() - interval '6 hours'
+         RETURNING id",
+    )
+    .fetch_all(&st.db)
+    .await?;
+    let dir = st.files_dir();
+    for id in &gone {
+        let _ = tokio::fs::remove_file(dir.join(id.to_string())).await;
+    }
+    for id in &stale {
+        let _ = tokio::fs::remove_file(dir.join(format!("{id}.part"))).await;
+    }
+    if !gone.is_empty() || !stale.is_empty() {
+        info!(
+            removed = gone.len(),
+            stale_uploads = stale.len(),
+            "file.cleanup"
+        );
     }
     Ok(())
 }
@@ -231,5 +295,18 @@ pub async fn notify_canceled(st: &St, rows: Vec<(i64, Uuid)>) {
                 },
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ack_timeout_grows_with_attachments() {
+        assert_eq!(ack_timeout_secs(0), 30.0);
+        assert_eq!(ack_timeout_secs(1_048_576), 34.0);
+        // 100 MB: 430 s, about 7 minutes.
+        assert_eq!(ack_timeout_secs(104_857_600), 430.0);
     }
 }

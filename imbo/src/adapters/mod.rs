@@ -3,7 +3,8 @@
 pub mod claude;
 pub mod codex;
 
-/// `IMBO_FAULT_INJECT=claude,codex` makes inserts fail (tests of the fallbacks).
+/// `IMBO_FAULT_INJECT=claude,codex` makes inserts fail and `download` makes
+/// attachment downloads fail (tests of the fallbacks).
 pub fn fault(tool: &str) -> bool {
     std::env::var("IMBO_FAULT_INJECT")
         .map(|v| v.split(',').any(|t| t.trim() == tool))

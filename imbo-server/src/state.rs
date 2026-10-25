@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use sqlx::PgPool;
@@ -32,6 +33,11 @@ impl AppState {
             limiter: Limiter::default(),
             push_locks: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Attachment content, `<id>` once complete and `<id>.part` while uploading.
+    pub fn files_dir(&self) -> PathBuf {
+        self.cfg.data_dir.join("files")
     }
 
     pub fn push_lock(&self, agent: Uuid) -> Arc<tokio::sync::Mutex<()>> {

@@ -90,7 +90,27 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             path,
             body,
             actor,
-        } => call(d, &method, &path, body, actor).await,
+        } => {
+            // Files that went out with a message can't be reused for the next.
+            let sent: Vec<uuid::Uuid> = if method == "POST" && path == "/v1/messages" {
+                body.as_ref()
+                    .and_then(|b| b.get("files"))
+                    .and_then(|f| serde_json::from_value(f.clone()).ok())
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+            let r = call(d, &method, &path, body, actor).await;
+            if r.ok && !sent.is_empty() {
+                super::files::forget(d, &sent);
+            }
+            r
+        }
+        LocalRequest::UploadFile { path } => super::files::upload(d, &path).await,
+        LocalRequest::FetchFiles {
+            message_id,
+            file_id,
+        } => super::files::fetch_request(d, message_id, file_id).await,
         LocalRequest::HookPrompt { tool, session_id } => hook_prompt(d, &tool, &session_id).await,
         LocalRequest::FakeSession {
             tool,
@@ -199,6 +219,9 @@ async fn call(
     }
 }
 
+/// How long the prompt hook waits for attachments (the hook itself stops at 8 s).
+const HOOK_FILE_BUDGET: Duration = Duration::from_secs(5);
+
 /// API-LOCAL-003. Only sessions without a working insert channel pull here,
 /// so a message is never both inserted and handed to the hook.
 async fn hook_prompt(d: &D, tool: &str, session_id: &str) -> LocalResponse {
@@ -232,6 +255,25 @@ async fn hook_prompt(d: &D, tool: &str, session_id: &str) -> LocalResponse {
     if messages.is_empty() {
         return LocalResponse::ok(200, json!({ "context": null }), None);
     }
+    // Download first, but the hook gives up after 8 s: whatever isn't done
+    // in 5 s is marked and keeps downloading in the background.
+    let mut files = std::collections::HashMap::new();
+    let pending: Vec<_> = messages
+        .iter()
+        .filter(|m| !m.files.is_empty())
+        .map(|m| {
+            let (d, m) = (d.clone(), m.clone());
+            tokio::spawn(async move {
+                let f = super::files::fetch_within(&d, &m, HOOK_FILE_BUDGET).await;
+                (m.id, f)
+            })
+        })
+        .collect();
+    for task in pending {
+        if let Ok((id, f)) = task.await {
+            files.insert(id, f);
+        }
+    }
     info!(
         session = session_id,
         count = messages.len(),
@@ -239,7 +281,7 @@ async fn hook_prompt(d: &D, tool: &str, session_id: &str) -> LocalResponse {
     );
     LocalResponse::ok(
         200,
-        json!({ "context": crate::render::for_hook(&messages) }),
+        json!({ "context": crate::render::for_hook(&messages, &files) }),
         None,
     )
 }

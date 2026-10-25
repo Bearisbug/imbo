@@ -7,8 +7,12 @@ use std::time::Duration;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::rt::TokioIo;
-use imbo_proto::{ErrorCode, HEADER_ACTOR, HEADER_REQUEST_ID, HEADER_UNREAD, Problem};
+use imbo_proto::{
+    ErrorCode, HEADER_ACTOR, HEADER_FILE_NAME, HEADER_FILE_SHA256, HEADER_REQUEST_ID,
+    HEADER_UNREAD, Problem,
+};
 use serde_json::Value;
+use sha2::Digest as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_tungstenite::WebSocketStream;
@@ -137,6 +141,193 @@ async fn send_once(
         .map_err(|e| e.to_string())?
         .to_bytes();
     Ok((status, unread, bytes))
+}
+
+/// A file transfer with no bytes moving for this long is dropped
+/// (DESIGN §8 传文件); there is no overall time limit.
+pub const STALL: Duration = Duration::from_secs(30);
+
+fn problem_from(status: u16, bytes: &[u8]) -> Problem {
+    serde_json::from_slice::<Problem>(bytes).unwrap_or_else(|_| {
+        let mut p = Problem::new(
+            ErrorCode::Unavailable,
+            format!("The server answered HTTP {status}."),
+        );
+        p.status = status;
+        p
+    })
+}
+
+/// Last time bytes moved, for the stall watchdog.
+#[derive(Clone)]
+struct Progress(Arc<std::sync::Mutex<tokio::time::Instant>>);
+
+impl Progress {
+    fn new() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(tokio::time::Instant::now())))
+    }
+    fn touch(&self) {
+        *self.0.lock().unwrap() = tokio::time::Instant::now();
+    }
+    /// Resolves once nothing has moved for `STALL`.
+    async fn stalled(&self) {
+        loop {
+            let last = *self.0.lock().unwrap();
+            if last.elapsed() >= STALL {
+                return;
+            }
+            tokio::time::sleep_until(last + STALL).await;
+        }
+    }
+}
+
+/// API-026: stream `path` (`size` bytes, hash `sha256`) to the server.
+pub async fn upload_file(
+    server: &str,
+    token: &str,
+    path: &std::path::Path,
+    name: &str,
+    size: u64,
+    sha256: &str,
+) -> Result<ApiResponse, Problem> {
+    let file = tokio::fs::File::open(path).await.map_err(|e| {
+        Problem::new(
+            ErrorCode::FileUnreadable,
+            format!("{}: {e}", path.display()),
+        )
+    })?;
+    let progress = Progress::new();
+    let p = progress.clone();
+    // Sends exactly `size` bytes; a file that shrank meanwhile ends the body
+    // early and the server rejects it.
+    let chunks = futures::stream::unfold((file, size), move |(mut f, left)| {
+        let p = p.clone();
+        async move {
+            if left == 0 {
+                return None;
+            }
+            let mut buf = vec![0u8; (64 * 1024).min(left as usize)];
+            match tokio::io::AsyncReadExt::read(&mut f, &mut buf).await {
+                Ok(0) => None,
+                Ok(n) => {
+                    buf.truncate(n);
+                    p.touch();
+                    Some((
+                        Ok::<_, std::io::Error>(hyper::body::Frame::data(Bytes::from(buf))),
+                        (f, left - n as u64),
+                    ))
+                }
+                Err(e) => Some((Err(e), (f, 0))),
+            }
+        }
+    });
+    let body = http_body_util::StreamBody::new(Box::pin(chunks));
+    let call = async {
+        let (stream, hostport) = open(server, CONNECT_TIMEOUT).await?;
+        let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::spawn(conn);
+        let req = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri("/v1/files")
+            .header("host", hostport)
+            .header("user-agent", format!("imbo/{}", crate::VERSION))
+            .header(HEADER_REQUEST_ID, uuid::Uuid::now_v7().to_string())
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/octet-stream")
+            .header("content-length", size)
+            .header(HEADER_FILE_NAME, imbo_proto::text::percent_encode(name))
+            .header(HEADER_FILE_SHA256, sha256)
+            .body(body)
+            .map_err(|e| e.to_string())?;
+        let res = tx.send_request(req).await.map_err(|e| e.to_string())?;
+        let status = res.status().as_u16();
+        let bytes = res
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| e.to_string())?
+            .to_bytes();
+        Ok::<_, String>((status, bytes))
+    };
+    let (status, bytes) = tokio::select! {
+        r = call => r.map_err(|_| unreachable(server))?,
+        _ = progress.stalled() => return Err(unreachable(server)),
+    };
+    if (200..300).contains(&status) {
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        return Ok(ApiResponse {
+            status,
+            body,
+            unread: None,
+        });
+    }
+    Err(problem_from(status, &bytes))
+}
+
+/// API-027: download `/v1/files/{id}` into `dest`. Returns the size and
+/// SHA-256 of what was written.
+pub async fn download_file(
+    server: &str,
+    token: &str,
+    id: uuid::Uuid,
+    dest: &std::path::Path,
+) -> Result<(u64, String), Problem> {
+    let failed = |e: String| Problem::new(ErrorCode::ServerUnreachable, e);
+    let (stream, hostport) = open(server, CONNECT_TIMEOUT)
+        .await
+        .map_err(|_| unreachable(server))?;
+    let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .map_err(|e| failed(e.to_string()))?;
+    tokio::spawn(conn);
+    let req = hyper::Request::builder()
+        .method(hyper::Method::GET)
+        .uri(format!("/v1/files/{id}"))
+        .header("host", hostport)
+        .header("user-agent", format!("imbo/{}", crate::VERSION))
+        .header(HEADER_REQUEST_ID, uuid::Uuid::now_v7().to_string())
+        .header("authorization", format!("Bearer {token}"))
+        .body(Full::new(Bytes::new()))
+        .map_err(|e| failed(e.to_string()))?;
+    let res = tokio::time::timeout(STALL, tx.send_request(req))
+        .await
+        .map_err(|_| unreachable(server))?
+        .map_err(|e| failed(e.to_string()))?;
+    let status = res.status().as_u16();
+    let mut body = res.into_body();
+    if status != 200 {
+        let bytes = tokio::time::timeout(STALL, body.collect())
+            .await
+            .map_err(|_| unreachable(server))?
+            .map_err(|e| failed(e.to_string()))?
+            .to_bytes();
+        return Err(problem_from(status, &bytes));
+    }
+    let mut out = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| failed(format!("{}: {e}", dest.display())))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut size = 0u64;
+    loop {
+        let frame = tokio::time::timeout(STALL, body.frame())
+            .await
+            .map_err(|_| failed("no data for 30 seconds".into()))?;
+        let Some(frame) = frame else { break };
+        let frame = frame.map_err(|e| failed(e.to_string()))?;
+        if let Ok(data) = frame.into_data() {
+            size += data.len() as u64;
+            sha2::Digest::update(&mut hasher, &data);
+            tokio::io::AsyncWriteExt::write_all(&mut out, &data)
+                .await
+                .map_err(|e| failed(format!("{}: {e}", dest.display())))?;
+        }
+    }
+    tokio::io::AsyncWriteExt::flush(&mut out)
+        .await
+        .map_err(|e| failed(e.to_string()))?;
+    Ok((size, hex::encode(sha2::Digest::finalize(hasher))))
 }
 
 pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}

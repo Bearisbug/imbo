@@ -1,4 +1,4 @@
-//! Line-delimited JSON spoken on `~/.imbo/daemon.sock` (API-LOCAL-001..003).
+//! Line-delimited JSON spoken on `~/.imbo/daemon.sock` (API-LOCAL-001..009).
 //! Client, MCP process and daemon are the same binary, so this is not a
 //! public contract.
 
@@ -32,6 +32,18 @@ pub enum LocalRequest {
     HookPrompt {
         tool: String,
         session_id: String,
+    },
+    /// API-LOCAL-008: upload one local file (absolute path); the body is
+    /// the `FileView`.
+    UploadFile {
+        path: String,
+    },
+    /// API-LOCAL-009: download a message's attachments (or one of them)
+    /// into `~/.imbo/files/<message_id>/`; the body is a `FetchResponse`.
+    FetchFiles {
+        message_id: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_id: Option<uuid::Uuid>,
     },
     /// Pin a session that has no live tool behind it (tests and demos).
     FakeSession {
@@ -107,4 +119,24 @@ pub struct LocalSession {
     pub online: bool,
     /// `inject`, `prompt_hook`, `queue` or `none`.
     pub channel: String,
+}
+
+/// Result of API-LOCAL-009, one entry per attachment.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FetchResponse {
+    pub files: Vec<LocalFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalFile {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub size: u64,
+    /// Absolute local path once downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Why it isn't here: `expired`, `not-found`, `disk-full`, `slow` or
+    /// `failed: <reason>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }

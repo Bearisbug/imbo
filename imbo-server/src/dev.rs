@@ -1,4 +1,5 @@
-//! Development helpers (`IMBO_DEV=1` only): seed accounts and expire codes.
+//! Development helpers (`IMBO_DEV=1` only): seed accounts, expire codes and
+//! age attachments.
 //! The CLI side talks to the running server found via `server.json` in the
 //! data directory, so it works with the embedded database too.
 
@@ -40,6 +41,17 @@ pub enum DevCmd {
     },
     /// Make the email's active code expire now.
     ExpireCode { email: String },
+    /// Move files' upload and expiry times back, then run file.cleanup.
+    AgeFiles {
+        /// Files of this message.
+        #[arg(long)]
+        message: Option<i64>,
+        /// All files uploaded by this account.
+        #[arg(long)]
+        account: Option<i32>,
+        #[arg(long)]
+        hours: i32,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -183,6 +195,33 @@ pub async fn expire_code(
     Ok(Json(serde_json::json!({ "expired": r.rows_affected() })))
 }
 
+#[derive(Deserialize)]
+pub struct AgeIn {
+    message_id: Option<i64>,
+    account_id: Option<i32>,
+    hours: i32,
+}
+
+pub async fn age_files(
+    State(st): State<St>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Body(req): Body<AgeIn>,
+) -> ApiResult<Json<serde_json::Value>> {
+    local_only(&peer)?;
+    let r = sqlx::query(
+        "UPDATE files SET created_at = created_at - make_interval(hours => $3),
+                          expires_at = expires_at - make_interval(hours => $3)
+         WHERE message_id = $1 OR account_id = $2",
+    )
+    .bind(req.message_id)
+    .bind(req.account_id)
+    .bind(req.hours)
+    .execute(&st.db)
+    .await?;
+    crate::delivery::file_cleanup(&st).await?;
+    Ok(Json(serde_json::json!({ "aged": r.rows_affected() })))
+}
+
 // ---- CLI side ----
 
 fn data_dir() -> PathBuf {
@@ -249,6 +288,19 @@ pub async fn run_cli(cmd: DevCmd) -> anyhow::Result<()> {
             )
             .await?;
             println!("expired {} code(s) for {email}", v["expired"]);
+        }
+        DevCmd::AgeFiles {
+            message,
+            account,
+            hours,
+        } => {
+            let v = post(
+                &addr,
+                "/v1/dev/age-files",
+                &serde_json::json!({ "message_id": message, "account_id": account, "hours": hours }),
+            )
+            .await?;
+            println!("aged {} file(s) by {hours} h; file.cleanup ran", v["aged"]);
         }
         DevCmd::Seed {
             homes,

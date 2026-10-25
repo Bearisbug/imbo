@@ -35,10 +35,16 @@ pub enum ErrorCode {
     ServerUnreachable,
     DaemonUnavailable,
     InjectFailed,
+    FileExpired,
+    FileTooLarge,
+    FileHashMismatch,
+    UploadQuotaExceeded,
+    StorageFull,
+    FileUnreadable,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 31] = [
+    pub const ALL: [ErrorCode; 37] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -70,6 +76,12 @@ impl ErrorCode {
         Self::ServerUnreachable,
         Self::DaemonUnavailable,
         Self::InjectFailed,
+        Self::FileExpired,
+        Self::FileTooLarge,
+        Self::FileHashMismatch,
+        Self::UploadQuotaExceeded,
+        Self::StorageFull,
+        Self::FileUnreadable,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -105,6 +117,12 @@ impl ErrorCode {
             Self::ServerUnreachable => "server-unreachable",
             Self::DaemonUnavailable => "daemon-unavailable",
             Self::InjectFailed => "inject-failed",
+            Self::FileExpired => "file-expired",
+            Self::FileTooLarge => "file-too-large",
+            Self::FileHashMismatch => "file-hash-mismatch",
+            Self::UploadQuotaExceeded => "upload-quota-exceeded",
+            Self::StorageFull => "storage-full",
+            Self::FileUnreadable => "file-unreadable",
         }
     }
 
@@ -119,7 +137,10 @@ impl ErrorCode {
 
     pub fn status(self) -> u16 {
         match self {
-            Self::InvalidRequest | Self::InvalidEmail | Self::CodeInvalid => 400,
+            Self::InvalidRequest
+            | Self::InvalidEmail
+            | Self::CodeInvalid
+            | Self::FileUnreadable => 400,
             Self::Unauthorized | Self::NotLoggedIn => 401,
             Self::Forbidden | Self::SignupClosed | Self::NotContact | Self::NotMember => 403,
             Self::NotFound
@@ -131,16 +152,19 @@ impl ErrorCode {
             | Self::RequestClosed
             | Self::AlreadyMember
             | Self::AmbiguousRecipient => 409,
-            Self::CodeExpired => 410,
+            Self::CodeExpired | Self::FileExpired => 410,
+            Self::FileTooLarge => 413,
             Self::NameRequired
             | Self::InvalidName
             | Self::CannotAddSelf
             | Self::UnknownSession
-            | Self::BodyInvalid => 422,
-            Self::RateLimited | Self::CodeLocked => 429,
+            | Self::BodyInvalid
+            | Self::FileHashMismatch => 422,
+            Self::RateLimited | Self::CodeLocked | Self::UploadQuotaExceeded => 429,
             Self::EmailSendFailed => 502,
             Self::Unavailable | Self::ServerUnreachable | Self::DaemonUnavailable => 503,
             Self::InjectFailed => 500,
+            Self::StorageFull => 507,
         }
     }
 
@@ -177,6 +201,12 @@ impl ErrorCode {
             Self::ServerUnreachable => "Cannot reach the Imbo server",
             Self::DaemonUnavailable => "Imbo daemon is not running",
             Self::InjectFailed => "Could not deliver into the session",
+            Self::FileExpired => "File expired",
+            Self::FileTooLarge => "File too large",
+            Self::FileHashMismatch => "File changed during upload",
+            Self::UploadQuotaExceeded => "Daily upload limit reached",
+            Self::StorageFull => "Server storage is full",
+            Self::FileUnreadable => "Cannot read the file",
         }
     }
 }

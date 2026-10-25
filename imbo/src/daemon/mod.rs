@@ -2,6 +2,7 @@
 //! WebSocket to the server, tracks sessions and puts messages into them.
 
 mod dedupe;
+mod files;
 mod link;
 mod sessions;
 mod socket;
@@ -39,6 +40,8 @@ pub struct Daemon {
     dedupe: Mutex<dedupe::Dedupe>,
     queues: Mutex<HashMap<Key, mpsc::UnboundedSender<Delivery>>>,
     canceled: Mutex<HashSet<(i64, Uuid)>>,
+    uploads: Mutex<files::Recent>,
+    fetch_locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
     pub reload: Notify,
     pub presence_dirty: Notify,
     pub shutdown: Notify,
@@ -53,6 +56,7 @@ impl Daemon {
 
     pub fn reload_creds(&self) {
         *self.creds.write().unwrap() = self.home.credentials();
+        self.uploads.lock().unwrap().clear();
         self.link.lock().unwrap().revoked = false;
         self.reload.notify_waiters();
     }
@@ -114,6 +118,14 @@ impl Daemon {
         });
     }
 
+    /// Attachments first, so the message can name local paths (ADR-012).
+    async fn download(self: &Arc<Self>, d: &Delivery) -> Vec<imbo_proto::local::LocalFile> {
+        if d.message.files.is_empty() {
+            return vec![];
+        }
+        files::fetch(self, &d.message, None).await
+    }
+
     /// One queue per session so its messages go in one at a time, in order.
     async fn worker(self: Arc<Self>, key: Key, mut rx: mpsc::UnboundedReceiver<Delivery>) {
         while let Some(d) = rx.recv().await {
@@ -138,7 +150,8 @@ impl Daemon {
                     failures,
                     ..
                 } if failures < MAX_INJECT_FAILURES => {
-                    let text = render::for_claude(&d.message);
+                    let files = self.download(&d).await;
+                    let text = render::for_claude(&d.message, &files);
                     let mut last_err = String::new();
                     let mut done = false;
                     for attempt in 0..MAX_INJECT_FAILURES {
@@ -171,7 +184,8 @@ impl Daemon {
                 }
                 Kind::Claude { .. } => self.nack(&d, "prompt-hook-fallback"),
                 Kind::Codex { .. } => {
-                    let text = render::for_codex(&d.message);
+                    let files = self.download(&d).await;
+                    let text = render::for_codex(&d.message, &files);
                     match codex::deliver(&key.1, &text).await {
                         Ok(how) => {
                             info!(msg = d.message.id, session = %key.1, how, "delivered into Codex session");
@@ -234,6 +248,8 @@ pub async fn run() -> anyhow::Result<()> {
         notices: Mutex::new(VecDeque::new()),
         queues: Mutex::new(HashMap::new()),
         canceled: Mutex::new(HashSet::new()),
+        uploads: Mutex::new(HashMap::new()),
+        fetch_locks: Mutex::new(HashMap::new()),
         reload: Notify::new(),
         presence_dirty: Notify::new(),
         shutdown: Notify::new(),

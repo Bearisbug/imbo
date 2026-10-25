@@ -76,6 +76,22 @@ impl Local {
         req: &LocalRequest,
         wait: Duration,
     ) -> Result<LocalResponse, Problem> {
+        self.exchange(req, wait, Duration::from_secs(15)).await
+    }
+
+    /// For uploads and downloads (API-LOCAL-008, 009): the daemon gives up
+    /// on a stalled transfer itself, so only a hung daemon hits this limit.
+    pub async fn send_slow(&self, req: &LocalRequest) -> Result<LocalResponse, Problem> {
+        self.exchange(req, Duration::from_millis(1500), Duration::from_secs(3600))
+            .await
+    }
+
+    async fn exchange(
+        &self,
+        req: &LocalRequest,
+        wait: Duration,
+        reply_within: Duration,
+    ) -> Result<LocalResponse, Problem> {
         let mut stream = self.connect_or_start(wait).await?;
         let mut line = serde_json::to_vec(req).unwrap_or_default();
         line.push(b'\n');
@@ -88,7 +104,7 @@ impl Local {
         stream.write_all(&line).await.map_err(|_| lost())?;
         let mut reader = BufReader::new(stream);
         let mut buf = String::new();
-        match tokio::time::timeout(Duration::from_secs(15), reader.read_line(&mut buf)).await {
+        match tokio::time::timeout(reply_within, reader.read_line(&mut buf)).await {
             Ok(Ok(n)) if n > 0 => serde_json::from_str(&buf).map_err(|_| lost()),
             _ => Err(lost()),
         }
@@ -111,6 +127,18 @@ impl Local {
         let res = self.send(&req).await?;
         if res.ok {
             Ok((res.body, res.unread))
+        } else {
+            Err(res.problem.unwrap_or_else(|| {
+                Problem::new(ErrorCode::Unavailable, "Unknown error from the daemon.")
+            }))
+        }
+    }
+
+    /// API-LOCAL-008 / 009 with the problem unwrapped.
+    pub async fn files_op(&self, req: &LocalRequest) -> Result<Value, Problem> {
+        let res = self.send_slow(req).await?;
+        if res.ok {
+            Ok(res.body)
         } else {
             Err(res.problem.unwrap_or_else(|| {
                 Problem::new(ErrorCode::Unavailable, "Unknown error from the daemon.")

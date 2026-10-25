@@ -131,6 +131,63 @@ pub fn truncate_chars(s: &str, max: usize) -> (String, bool) {
     }
 }
 
+/// Attachment name as stored (DESIGN §9 files.name): slashes, backslashes and
+/// control characters become `_`, at most 255 bytes, never `.` or `..`.
+pub fn clean_file_name(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| {
+            if c == '/' || c == '\\' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    if s.len() > 255 {
+        let mut end = 255;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    match s.as_str() {
+        "" => "file".into(),
+        "." | ".." => "_".repeat(s.len()),
+        _ => s,
+    }
+}
+
+/// Percent-encode everything but unreserved characters (RFC 3986).
+pub fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+pub fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +225,17 @@ mod tests {
         assert_eq!(parse_address("#12"), Some(Address::Bare("#12".into())));
         assert_eq!(parse_address("bob/"), None);
         assert_eq!(parse_address("  "), None);
+    }
+
+    #[test]
+    fn file_names() {
+        assert_eq!(clean_file_name("a/b\\c\u{7}.txt"), "a_b_c_.txt");
+        assert_eq!(clean_file_name(".."), "__");
+        assert_eq!(clean_file_name(""), "file");
+        assert_eq!(clean_file_name(&"字".repeat(100)).len(), 255);
+        let name = "报告 v2 (final).pdf";
+        assert_eq!(percent_decode(&percent_encode(name)).as_deref(), Some(name));
+        assert_eq!(percent_decode("%zz"), None);
     }
 
     #[test]

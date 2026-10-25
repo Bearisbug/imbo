@@ -21,6 +21,19 @@ fn disk_free_pct(path: &std::path::Path) -> Option<f64> {
     Some((s.f_bavail as f64 / s.f_blocks as f64 * 1000.0).round() / 10.0)
 }
 
+/// Free bytes on the disk holding `path`.
+#[allow(clippy::unnecessary_cast)] // field widths differ between macOS and Linux
+pub(crate) fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let c = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
+        return None;
+    }
+    Some(s.f_bavail as u64 * s.f_frsize as u64)
+}
+
 pub async fn health(State(st): State<St>) -> ApiResult<Json<Health>> {
     let ok: Result<i32, _> = sqlx::query_scalar("SELECT 1").fetch_one(&st.db).await;
     if ok.is_err() {

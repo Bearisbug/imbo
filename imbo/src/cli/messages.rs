@@ -1,28 +1,113 @@
-//! `imbo send` and `imbo inbox`.
+//! `imbo send`, `imbo get` and `imbo inbox`.
+
+use std::path::PathBuf;
 
 use imbo_proto::api::{
-    InboxItem, InboxResponse, MessageResponse, MessageView, PullResponse, SendResponse,
+    FileView, InboxItem, InboxResponse, MessageResponse, MessageView, PullResponse, SendResponse,
 };
+use imbo_proto::local::{FetchResponse, LocalRequest};
 use imbo_proto::{ErrorCode, MAX_BODY_CHARS, TOOL_TERMINAL};
 use serde_json::json;
 
 use super::{Reported, api_as, report, tool_name};
+use crate::files::{self, human_size};
 use crate::local::{Local, env_actor};
 use crate::{render, ui};
 
-pub async fn send(to: String, body: String) -> anyhow::Result<()> {
+/// One file's progress: a spinner on a terminal, a result line otherwise.
+struct Step(Option<cliclack::ProgressBar>);
+
+impl Step {
+    fn start(msg: String) -> Self {
+        if !console::Term::stderr().is_term() {
+            return Step(None);
+        }
+        let sp = cliclack::spinner();
+        sp.start(msg);
+        Step(Some(sp))
+    }
+
+    fn ok(self, msg: String) {
+        match self.0 {
+            Some(sp) => sp.stop(msg),
+            None => ui::ok_line(&msg),
+        }
+    }
+
+    fn fail(self, msg: String) {
+        match self.0 {
+            Some(sp) => sp.error(msg),
+            None => ui::error_line(&msg),
+        }
+    }
+}
+
+/// Upload each file through the daemon (API-LOCAL-008), one step per file.
+async fn upload(paths: &[String]) -> anyhow::Result<Vec<FileView>> {
+    files::check_files(paths).map_err(|p| report(&p))?;
+    let local = Local::new();
+    let mut out = vec![];
+    for p in paths {
+        let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or_default();
+        let name = std::path::Path::new(p)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let sp = Step::start(format!("Uploading {name}  {}", ui::dim(human_size(size))));
+        match local
+            .files_op(&LocalRequest::UploadFile { path: p.clone() })
+            .await
+        {
+            Ok(v) => {
+                let f: FileView = serde_json::from_value(v).map_err(|e| {
+                    anyhow::anyhow!(
+                        "unexpected reply from the daemon ({e}); try `imbo setup` to update"
+                    )
+                })?;
+                sp.ok(format!("Uploaded {name}  {}", ui::dim(human_size(f.size))));
+                out.push(f);
+            }
+            Err(p) => {
+                sp.fail(format!("{name} was not uploaded"));
+                return Err(report(&p));
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub async fn send(to: String, body: String, paths: Vec<PathBuf>) -> anyhow::Result<()> {
     let n = body.chars().count();
-    if body.trim().is_empty() || n > MAX_BODY_CHARS {
+    if (paths.is_empty() && body.trim().is_empty()) || n > MAX_BODY_CHARS {
         ui::error_line(&format!(
             "The message must be 1–{MAX_BODY_CHARS} characters (this one is {n})."
         ));
         return Err(Reported.into());
     }
-    let req = json!({ "to": to, "body": body, "client_msg_id": uuid::Uuid::now_v7().to_string() });
+    let paths: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            std::path::absolute(p)
+                .unwrap_or_else(|_| p.clone())
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let uploaded = upload(&paths).await?;
+    let mut req =
+        json!({ "to": to, "body": body, "client_msg_id": uuid::Uuid::now_v7().to_string() });
+    if !uploaded.is_empty() {
+        req["files"] = json!(uploaded.iter().map(|f| f.id).collect::<Vec<_>>());
+    }
     let r: SendResponse = api_as("POST", "/v1/messages", Some(req)).await?;
+    let with = match uploaded.len() {
+        0 => String::new(),
+        1 => " with 1 file".into(),
+        n => format!(" with {n} files"),
+    };
     match &r.conversation.group {
         Some(g) => ui::ok_line(&format!(
-            "Sent #{} to {} {}  {}",
+            "Sent #{}{with} to {} {}  {}",
             r.message_id,
             ui::heading(&g.name),
             ui::dim(format!("#{}", g.id)),
@@ -37,7 +122,7 @@ pub async fn send(to: String, body: String) -> anyhow::Result<()> {
                 .unwrap_or(to);
             if r.terminal {
                 ui::ok_line(&format!(
-                    "Sent #{} to {}'s terminal inbox  {}",
+                    "Sent #{}{with} to {}'s terminal inbox  {}",
                     r.message_id,
                     ui::heading(peer),
                     ui::dim("they read it with `imbo inbox`")
@@ -45,7 +130,7 @@ pub async fn send(to: String, body: String) -> anyhow::Result<()> {
                 return Ok(());
             }
             ui::ok_line(&format!(
-                "Sent #{} to {}  {}",
+                "Sent #{}{with} to {}  {}",
                 r.message_id,
                 ui::heading(peer),
                 ui::dim(format!(
@@ -63,6 +148,89 @@ fn sessions(n: u32) -> String {
         "1 session".into()
     } else {
         format!("{n} sessions")
+    }
+}
+
+/// `imbo get`: download a message's files one by one (API-LOCAL-009).
+pub async fn get(id: i64) -> anyhow::Result<()> {
+    let r: MessageResponse = api_as("GET", &format!("/v1/messages/{id}"), None).await?;
+    let m = r.message;
+    if m.files.is_empty() {
+        println!("{}", ui::dim(format!("Message #{id} has no files.")));
+        return Ok(());
+    }
+    let local = Local::new();
+    let mut failed = false;
+    for f in &m.files {
+        let sp = Step::start(format!(
+            "Downloading {}  {}",
+            f.name,
+            ui::dim(human_size(f.size))
+        ));
+        let req = LocalRequest::FetchFiles {
+            message_id: id,
+            file_id: Some(f.id),
+        };
+        let got = match local.files_op(&req).await {
+            Ok(v) => serde_json::from_value::<FetchResponse>(v)
+                .ok()
+                .and_then(|r| r.files.into_iter().next()),
+            Err(p) => {
+                sp.fail(format!("{} was not downloaded", f.name));
+                return Err(report(&p));
+            }
+        };
+        match got {
+            Some(l) if l.path.is_some() => {
+                sp.ok(format!(
+                    "{}  {}",
+                    l.path.unwrap_or_default(),
+                    ui::dim(human_size(f.size))
+                ));
+            }
+            other => {
+                failed = true;
+                let why = match other.and_then(|l| l.error).as_deref() {
+                    Some("expired") => "expired: the server keeps files for 7 days".to_string(),
+                    Some("not-found") => "not on the server".to_string(),
+                    Some("disk-full") => "not enough free disk space here".to_string(),
+                    Some(e) => e.trim_start_matches("failed: ").to_string(),
+                    None => "no answer from the daemon".to_string(),
+                };
+                sp.fail(format!("{}  {}", f.name, ui::dim(why)));
+            }
+        }
+    }
+    if failed {
+        return Err(Reported.into());
+    }
+    Ok(())
+}
+
+/// Attachment lines: the local path once downloaded, else how to get it.
+fn print_files(m: &MessageView, indent: &str) {
+    let home = crate::paths::Home::resolve();
+    let paths = files::local_paths(&home, m.id, &m.files);
+    let mut missing = false;
+    for (f, p) in m.files.iter().zip(&paths) {
+        let here = std::fs::metadata(p).is_ok_and(|x| x.len() == f.size);
+        let place = if here {
+            p.display().to_string()
+        } else {
+            missing = true;
+            f.name.clone()
+        };
+        println!(
+            "{indent}  {} {place}  {}",
+            ui::dim("file"),
+            ui::dim(human_size(f.size))
+        );
+    }
+    if missing {
+        println!(
+            "{indent}  {}",
+            ui::dim(format!("download with `imbo get {}`", m.id))
+        );
     }
 }
 
@@ -86,6 +254,7 @@ fn print_message(m: &MessageView, indent: &str, full: bool, state: &str) {
     for line in body.lines() {
         println!("{indent}  {line}");
     }
+    print_files(m, indent);
     if full {
         println!("{indent}{}", ui::dim(format!("reply to: {}", m.reply_to)));
     }

@@ -1,5 +1,6 @@
 mod auth;
 mod contacts;
+mod files;
 mod groups;
 mod health;
 mod me;
@@ -37,6 +38,8 @@ pub fn router(st: St) -> Router {
         .route("/v1/messages/{id}", get(messages::get_message))
         .route("/v1/inbox", get(messages::list_inbox))
         .route("/v1/inbox/pull", post(messages::pull))
+        .route("/v1/files", post(files::upload))
+        .route("/v1/files/{id}", get(files::download))
         .route("/v1/groups", post(groups::create).get(groups::list))
         .route("/v1/groups/{id}/invites", post(groups::invite))
         .route("/v1/groups/{id}/sessions", put(groups::set_sessions))
@@ -54,7 +57,8 @@ pub fn router(st: St) -> Router {
     if st.cfg.dev {
         public = public
             .route("/v1/dev/seed", post(dev::seed))
-            .route("/v1/dev/expire-code", post(dev::expire_code));
+            .route("/v1/dev/expire-code", post(dev::expire_code))
+            .route("/v1/dev/age-files", post(dev::age_files));
     }
 
     Router::new()

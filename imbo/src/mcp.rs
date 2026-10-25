@@ -5,10 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use imbo_proto::api::{
-    AcceptResponse, AgentsResponse, ContactsResponse, GroupView, GroupsResponse, MessageResponse,
-    MessageView, MySessionsResponse, PullResponse, RequestsResponse, SendResponse,
+    AcceptResponse, AgentsResponse, ContactsResponse, FileView, GroupView, GroupsResponse,
+    MessageResponse, MessageView, MySessionsResponse, PullResponse, RequestsResponse, SendResponse,
 };
-use imbo_proto::local::LocalRequest;
+use imbo_proto::local::{FetchResponse, LocalFile, LocalRequest};
 use imbo_proto::{ErrorCode, Problem, TOOL_CLAUDE, TOOL_CODEX};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
@@ -19,6 +19,7 @@ use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
 
 use crate::adapters::claude;
+use crate::files;
 use crate::local::Local;
 use crate::render;
 
@@ -75,19 +76,24 @@ fn tools() -> Vec<Tool> {
             "send",
             "给别的会话或群发 Imbo 消息。to 写「名称/会话」或「账号ID/会话」（会话写短 ID 或标题），\
 群写群名或 #群ID。只写账号（名称或账号ID）时消息进对方的终端收件箱，由本人在终端用 imbo inbox 看；\
-要发给对方的 agent 就写到会话，不知道对方会话时先用 contacts 工具查。",
+要发给对方的 agent 就写到会话，不知道对方会话时先用 contacts 工具查。\
+files 可以带本机文件（绝对路径），对方电脑会自动下载。",
             schema(json!({
                 "type": "object",
                 "properties": {
                     "to": { "type": "string", "description": "收件人：alice/f1809d、51730462/f1809d、kando-dev、#5520183，或只写 alice（进对方的终端收件箱）" },
-                    "body": { "type": "string", "description": "正文，最长 32000 字" }
+                    "body": { "type": "string", "description": "正文，最长 32000 字；带文件时可以为空" },
+                    "files": {
+                        "type": "array", "items": { "type": "string" },
+                        "description": "要带的文件，写本机绝对路径；最多 20 个，合计不超过 100 MB"
+                    }
                 },
-                "required": ["to", "body"]
+                "required": ["to"]
             })),
         ),
         Tool::new(
             "inbox",
-            "看发给这个会话、还没送到的 Imbo 消息（取出后算已送达）；带 message_id 看某条消息的全文。",
+            "看发给这个会话、还没送到的 Imbo 消息（取出后算已送达）；带 message_id 看某条消息的全文，并把它的附件下载到本机。",
             schema(json!({
                 "type": "object",
                 "properties": { "message_id": { "type": "integer", "description": "消息编号，插入内容里的 #编号" } }
@@ -198,21 +204,22 @@ fn problem_text(p: &Problem) -> String {
     s
 }
 
-fn message_text(m: &MessageView) -> String {
+fn message_text(m: &MessageView, files: &[LocalFile]) -> String {
     let reply = if m.from.agent.is_none() && m.conversation.group.is_none() {
         format!("{}（发件人在终端发出，回复进对方的终端收件箱）", m.reply_to)
     } else {
         m.reply_to.clone()
     };
     format!(
-        "[Imbo 消息 #{}] 来自 {} · {}\n回复地址：{}\n\n{}",
+        "[Imbo 消息 #{}] 来自 {} · {}\n回复地址：{}\n\n{}{}",
         m.id,
         render::sender(m),
         m.created_at
             .with_timezone(&local_offset(m.created_at))
             .format("%m-%d %H:%M"),
         reply,
-        m.body
+        m.body,
+        render::attachments(m, files)
     )
 }
 
@@ -273,6 +280,23 @@ impl Imbo {
         self.local
             .call(method, path, body, Some(actor.to_string()))
             .await
+    }
+
+    /// API-LOCAL-009 for a message that has attachments.
+    async fn fetch(&self, m: &MessageView) -> Result<Vec<LocalFile>, Problem> {
+        if m.files.is_empty() {
+            return Ok(vec![]);
+        }
+        let v = self
+            .local
+            .files_op(&LocalRequest::FetchFiles {
+                message_id: m.id,
+                file_id: None,
+            })
+            .await?;
+        Ok(serde_json::from_value::<FetchResponse>(v)
+            .map_err(|_| bad_reply())?
+            .files)
     }
 
     async fn group_id(&self, actor: &str, g: &str) -> Result<i32, Problem> {
@@ -340,12 +364,32 @@ impl Imbo {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                let req = json!({ "to": to, "body": body, "client_msg_id": uuid::Uuid::now_v7().to_string() });
+                let paths = file_list(a);
+                // Check every file before uploading any (FLOW-FILE S2).
+                files::check_files(&paths)?;
+                let mut ids = vec![];
+                for p in &paths {
+                    let v = self
+                        .local
+                        .files_op(&LocalRequest::UploadFile { path: p.clone() })
+                        .await?;
+                    let f: FileView = serde_json::from_value(v).map_err(|_| bad_reply())?;
+                    ids.push(f.id);
+                }
+                let mut req = json!({ "to": to, "body": body, "client_msg_id": uuid::Uuid::now_v7().to_string() });
+                if !ids.is_empty() {
+                    req["files"] = json!(ids);
+                }
                 let (v, unread) = self.call(actor, "POST", "/v1/messages", Some(req)).await?;
                 let r: SendResponse = serde_json::from_value(v).map_err(|_| bad_reply())?;
+                let with = if ids.is_empty() {
+                    String::new()
+                } else {
+                    format!("（带 {} 个文件）", ids.len())
+                };
                 let text = match &r.conversation.group {
                     Some(g) => format!(
-                        "已发到群 {}（#{}），消息 #{}，收件会话 {} 个。",
+                        "已发到群 {}（#{}），消息 #{}{with}，收件会话 {} 个。",
                         g.name, g.id, r.message_id, r.recipients
                     ),
                     None => {
@@ -357,12 +401,12 @@ impl Imbo {
                             .unwrap_or_else(|| to.clone());
                         if r.terminal {
                             format!(
-                                "已发出：消息 #{} 进了 {} 的终端收件箱，本人在终端用 imbo inbox 看。要发给对方的 agent，收件人写「账号/会话」（先用 contacts 工具查）。",
+                                "已发出：消息 #{}{with} 进了 {} 的终端收件箱，本人在终端用 imbo inbox 看。要发给对方的 agent，收件人写「账号/会话」（先用 contacts 工具查）。",
                                 r.message_id, peer
                             )
                         } else {
                             format!(
-                                "已发出：消息 #{} 发给 {}。对方会话离线时，上线后送达。",
+                                "已发出：消息 #{}{with} 发给 {}。对方会话离线时，上线后送达。",
                                 r.message_id, peer
                             )
                         }
@@ -376,7 +420,13 @@ impl Imbo {
                         .call(actor, "GET", &format!("/v1/messages/{id}"), None)
                         .await?;
                     let r: MessageResponse = serde_json::from_value(v).map_err(|_| bad_reply())?;
-                    return Ok((message_text(&r.message), unread));
+                    let files = self.fetch(&r.message).await?;
+                    let mut s = message_text(&r.message, &files);
+                    if !files.is_empty() {
+                        s.push_str("\n\n");
+                        s.push_str(&render::footer_rules(true));
+                    }
+                    return Ok((s, unread));
                 }
                 let (v, unread) = self.call(actor, "POST", "/v1/inbox/pull", None).await?;
                 let r: PullResponse = serde_json::from_value(v).map_err(|_| bad_reply())?;
@@ -385,10 +435,14 @@ impl Imbo {
                 }
                 let mut s = format!("{} 条未读消息：\n\n", r.messages.len());
                 for m in &r.messages {
-                    s.push_str(&message_text(m));
+                    // Already taken off the server: a failed download is
+                    // shown on the message, not returned as an error.
+                    let files = self.fetch(m).await.unwrap_or_default();
+                    s.push_str(&message_text(m, &files));
                     s.push_str("\n\n");
                 }
-                s.push_str(&render::footer_rules());
+                let with_files = r.messages.iter().any(|m| !m.files.is_empty());
+                s.push_str(&render::footer_rules(with_files));
                 Ok((s, unread))
             }
             "contacts" => match arg_str(a, "action").as_deref().unwrap_or("list") {
@@ -620,6 +674,21 @@ impl Imbo {
                 format!("没有 {other} 这个工具。"),
             )),
         }
+    }
+}
+
+/// `files`: an array of paths, or one path as a string.
+fn file_list(a: &JsonObject) -> Vec<String> {
+    match a.get("files") {
+        Some(Value::Array(xs)) => xs
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(s)) if !s.trim().is_empty() => vec![s.trim().to_string()],
+        _ => vec![],
     }
 }
 

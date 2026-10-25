@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use imbo_proto::api::{AccountRef, AgentRef, ConversationRef, GroupRef, MessageView, Sender};
+use imbo_proto::api::{
+    AccountRef, AgentRef, ConversationRef, FileView, GroupRef, MessageView, Sender,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -74,6 +76,25 @@ pub async fn messages(
             .collect()
     };
 
+    // Attachments, in upload order.
+    let file_rows: Vec<(i64, Uuid, String, i64, Vec<u8>, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT message_id, id, name, size, sha256, expires_at FROM files
+         WHERE message_id = ANY($1) ORDER BY created_at, id",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    let mut files: HashMap<i64, Vec<FileView>> = HashMap::new();
+    for (message_id, id, name, size, sha256, expires_at) in file_rows {
+        files.entry(message_id).or_default().push(FileView {
+            id,
+            name,
+            size: size.max(0) as u64,
+            sha256: hex::encode(sha256),
+            expires_at,
+        });
+    }
+
     Ok(rows
         .into_iter()
         .map(|r| {
@@ -126,6 +147,7 @@ pub async fn messages(
                 body: r.body,
                 created_at: r.created_at,
                 reply_to,
+                files: files.remove(&r.id).unwrap_or_default(),
             }
         })
         .collect())

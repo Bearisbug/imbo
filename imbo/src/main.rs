@@ -4,6 +4,7 @@
 mod adapters;
 mod cli;
 mod daemon;
+mod files;
 mod hook;
 mod local;
 mod mcp;
@@ -52,14 +53,18 @@ enum Cmd {
     /// Groups.
     #[command(subcommand)]
     Group(cli::group::GroupCmd),
-    /// Send a message: imbo send <to> <message>.
+    /// Send a message: imbo send <to> <message> [--file <path>]...
     Send {
         /// name/session, account-ID/session, a group name or #group-ID; a name or account ID alone goes to their terminal inbox.
         to: String,
-        /// The message.
-        #[arg(required = true, num_args = 1.., trailing_var_arg = true)]
+        /// The message; may be left out when sending files.
         body: Vec<String>,
+        /// A file to attach (repeat for more: up to 20, 100 MB together).
+        #[arg(long = "file", short = 'f', value_name = "PATH")]
+        files: Vec<std::path::PathBuf>,
     },
+    /// Download a message's files to ~/.imbo/files/<message-ID>/.
+    Get { message_id: i64 },
     /// New terminal-inbox messages (shown once), then messages not yet delivered to your sessions; give an ID to read one.
     Inbox {
         message_id: Option<i64>,

@@ -178,7 +178,41 @@ fn connect_codex(home: &Home, codex: &Path) -> Result<(), String> {
     }
     args.extend(["--", exe.as_str(), "mcp"]);
     run(codex, &args)?;
+    // Uploads can outlast Codex's default 60 s tool timeout (API-MCP-001).
+    let config = crate::paths::codex_home().join("config.toml");
+    let text = std::fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    let with_timeout = add_tool_timeout(&text);
+    if with_timeout != text {
+        std::fs::write(&config, with_timeout).map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+/// Put `tool_timeout_sec = 600` into the `[mcp_servers.imbo]` table that
+/// `codex mcp add` wrote; there's no flag for it.
+fn add_tool_timeout(config: &str) -> String {
+    let lines: Vec<&str> = config.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim() == "[mcp_servers.imbo]") else {
+        return config.to_string();
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |i| start + 1 + i);
+    if lines[start + 1..end]
+        .iter()
+        .any(|l| l.trim_start().starts_with("tool_timeout_sec"))
+    {
+        return config.to_string();
+    }
+    let mut out = lines[..=start].to_vec();
+    out.push("tool_timeout_sec = 600");
+    out.extend(&lines[start + 1..]);
+    let mut s = out.join("\n");
+    if config.ends_with('\n') {
+        s.push('\n');
+    }
+    s
 }
 
 async fn daemon_status() -> Option<DaemonStatus> {
@@ -346,4 +380,21 @@ pub async fn uninstall(a: UninstallArgs) -> anyhow::Result<()> {
         ))
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_tool_timeout_goes_into_the_imbo_table() {
+        let before = "[mcp_servers.other]\ntool_timeout_sec = 30\n\n[mcp_servers.imbo]\ncommand = \"/bin/imbo\"\nargs = [\"mcp\"]\n";
+        let after = add_tool_timeout(before);
+        assert_eq!(
+            after,
+            "[mcp_servers.other]\ntool_timeout_sec = 30\n\n[mcp_servers.imbo]\ntool_timeout_sec = 600\ncommand = \"/bin/imbo\"\nargs = [\"mcp\"]\n"
+        );
+        assert_eq!(add_tool_timeout(&after), after);
+        assert_eq!(add_tool_timeout("model = \"x\"\n"), "model = \"x\"\n");
+    }
 }

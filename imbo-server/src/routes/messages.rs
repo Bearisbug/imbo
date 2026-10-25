@@ -8,7 +8,9 @@ use imbo_proto::api::{
     PullResponse, SendResponse,
 };
 use imbo_proto::text::{Address, parse_address};
-use imbo_proto::{Candidate, ErrorCode, MAX_BODY_CHARS, TOOL_TERMINAL};
+use imbo_proto::{
+    Candidate, ErrorCode, MAX_BODY_CHARS, MAX_FILES, MAX_MESSAGE_FILE_BYTES, TOOL_TERMINAL,
+};
 use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -20,13 +22,14 @@ use crate::error::{ApiError, ApiResult, err};
 use crate::state::St;
 use crate::views;
 
-/// Only `to`, `body`, `client_msg_id` are read; any sender fields a client
-/// adds are ignored (RULE-004).
+/// Only `to`, `body`, `client_msg_id`, `files` are read; any sender fields a
+/// client adds are ignored (RULE-004).
 #[derive(Deserialize)]
 pub struct SendIn {
     to: Option<String>,
     body: Option<String>,
     client_msg_id: Option<String>,
+    files: Option<Vec<Uuid>>,
 }
 
 #[derive(Clone, sqlx::FromRow)]
@@ -374,6 +377,47 @@ async fn rate_check(
     Ok(())
 }
 
+fn expired() -> ApiError {
+    err(
+        ErrorCode::FileExpired,
+        "A file was uploaded more than an hour ago and has been cleared. Upload it again.",
+    )
+}
+
+/// The files must be the sender's own, uploaded within the hour, not sent
+/// yet, and 100 MB together (INV-012). Locks them until the send commits.
+async fn check_files(tx: &mut sqlx::PgConnection, me: i32, files: &[Uuid]) -> ApiResult<()> {
+    let rows: Vec<(i64, String, bool)> = sqlx::query_as(
+        "SELECT size, state, created_at < now() - interval '1 hour' FROM files
+         WHERE id = ANY($1) AND account_id = $2 FOR UPDATE",
+    )
+    .bind(files)
+    .bind(me)
+    .fetch_all(&mut *tx)
+    .await?;
+    if rows.len() != files.len()
+        || rows
+            .iter()
+            .any(|(_, state, _)| state == "sent" || state == "uploading")
+    {
+        return Err(err(
+            ErrorCode::NotFound,
+            "A file isn't one you uploaded, or it was already sent with another message.",
+        ));
+    }
+    if rows.iter().any(|(_, state, old)| state != "ready" || *old) {
+        return Err(expired());
+    }
+    let total: i64 = rows.iter().map(|(size, _, _)| size).sum();
+    if total as u64 > MAX_MESSAGE_FILE_BYTES {
+        return Err(err(
+            ErrorCode::FileTooLarge,
+            "The files of one message can be at most 100 MB together.",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn send(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -382,7 +426,17 @@ pub async fn send(
     let to = req.to.unwrap_or_default();
     let body = req.body.unwrap_or_default();
     let client_msg_id = req.client_msg_id.unwrap_or_default();
-    if body.trim().is_empty() || body.chars().count() > MAX_BODY_CHARS {
+    let mut files = req.files.unwrap_or_default();
+    files.sort_unstable();
+    files.dedup();
+    if files.len() > MAX_FILES {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "A message can carry at most 20 files.",
+        ));
+    }
+    // With files the body may be empty (DESIGN §9 messages.body).
+    if (files.is_empty() && body.trim().is_empty()) || body.chars().count() > MAX_BODY_CHARS {
         return Err(err(
             ErrorCode::BodyInvalid,
             "The message must be 1 to 32000 characters.",
@@ -476,6 +530,9 @@ pub async fn send(
         Target::Group(_) => None,
     };
     let terminal = matches!(&target, Target::Direct { agent, .. } if agent.tool == TOOL_TERMINAL);
+    if !files.is_empty() {
+        check_files(&mut tx, c.account_id, &files).await?;
+    }
     let message_id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO messages (conversation_id, from_account, from_agent_id, to_agent_id, body, client_msg_id)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -496,6 +553,19 @@ pub async fn send(
             .map(|d| (StatusCode::CREATED, Json(d)))
             .ok_or_else(|| err(ErrorCode::Unavailable, "Retry."));
     };
+    if !files.is_empty() {
+        // `state = 'ready'` loses to a cleanup that got there first.
+        let r = sqlx::query(
+            "UPDATE files SET state = 'sent', message_id = $1 WHERE id = ANY($2) AND state = 'ready'",
+        )
+        .bind(message_id)
+        .bind(&files)
+        .execute(&mut *tx)
+        .await?;
+        if r.rows_affected() != files.len() as u64 {
+            return Err(expired());
+        }
+    }
     for (agent, account) in &recipients {
         sqlx::query(
             "INSERT INTO deliveries (message_id, agent_id, account_id) VALUES ($1, $2, $3)",

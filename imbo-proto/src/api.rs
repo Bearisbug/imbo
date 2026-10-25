@@ -262,6 +262,33 @@ pub struct MessageView {
     pub created_at: DateTime<Utc>,
     /// Address the recipient can put in `to` to answer.
     pub reply_to: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<FileView>,
+}
+
+/// An attachment as messages and uploads show it (DESIGN §8).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileView {
+    pub id: Uuid,
+    pub name: String,
+    pub size: u64,
+    /// 64 lowercase hex digits.
+    pub sha256: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Today's upload use (API-026).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Quota {
+    pub used: u64,
+    pub limit: u64,
+    pub resets_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadResponse {
+    pub file: FileView,
+    pub quota: Quota,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
