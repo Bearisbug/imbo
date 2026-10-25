@@ -160,7 +160,7 @@ async fn resolve(db: &PgPool, me: i32, to: &str) -> ApiResult<Target> {
     let Some(addr) = parse_address(to) else {
         return Err(err(
             ErrorCode::RecipientNotFound,
-            "Write the recipient as name/session, account-ID/session, a group name or #group-ID.",
+            "Write the recipient as name/session, account-ID/session, a name or account ID alone, a group name or #group-ID.",
         ));
     };
     match addr {

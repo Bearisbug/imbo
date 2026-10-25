@@ -1,12 +1,11 @@
 //! `imbo send` and `imbo inbox`.
 
-use imbo_proto::MAX_BODY_CHARS;
-use imbo_proto::TOOL_TERMINAL;
 use imbo_proto::api::{InboxResponse, MessageResponse, MessageView, PullResponse, SendResponse};
+use imbo_proto::{ErrorCode, MAX_BODY_CHARS, TOOL_TERMINAL};
 use serde_json::json;
 
-use super::{Reported, api_as, tool_name};
-use crate::local::env_actor;
+use super::{Reported, api_as, report, tool_name};
+use crate::local::{Local, env_actor};
 use crate::{render, ui};
 
 pub async fn send(to: String, body: String) -> anyhow::Result<()> {
@@ -100,8 +99,15 @@ pub async fn inbox(id: Option<i64>, all: bool) -> anyhow::Result<()> {
     // count as read (ADR-010); inside one, only that session is listed.
     let mut fresh: Vec<MessageView> = vec![];
     if env_actor().is_none() {
-        let p: PullResponse = api_as("POST", "/v1/inbox/pull", None).await?;
-        fresh = p.messages;
+        match Local::new()
+            .call("POST", "/v1/inbox/pull", None, None)
+            .await
+        {
+            Ok((v, _)) => fresh = serde_json::from_value::<PullResponse>(v)?.messages,
+            // Servers before v0.1.1 have no terminal inbox and refuse this pull.
+            Err(p) if p.is(ErrorCode::Forbidden) => {}
+            Err(p) => return Err(report(&p)),
+        }
     }
     if !fresh.is_empty() {
         println!(

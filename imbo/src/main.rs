@@ -54,13 +54,13 @@ enum Cmd {
     Group(cli::group::GroupCmd),
     /// Send a message: imbo send <to> <message>.
     Send {
-        /// name/session, account-ID/session, a group name or #group-ID.
+        /// name/session, account-ID/session, a group name or #group-ID; a name or account ID alone goes to their terminal inbox.
         to: String,
         /// The message.
         #[arg(required = true, num_args = 1.., trailing_var_arg = true)]
         body: Vec<String>,
     },
-    /// Messages not yet delivered to your sessions; give an ID to read one.
+    /// New terminal-inbox messages (shown once), then messages not yet delivered to your sessions; give an ID to read one.
     Inbox {
         message_id: Option<i64>,
         /// Include delivered messages.
