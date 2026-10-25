@@ -2,6 +2,7 @@
 //! where received files go (`~/.imbo/files/<message_id>/`).
 
 use std::io::Read;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use imbo_proto::api::FileView;
@@ -9,6 +10,7 @@ use imbo_proto::text::clean_file_name;
 use imbo_proto::{ErrorCode, MAX_FILES, MAX_MESSAGE_FILE_BYTES, Problem};
 use sha2::{Digest, Sha256};
 
+use crate::adapters::PastedImage;
 use crate::paths::Home;
 
 /// Size and SHA-256 (lowercase hex) of a file.
@@ -117,6 +119,27 @@ pub fn check_file(path: &str) -> Result<u64, Problem> {
         ));
     }
     Ok(meta.len())
+}
+
+/// Saves a pasted image under the temp folder, keyed by its hash so sending
+/// it again reuses the same file; the system clears the temp folder.
+pub fn save_pasted(n: u32, img: &PastedImage) -> Result<String, Problem> {
+    let hash = hex::encode(Sha256::digest(&img.bytes));
+    let dir = std::env::temp_dir().join("imbo-pasted").join(&hash[..16]);
+    let path = dir.join(format!("pasted-image-{n}.{}", img.ext()));
+    let write = || -> std::io::Result<()> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)?;
+        if !path.is_file() {
+            std::fs::write(&path, &img.bytes)?;
+        }
+        Ok(())
+    };
+    let shown = path.to_string_lossy().into_owned();
+    write().map_err(|e| unreadable(&shown, &e.to_string()))?;
+    Ok(shown)
 }
 
 /// The files of one message, checked before anything is uploaded

@@ -18,7 +18,7 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
 
-use crate::adapters::claude;
+use crate::adapters::{self, claude};
 use crate::files;
 use crate::local::Local;
 use crate::render;
@@ -70,26 +70,40 @@ fn schema(v: Value) -> Arc<JsonObject> {
     Arc::new(v.as_object().cloned().unwrap_or_default())
 }
 
-fn tools() -> Vec<Tool> {
+/// `claude`: the tool list for a Claude Code session, whose pasted images
+/// are sent by number (ADR-014); other tools name the pasted image's file.
+fn tools(claude: bool) -> Vec<Tool> {
+    let mut send = json!({
+        "type": "object",
+        "properties": {
+            "to": { "type": "string", "description": "收件人：alice/f1809d、51730462/f1809d、kando-dev、#5520183，或只写 alice（进对方的终端收件箱）" },
+            "body": { "type": "string", "description": "正文，最长 32000 字；带文件时可以为空" },
+            "files": {
+                "type": "array", "items": { "type": "string" },
+                "description": "要带的文件，写本机绝对路径；最多 20 个，合计不超过 100 MB"
+            }
+        },
+        "required": ["to"]
+    });
+    let pasted = if claude {
+        send["properties"]["images"] = json!({
+            "type": "array", "items": { "type": "integer" },
+            "description": "会话里粘贴的图片编号，[Image #2] 写 2；和 files 合计最多 20 个"
+        });
+        "用户在会话里粘贴的图片（[Image #N]）把编号写进 images，作为附件发出。"
+    } else {
+        "用户在会话里粘贴的图片，图片标签 <image … path=…> 里有路径，写进 files 作为附件发出。"
+    };
     vec![
         Tool::new(
             "send",
-            "给别的会话或群发 Imbo 消息。to 写「名称/会话」或「账号ID/会话」（会话写短 ID 或标题），\
+            format!(
+                "给别的会话或群发 Imbo 消息。to 写「名称/会话」或「账号ID/会话」（会话写短 ID 或标题），\
 群写群名或 #群ID。只写账号（名称或账号ID）时消息进对方的终端收件箱，由本人在终端用 imbo inbox 看；\
 要发给对方的 agent 就写到会话，不知道对方会话时先用 contacts 工具查。\
-files 可以带本机文件（绝对路径），对方电脑会自动下载。",
-            schema(json!({
-                "type": "object",
-                "properties": {
-                    "to": { "type": "string", "description": "收件人：alice/f1809d、51730462/f1809d、kando-dev、#5520183，或只写 alice（进对方的终端收件箱）" },
-                    "body": { "type": "string", "description": "正文，最长 32000 字；带文件时可以为空" },
-                    "files": {
-                        "type": "array", "items": { "type": "string" },
-                        "description": "要带的文件，写本机绝对路径；最多 20 个，合计不超过 100 MB"
-                    }
-                },
-                "required": ["to"]
-            })),
+files 可以带本机文件（绝对路径），对方电脑会自动下载。{pasted}"
+            ),
+            schema(send),
         ),
         Tool::new(
             "inbox",
@@ -364,7 +378,16 @@ impl Imbo {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                let paths = file_list(a);
+                let mut paths = file_list(a);
+                let images = image_list(a);
+                if !images.is_empty() {
+                    let (tool, sid) = actor.split_once(':').unwrap_or((actor, ""));
+                    for n in images {
+                        let img = adapters::pasted_image(tool, sid, n)
+                            .map_err(|m| Problem::new(ErrorCode::InvalidRequest, m))?;
+                        paths.push(files::save_pasted(n, &img)?);
+                    }
+                }
                 // Check every file before uploading any (FLOW-FILE S2).
                 files::check_files(&paths)?;
                 let mut ids = vec![];
@@ -692,6 +715,21 @@ fn file_list(a: &JsonObject) -> Vec<String> {
     }
 }
 
+/// `images`: numbers of pasted images; "2", "#2" and "[Image #2]" also work.
+fn image_list(a: &JsonObject) -> Vec<u32> {
+    let one = |v: &Value| {
+        v.as_u64().and_then(|n| u32::try_from(n).ok()).or_else(|| {
+            let digits: String = v.as_str()?.chars().filter(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })
+    };
+    match a.get("images") {
+        Some(Value::Array(xs)) => xs.iter().filter_map(one).collect(),
+        Some(v) => one(v).into_iter().collect(),
+        None => vec![],
+    }
+}
+
 fn str_list(a: &JsonObject) -> Option<Vec<String>> {
     let v = a.get("sessions")?;
     let list: Vec<String> = match v {
@@ -729,7 +767,9 @@ impl ServerHandler for Imbo {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(tools()))
+        Ok(ListToolsResult::with_all_items(tools(
+            self.claude_sid.is_some(),
+        )))
     }
 
     async fn call_tool(
