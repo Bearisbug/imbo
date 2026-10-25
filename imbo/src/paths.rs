@@ -177,19 +177,6 @@ pub fn hostname() -> String {
     "computer".into()
 }
 
-/// Directory holding the Claude Code state we read (`~/.claude`).
-pub fn claude_dir() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_home().join(".claude"))
-}
-
-pub fn codex_home() -> PathBuf {
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_home().join(".codex"))
-}
-
 /// Find an executable on PATH.
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;

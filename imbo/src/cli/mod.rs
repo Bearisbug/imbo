@@ -110,11 +110,10 @@ pub fn pad(s: &str, width: usize) -> String {
 }
 
 pub fn tool_name(tool: &str) -> &str {
-    match tool {
-        imbo_proto::TOOL_CLAUDE => "Claude Code",
-        imbo_proto::TOOL_CODEX => "Codex",
-        imbo_proto::TOOL_TERMINAL => "Terminal",
-        other => other,
+    match crate::adapters::get(tool) {
+        Some(a) => a.name(),
+        None if tool == imbo_proto::TOOL_TERMINAL => "Terminal",
+        None => tool,
     }
 }
 

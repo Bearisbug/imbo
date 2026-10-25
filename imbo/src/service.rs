@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, bail};
 
+use crate::adapters;
 use crate::paths::{Home, user_home};
 
 fn exe() -> PathBuf {
@@ -53,7 +54,10 @@ fn daemon_env(home: &Home) -> Vec<(String, String)> {
     }
     env.push(("PATH".into(), path));
     env.push(("HOME".into(), user_home().to_string_lossy().into_owned()));
-    for k in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "IMBO_FAULT_INJECT"] {
+    let tools = adapters::all()
+        .iter()
+        .flat_map(|a| a.env_pass().iter().copied());
+    for k in tools.chain(["IMBO_FAULT_INJECT"]) {
         if let Ok(v) = std::env::var(k)
             && !v.is_empty()
         {
@@ -234,12 +238,7 @@ fn spawn_detached(home: &Home) -> anyhow::Result<()> {
         .stdout(log.try_clone()?)
         .stderr(log);
     // Never let a daemon inherit an agent session's identity.
-    for k in [
-        "CLAUDE_CODE_SESSION_ID",
-        "CLAUDE_CODE_MESSAGING_SOCKET",
-        "CLAUDE_CODE_MESSAGING_TOKEN",
-        "CODEX_THREAD_ID",
-    ] {
+    for k in adapters::all().iter().flat_map(|a| a.env_session()) {
         cmd.env_remove(k);
     }
     unsafe {

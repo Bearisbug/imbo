@@ -7,17 +7,86 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::net::UnixStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::paths::codex_home;
+use super::{Adapter, Paste, PastedImage, env};
+use crate::paths::user_home;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub static CODEX: Codex = Codex;
+
+pub struct Codex;
+
+impl Adapter for Codex {
+    fn id(&self) -> &'static str {
+        imbo_proto::TOOL_CODEX
+    }
+
+    fn name(&self) -> &'static str {
+        "Codex"
+    }
+
+    /// The thread is in each call's `_meta["x-codex-turn-metadata"]`; shell
+    /// commands get `CODEX_THREAD_ID`.
+    fn session(&self, meta: &[&Map<String, Value>]) -> Option<String> {
+        meta.iter()
+            .find_map(|m| turn_thread(m))
+            .or_else(|| env("CODEX_THREAD_ID"))
+    }
+
+    /// Codex's MCP client says `codex-mcp-client` at initialize; its MCP
+    /// processes get no session in the environment.
+    fn owns_mcp(&self, client: &str) -> bool {
+        client.starts_with("codex")
+    }
+
+    fn env_pass(&self) -> &'static [&'static str] {
+        &["CODEX_HOME"]
+    }
+
+    fn env_session(&self) -> &'static [&'static str] {
+        &["CODEX_THREAD_ID"]
+    }
+
+    fn paste(&self) -> Paste {
+        Paste::Path(
+            "用户在会话里粘贴的图片，图片标签 <image … path=…> 里有路径，写进 files 作为附件发出。",
+        )
+    }
+
+    /// Codex names the file of each pasted image in the message, so the
+    /// agent sends that path as a file instead.
+    fn pasted_image(&self, _session_id: &str, _n: u32) -> Result<PastedImage, String> {
+        Err("这个会话里粘贴的图片，图片标签里带着路径，把路径写进 files。".into())
+    }
+}
+
+/// `_meta["x-codex-turn-metadata"]`, an object or a JSON string.
+fn turn_thread(meta: &Map<String, Value>) -> Option<String> {
+    let v = meta.get("x-codex-turn-metadata")?;
+    let obj = match v {
+        Value::String(s) => serde_json::from_str::<Value>(s).ok()?,
+        other => other.clone(),
+    };
+    obj.get("thread_id")
+        .or_else(|| obj.get("threadId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Codex's home directory (`~/.codex`).
+pub fn config_dir() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| user_home().join(".codex"))
+}
+
 pub fn socket_path() -> PathBuf {
-    codex_home()
+    config_dir()
         .join("app-server-control")
         .join("app-server-control.sock")
 }
@@ -124,7 +193,7 @@ pub struct Thread {
 /// Titles Codex writes to `session_index.jsonl` (last entry per thread wins).
 fn index_titles() -> HashMap<String, String> {
     let mut out = HashMap::new();
-    if let Ok(s) = std::fs::read_to_string(codex_home().join("session_index.jsonl")) {
+    if let Ok(s) = std::fs::read_to_string(config_dir().join("session_index.jsonl")) {
         for line in s.lines() {
             if let Ok(v) = serde_json::from_str::<Value>(line)
                 && let (Some(id), Some(name)) = (v["id"].as_str(), v["thread_name"].as_str())

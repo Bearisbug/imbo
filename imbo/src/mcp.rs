@@ -9,7 +9,7 @@ use imbo_proto::api::{
     MessageResponse, MessageView, MySessionsResponse, PullResponse, RequestsResponse, SendResponse,
 };
 use imbo_proto::local::{FetchResponse, LocalFile, LocalRequest};
-use imbo_proto::{ErrorCode, Problem, TOOL_CLAUDE, TOOL_CODEX};
+use imbo_proto::{ErrorCode, Problem};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
@@ -18,7 +18,7 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
 
-use crate::adapters::{self, claude};
+use crate::adapters::{self, Paste, Registration};
 use crate::files;
 use crate::local::Local;
 use crate::render;
@@ -28,32 +28,27 @@ const INSTRUCTIONS: &str = "Imbo 让这个会话和别人（或自己别的电�
 不需要回复的消息不要回。";
 
 pub async fn run() -> anyhow::Result<()> {
-    let claude_sid = std::env::var("CLAUDE_CODE_SESSION_ID")
-        .ok()
-        .filter(|s| !s.is_empty());
     let local = Arc::new(Local::new());
-    if let Some(sid) = &claude_sid {
-        tokio::spawn(heartbeat(local.clone(), sid.clone()));
+    let announce = adapters::all()
+        .iter()
+        .find_map(|a| a.announce().map(|r| (a.id(), r)));
+    if let Some((tool, r)) = announce {
+        tokio::spawn(heartbeat(local.clone(), tool, r));
     }
-    let server = Imbo { local, claude_sid };
+    let server = Imbo { local };
     let running = server.serve(rmcp::transport::stdio()).await?;
     running.waiting().await?;
     Ok(())
 }
 
 /// API-LOCAL-001, repeated so a restarted daemon learns the session again.
-async fn heartbeat(local: Arc<Local>, sid: String) {
-    let pid = claude::pid_for(&sid).unwrap_or_else(|| unsafe { libc::getppid() } as u32);
+async fn heartbeat(local: Arc<Local>, tool: &str, r: Registration) {
     let req = LocalRequest::Register {
-        tool: TOOL_CLAUDE.into(),
-        session_id: sid,
-        messaging_socket: std::env::var("CLAUDE_CODE_MESSAGING_SOCKET")
-            .ok()
-            .filter(|s| !s.is_empty()),
-        messaging_token: std::env::var("CLAUDE_CODE_MESSAGING_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty()),
-        pid,
+        tool: tool.into(),
+        session_id: r.session_id,
+        messaging_socket: r.messaging_socket,
+        messaging_token: r.messaging_token,
+        pid: r.pid,
     };
     loop {
         let _ = local.send_with(&req, Duration::from_secs(2)).await;
@@ -63,16 +58,15 @@ async fn heartbeat(local: Arc<Local>, sid: String) {
 
 struct Imbo {
     local: Arc<Local>,
-    claude_sid: Option<String>,
 }
 
 fn schema(v: Value) -> Arc<JsonObject> {
     Arc::new(v.as_object().cloned().unwrap_or_default())
 }
 
-/// `claude`: the tool list for a Claude Code session, whose pasted images
-/// are sent by number (ADR-014); other tools name the pasted image's file.
-fn tools(claude: bool) -> Vec<Tool> {
+/// `paste`: how this tool's agents send pasted pictures (ADR-014); `None`
+/// when the tool isn't known.
+fn tools(paste: Option<Paste>) -> Vec<Tool> {
     let mut send = json!({
         "type": "object",
         "properties": {
@@ -85,14 +79,16 @@ fn tools(claude: bool) -> Vec<Tool> {
         },
         "required": ["to"]
     });
-    let pasted = if claude {
-        send["properties"]["images"] = json!({
-            "type": "array", "items": { "type": "integer" },
-            "description": "会话里粘贴的图片编号，[Image #2] 写 2；和 files 合计最多 20 个"
-        });
-        "用户在会话里粘贴的图片（[Image #N]）把编号写进 images，作为附件发出。"
-    } else {
-        "用户在会话里粘贴的图片，图片标签 <image … path=…> 里有路径，写进 files 作为附件发出。"
+    let pasted = match paste {
+        Some(Paste::Numbered(hint)) => {
+            send["properties"]["images"] = json!({
+                "type": "array", "items": { "type": "integer" },
+                "description": "会话里粘贴的图片编号，[Image #2] 写 2；和 files 合计最多 20 个"
+            });
+            hint
+        }
+        Some(Paste::Path(hint)) => hint,
+        None => "",
     };
     vec![
         Tool::new(
@@ -160,20 +156,6 @@ invite 邀请联系人进群（group、account_id）；sessions 设置我哪些�
             })),
         ),
     ]
-}
-
-/// Codex puts the thread in `_meta["x-codex-turn-metadata"]`, as an object
-/// or a JSON string.
-fn codex_thread(meta: &JsonObject) -> Option<String> {
-    let v = meta.get("x-codex-turn-metadata")?;
-    let obj = match v {
-        Value::String(s) => serde_json::from_str::<Value>(s).ok()?,
-        other => other.clone(),
-    };
-    obj.get("thread_id")
-        .or_else(|| obj.get("threadId"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
 }
 
 type Out = Result<(String, Option<u32>), Problem>;
@@ -270,20 +252,6 @@ fn group_line(g: &GroupView) -> String {
 }
 
 impl Imbo {
-    fn actor(&self, meta: Option<&JsonObject>, ctx_meta: &JsonObject) -> Option<String> {
-        if let Some(sid) = &self.claude_sid {
-            return Some(format!("{TOOL_CLAUDE}:{sid}"));
-        }
-        meta.and_then(codex_thread)
-            .or_else(|| codex_thread(ctx_meta))
-            .or_else(|| {
-                std::env::var("CODEX_THREAD_ID")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-            })
-            .map(|t| format!("{TOOL_CODEX}:{t}"))
-    }
-
     async fn call(
         &self,
         actor: &str,
@@ -382,8 +350,15 @@ impl Imbo {
                 let images = image_list(a);
                 if !images.is_empty() {
                     let (tool, sid) = actor.split_once(':').unwrap_or((actor, ""));
+                    let tool = adapters::get(tool).ok_or_else(|| {
+                        Problem::new(
+                            ErrorCode::InvalidRequest,
+                            format!("Imbo 不认识工具 {tool}。"),
+                        )
+                    })?;
                     for n in images {
-                        let img = adapters::pasted_image(tool, sid, n)
+                        let img = tool
+                            .pasted_image(sid, n)
                             .map_err(|m| Problem::new(ErrorCode::InvalidRequest, m))?;
                         paths.push(files::save_pasted(n, &img)?);
                     }
@@ -765,10 +740,16 @@ impl ServerHandler for Imbo {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _ctx: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        let client = ctx
+            .peer
+            .peer_info()
+            .map(|i| i.client_info.name.clone())
+            .unwrap_or_default();
+        let tool = adapters::all().iter().find(|a| a.owns_mcp(&client));
         Ok(ListToolsResult::with_all_items(tools(
-            self.claude_sid.is_some(),
+            tool.map(|a| a.paste()),
         )))
     }
 
@@ -778,7 +759,10 @@ impl ServerHandler for Imbo {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let args = request.arguments.clone().unwrap_or_default();
-        let Some(actor) = self.actor(request.meta.as_deref().map(|m| &**m), &ctx.meta) else {
+        let mut meta: Vec<&JsonObject> =
+            request.meta.as_deref().map(|m| &**m).into_iter().collect();
+        meta.push(&ctx.meta);
+        let Some(actor) = adapters::actor(&meta) else {
             let text = "Imbo 认不出是哪个会话在调用（没有会话 ID）。请在 Claude Code 或 Codex 会话里使用。";
             return Ok(CallToolResult::error(vec![ContentBlock::text(text)]).into());
         };

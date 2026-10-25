@@ -8,12 +8,76 @@ use std::time::Duration;
 
 use base64::Engine;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
-use super::PastedImage;
-use crate::paths::claude_dir;
+use super::{Adapter, Paste, PastedImage, Registration, env};
+use crate::paths::user_home;
+
+pub static CLAUDE: Claude = Claude;
+
+pub struct Claude;
+
+impl Adapter for Claude {
+    fn id(&self) -> &'static str {
+        imbo_proto::TOOL_CLAUDE
+    }
+
+    fn name(&self) -> &'static str {
+        "Claude Code"
+    }
+
+    /// Claude Code gives its MCP processes and shell commands the session
+    /// in the environment.
+    fn session(&self, _meta: &[&Map<String, Value>]) -> Option<String> {
+        env("CLAUDE_CODE_SESSION_ID")
+    }
+
+    fn owns_mcp(&self, _client: &str) -> bool {
+        self.session(&[]).is_some()
+    }
+
+    fn env_pass(&self) -> &'static [&'static str] {
+        &["CLAUDE_CONFIG_DIR"]
+    }
+
+    fn env_session(&self) -> &'static [&'static str] {
+        &[
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+        ]
+    }
+
+    fn announce(&self) -> Option<Registration> {
+        let session_id = self.session(&[])?;
+        let pid = pid_for(&session_id).unwrap_or_else(|| unsafe { libc::getppid() } as u32);
+        Some(Registration {
+            session_id,
+            messaging_socket: env("CLAUDE_CODE_MESSAGING_SOCKET"),
+            messaging_token: env("CLAUDE_CODE_MESSAGING_TOKEN"),
+            pid,
+        })
+    }
+
+    fn paste(&self) -> Paste {
+        Paste::Numbered("用户在会话里粘贴的图片（[Image #N]）把编号写进 images，作为附件发出。")
+    }
+
+    fn pasted_image(&self, session_id: &str, n: u32) -> Result<PastedImage, String> {
+        transcript_image(session_id, n).ok_or_else(|| {
+            format!("会话记录里找不到粘贴的图片 [Image #{n}]，请让使用者重新粘贴后再发。")
+        })
+    }
+}
+
+/// Directory holding the Claude Code state we read (`~/.claude`).
+pub fn config_dir() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| user_home().join(".claude"))
+}
 
 pub async fn inject(socket: &str, token: &str, text: &str) -> Result<(), String> {
     if super::fault("claude") {
@@ -51,7 +115,7 @@ struct SessionFile {
 }
 
 fn sessions_dir() -> PathBuf {
-    claude_dir().join("sessions")
+    config_dir().join("sessions")
 }
 
 fn read(path: &std::path::Path) -> Option<SessionFile> {
@@ -89,9 +153,9 @@ pub fn alive(pid: u32) -> bool {
 /// Image `n` pasted into the session, read from its transcript
 /// `~/.claude/projects/<dir>/<session>.jsonl`. The transcript format is not
 /// in Claude Code's public docs (risk in DESIGN §28).
-pub fn pasted_image(session_id: &str, n: u32) -> Option<PastedImage> {
+fn transcript_image(session_id: &str, n: u32) -> Option<PastedImage> {
     let name = format!("{session_id}.jsonl");
-    let path = std::fs::read_dir(claude_dir().join("projects"))
+    let path = std::fs::read_dir(config_dir().join("projects"))
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path().join(&name))

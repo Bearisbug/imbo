@@ -18,17 +18,7 @@ pub struct Local {
 /// Acting session from the environment (ADR-008): a terminal command run
 /// inside an agent session acts as that session.
 pub fn env_actor() -> Option<String> {
-    if let Ok(id) = std::env::var("CLAUDE_CODE_SESSION_ID")
-        && !id.is_empty()
-    {
-        return Some(format!("{}:{id}", imbo_proto::TOOL_CLAUDE));
-    }
-    if let Ok(id) = std::env::var("CODEX_THREAD_ID")
-        && !id.is_empty()
-    {
-        return Some(format!("{}:{id}", imbo_proto::TOOL_CODEX));
-    }
-    None
+    crate::adapters::actor(&[])
 }
 
 impl Local {

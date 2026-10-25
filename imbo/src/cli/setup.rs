@@ -10,8 +10,9 @@ use serde_json::{Value, json};
 
 use super::Reported;
 use super::login::{choose_server, need_terminal, reload_daemon, sign_in};
+use crate::adapters::{claude, codex};
 use crate::local::Local;
-use crate::paths::{Home, claude_dir, codex_home, user_home, which};
+use crate::paths::{Home, user_home, which};
 use crate::{service, ui};
 
 #[derive(Args)]
@@ -172,11 +173,11 @@ fn disconnect_claude(home: &Home, claude: &Path) {
 const CLAUDE_RULE: &str = "mcp__plugin_imbo_imbo";
 
 fn claude_settings() -> PathBuf {
-    claude_dir().join("settings.json")
+    claude::config_dir().join("settings.json")
 }
 
 fn codex_config() -> PathBuf {
-    codex_home().join("config.toml")
+    codex::config_dir().join("config.toml")
 }
 
 /// `p` with the home directory written as `~`.
