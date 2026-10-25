@@ -87,6 +87,9 @@ esac
 
 say ""
 if [ -r /dev/tty ] && ( : < /dev/tty ) 2>/dev/null; then
+  # exec replaces this shell, so the EXIT trap never runs: clean up first.
+  rm -rf "$tmp"
+  trap - EXIT INT TERM
   exec "$BIN_DIR/imbo" setup "$@" < /dev/tty
 else
   say "Next: run ${B}imbo setup${N} in a terminal to sign in and connect Claude Code and Codex."
