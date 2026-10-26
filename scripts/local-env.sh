@@ -48,6 +48,8 @@ case "${1:-}" in
     ps -axE -o pid=,command= | grep "HOME=$TH " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null
     ps -ax -o pid=,command= | grep "$L/codex-home" | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null
     sleep 1
+    # MiniMax Code makes its plugin hook cache read-only.
+    chmod -R u+w "$L" 2>/dev/null
     rm -rf "$L"
     ;;
 esac
