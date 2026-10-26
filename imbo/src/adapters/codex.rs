@@ -147,14 +147,14 @@ impl Adapter for Codex {
 
     fn paste(&self) -> Paste {
         Paste::Path(
-            "用户在会话里粘贴的图片，图片标签 <image … path=…> 里有路径，写进 files 作为附件发出。",
+            " Images the user pasted in this session: the image tag <image … path=…> has the path; put it in files to send it as an attachment.",
         )
     }
 
     /// Codex names the file of each pasted image in the message, so the
     /// agent sends that path as a file instead.
     fn pasted_image(&self, _session_id: &str, _n: u32) -> Result<PastedImage, String> {
-        Err("这个会话里粘贴的图片，图片标签里带着路径，把路径写进 files。".into())
+        Err("Images pasted in this session carry their path in the image tag; put that path in files.".into())
     }
 
     fn find(&self) -> Install {

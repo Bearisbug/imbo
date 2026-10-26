@@ -9,8 +9,8 @@ use crate::adapters;
 use crate::local::{Heard, Local};
 use crate::ui;
 
-const UNKNOWN: &str = "Imbo 认不出这个 imbo wait 属于哪个会话，没有开始监听。它只在 MiniMax Code、ZCode 的主会话里有用，子 agent 里不用运行。";
-const ALREADY: &str = "Imbo：这个会话已经有一个 imbo wait 在后台等消息，这个直接退出，不用再运行。";
+const UNKNOWN: &str = "Imbo can't tell which session this imbo wait belongs to, so it isn't listening. It's only needed in the main session of MiniMax Code or ZCode, not in subagents.";
+const ALREADY: &str = "Imbo: an imbo wait is already waiting for messages in the background for this session, so this one exits. No need to run it again.";
 
 pub async fn wait() -> anyhow::Result<()> {
     let target = adapters::all()

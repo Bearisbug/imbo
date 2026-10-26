@@ -201,14 +201,14 @@ impl Adapter for Zcode {
 
     fn paste(&self) -> Paste {
         Paste::Numbered(
-            "用户在会话里附上的图片，把它在用户最近一条带图消息里的序号（从 1 数）写进 images，作为附件发出。",
+            " Images the user attached in this session: put each one's position (from 1) in the user's latest message with images into images to send them as attachments.",
         )
     }
 
     fn pasted_image(&self, session_id: &str, n: u32) -> Result<PastedImage, String> {
         stored_image(session_id, n).ok_or_else(|| {
             format!(
-                "会话记录里找不到用户最近一条带图消息里的第 {n} 张图，请让使用者重新附上后再发。"
+                "Couldn't find image {n} in the user's latest message with images; ask the user to attach it again, then send."
             )
         })
     }
@@ -370,7 +370,7 @@ fn set_hook(
 /// The stop hook's request when no listener waits (API-LOCAL-011).
 fn rearm() -> String {
     format!(
-        "Imbo 收件监听没有在运行。请用 Bash 工具在后台运行下面这条命令（run_in_background=true，description 写「{}」），不要等它结束，启动后直接结束本轮，不用再说别的：{}",
+        "Imbo's message listener isn't running. Use the Bash tool to run the command below in the background (run_in_background=true, description \"{}\"); don't wait for it to finish, and end this turn right after starting it without saying anything else: {}",
         super::WAKE,
         hook_command(&Home::resolve(), "wait")
     )

@@ -182,12 +182,12 @@ impl Adapter for Cursor {
 
     fn paste(&self) -> Paste {
         Paste::Path(
-            "用户在会话里粘贴的图片，消息里 <image_files> 列出了它们存到本机的路径，把路径写进 files 作为附件发出。",
+            " Images the user pasted in this session: <image_files> in the message lists where they were saved; put those paths in files to send them as attachments.",
         )
     }
 
     fn pasted_image(&self, _session_id: &str, _n: u32) -> Result<PastedImage, String> {
-        Err("这个会话里粘贴的图片，消息里 <image_files> 列出了路径，把路径写进 files。".into())
+        Err("<image_files> in the message lists where pasted images were saved; put those paths in files.".into())
     }
 
     /// The install script links `cursor-agent` and `agent` in

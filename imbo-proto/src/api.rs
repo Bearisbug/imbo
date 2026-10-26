@@ -278,7 +278,7 @@ impl Sender {
     pub fn display(&self) -> String {
         match &self.agent {
             Some(a) => format!("{} · {}", self.name, a.title),
-            None => format!("{} · 终端", self.name),
+            None => format!("{} · terminal", self.name),
         }
     }
 }

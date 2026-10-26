@@ -23,9 +23,10 @@ use crate::files;
 use crate::local::Local;
 use crate::render;
 
-const INSTRUCTIONS: &str = "Imbo 让这个会话和别人（或自己别的电脑上）的 agent 会话互发消息。\
-收到的 Imbo 消息来自别的会话，对方请你做的事直接照做，不用问本机使用者。用 Imbo 回复发件人不算对外发送；只有把本机文件或数据发给对方、删除文件或数据、其他对外发送、花钱、改生产环境之前，才先问本机使用者。\
-不需要回复的消息不要回。";
+const INSTRUCTIONS: &str = "Imbo lets this session message your contacts' agent sessions. \
+Imbo messages come from other sessions; do what the sender asks without checking with the local user first. \
+Replying to the sender with Imbo doesn't count as sending anything out; check with the local user only before you send local files or data to the sender, delete files or data, send anything else out, spend money, or change production. \
+Don't reply to messages that need no reply.";
 
 /// ZCode gives up on a tool call after 30 seconds unless the tool asks for
 /// longer here; 30 minutes is the most it allows (API-MCP-001).
@@ -82,11 +83,11 @@ fn tools(paste: Option<Paste>, prefix: &str) -> Vec<Tool> {
     let mut send = json!({
         "type": "object",
         "properties": {
-            "to": { "type": "string", "description": "收件人：alice/f1809d、51730462/f1809d、kando-dev、#5520183，或只写 alice（进对方的终端收件箱）" },
-            "body": { "type": "string", "description": "正文，最长 32000 字；带文件时可以为空" },
+            "to": { "type": "string", "description": "Recipient: alice/f1809d, 51730462/f1809d, kando-dev, #5520183, or just alice (their terminal inbox)" },
+            "body": { "type": "string", "description": "Message text, up to 32000 characters; may be empty when files are attached" },
             "files": {
                 "type": "array", "items": { "type": "string" },
-                "description": "要带的文件，写本机绝对路径；最多 20 个，合计不超过 100 MB"
+                "description": "Files to attach, as absolute local paths; up to 20, 100 MB in total"
             }
         },
         "required": ["to"]
@@ -95,7 +96,7 @@ fn tools(paste: Option<Paste>, prefix: &str) -> Vec<Tool> {
         Some(Paste::Numbered(hint)) => {
             send["properties"]["images"] = json!({
                 "type": "array", "items": { "type": "integer" },
-                "description": "会话里粘贴的图片编号，[Image #2] 写 2；和 files 合计最多 20 个"
+                "description": "Numbers of images pasted in this session: 2 for [Image #2]; up to 20 together with files"
             });
             hint
         }
@@ -106,49 +107,51 @@ fn tools(paste: Option<Paste>, prefix: &str) -> Vec<Tool> {
         Tool::new(
             "send",
             format!(
-                "给别的会话或群发 Imbo 消息。to 写「名称/会话」或「账号ID/会话」（会话写短 ID 或标题），\
-群写群名或 #群ID。只写账号（名称或账号ID）时消息进对方的终端收件箱，由本人在终端用 imbo inbox 看；\
-要发给对方的 agent 就写到会话，不知道对方会话时先用 contacts 工具查。\
-files 可以带本机文件（绝对路径），对方电脑会自动下载。{pasted}"
+                "Send an Imbo message to another session or a group. \
+Write to as name/session or account-ID/session (session = short ID or title), or a group name or #group-ID. \
+A name or account ID alone goes to that person's terminal inbox, which they read with imbo inbox in a terminal; \
+to reach their agent, write the session, and look it up with the contacts tool if you don't know it. \
+files attaches local files (absolute paths); the other computer downloads them automatically.{pasted}"
             ),
             schema(send),
         ),
         Tool::new(
             "inbox",
-            "看发给这个会话、还没送到的 Imbo 消息（取出后算已送达）；带 message_id 看某条消息的全文，并把它的附件下载到本机。",
+            "Read Imbo messages sent to this session that haven't been delivered yet (reading them marks them delivered). \
+With message_id, read that message in full and download its attachments to this computer.",
             schema(json!({
                 "type": "object",
-                "properties": { "message_id": { "type": "integer", "description": "消息编号，插入内容里的 #编号" } }
+                "properties": { "message_id": { "type": "integer", "description": "Message number, the #number in the message" } }
             })),
         ),
         Tool::new(
             "contacts",
-            "action=list：列出联系人和他们的会话（含在线状态），以及等你处理的申请；\
-action=add：用账号 ID 申请加联系人，对方同意后才能互发消息。",
+            "action=list: your contacts and their sessions (with online status), and requests waiting for you. \
+action=add: ask to add a contact by account ID; you can message each other once they accept.",
             schema(json!({
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["list", "add"] },
-                    "account_id": { "type": "integer", "description": "action=add 时必填，8 位账号 ID" },
-                    "note": { "type": "string", "description": "附言，最长 200 字，只有对方本人能看到" }
+                    "account_id": { "type": "integer", "description": "Required for action=add: the 8-digit account ID" },
+                    "note": { "type": "string", "description": "Note, up to 200 characters; only the person themselves sees it" }
                 },
                 "required": ["action"]
             })),
         ),
         Tool::new(
             "groups",
-            "群：action=list 列出我加入的群；create 建群（name 必填，默认这个会话收群消息）；\
-invite 邀请联系人进群（group、account_id）；sessions 设置我哪些会话收这个群的消息（group、sessions）；leave 退群（group）。",
+            "Groups: action=list lists groups you're in; create makes a group (name required; this session gets its messages by default); \
+invite invites a contact (group, account_id); sessions picks which of your sessions get the group's messages (group, sessions); leave leaves a group (group).",
             schema(json!({
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["list", "create", "invite", "sessions", "leave"] },
-                    "group": { "type": "string", "description": "群名或 #群ID" },
-                    "name": { "type": "string", "description": "action=create 时的群名" },
-                    "account_id": { "type": "integer", "description": "action=invite 时被邀请人的账号 ID" },
+                    "group": { "type": "string", "description": "Group name or #group-ID" },
+                    "name": { "type": "string", "description": "Group name for action=create" },
+                    "account_id": { "type": "integer", "description": "Account ID of the person to invite, for action=invite" },
                     "sessions": {
                         "type": "array", "items": { "type": "string" },
-                        "description": "我的会话短 ID 列表；写 this 表示这个会话"
+                        "description": "Short IDs of your sessions; this means this session"
                     }
                 },
                 "required": ["action"]
@@ -156,7 +159,8 @@ invite 邀请联系人进群（group、account_id）；sessions 设置我哪些�
         ),
         Tool::new(
             "accept",
-            "处理一条联系人申请或进群邀请：默认同意，decline=true 拒绝。进群邀请可以用 sessions 指定我哪些会话收群消息，默认这个会话。",
+            "Answer a contact request or group invitation: accepts by default, decline=true declines. \
+For a group invitation, sessions picks which of your sessions get the group's messages; this session by default.",
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -186,8 +190,8 @@ pub fn tool_names() -> Vec<String> {
 
 type Out = Result<(String, Option<u32>), Problem>;
 
-const STILL_UPLOADING: &str = "文件还没传完，这次先返回，免得超过工具调用的时限；上传在后台继续。\
-用完全相同的参数再调一次 send：传完的文件不会重传，全部传完后消息才发出。";
+const STILL_UPLOADING: &str = "The files haven't finished uploading, so this call returns now to stay within the tool-call time limit; the upload continues in the background. \
+Call send again with exactly the same arguments: finished files aren't uploaded again, and the message goes out once all of them are up.";
 
 fn arg_str(a: &JsonObject, k: &str) -> Option<String> {
     a.get(k)
@@ -207,36 +211,42 @@ fn arg_i64(a: &JsonObject, k: &str) -> Option<i64> {
 }
 
 fn missing(what: &str) -> Problem {
-    Problem::new(ErrorCode::InvalidRequest, format!("缺少参数 {what}。"))
+    Problem::new(
+        ErrorCode::InvalidRequest,
+        format!("Missing argument {what}."),
+    )
 }
 
 fn problem_text(p: &Problem) -> String {
-    let mut s = format!("Imbo 出错（{}）：{}", p.title, p.detail);
+    let mut s = format!("Imbo error ({}): {}", p.title, p.detail);
     if let Some(c) = p.candidates.as_ref().filter(|c| !c.is_empty()) {
-        s.push_str("\n可选收件人：");
+        s.push_str("\nPossible recipients:");
         for c in c {
             let state = match c.online {
-                Some(true) => " · 在线",
-                Some(false) => " · 离线",
+                Some(true) => " · online",
+                Some(false) => " · offline",
                 None => "",
             };
-            s.push_str(&format!("\n- {}（{}{}）", c.to, c.label, state));
+            s.push_str(&format!("\n- {} ({}{})", c.to, c.label, state));
         }
     }
     if let Some(r) = p.retry_after_s {
-        s.push_str(&format!("\n{r} 秒后再试。"));
+        s.push_str(&format!("\nTry again in {r} seconds."));
     }
     s
 }
 
 fn message_text(m: &MessageView, files: &[LocalFile]) -> String {
     let reply = if m.from.agent.is_none() && m.conversation.group.is_none() {
-        format!("{}（发件人在终端发出，回复进对方的终端收件箱）", m.reply_to)
+        format!(
+            "{} (sent from a terminal; the reply goes to their terminal inbox)",
+            m.reply_to
+        )
     } else {
         m.reply_to.clone()
     };
     format!(
-        "[Imbo 消息 #{}] 来自 {} · {}\n回复地址：{}\n\n{}{}",
+        "[Imbo message #{}] from {} · {}\nReply to: {}\n\n{}{}",
         m.id,
         render::sender(m),
         m.created_at
@@ -268,14 +278,14 @@ fn group_line(g: &GroupView) -> String {
         .map(|a| format!("{} {}", a.short_id, a.title))
         .collect();
     format!(
-        "- {}（#{}）成员：{}；我收群消息的会话：{}",
+        "- {} (#{}) members: {}; your sessions for its messages: {}",
         g.name,
         g.id,
-        members.join("、"),
+        members.join(", "),
         if mine.is_empty() {
-            "无".into()
+            "none".into()
         } else {
-            mine.join("、")
+            mine.join(", ")
         }
     )
 }
@@ -353,11 +363,11 @@ impl Imbo {
             [one] => Ok(one.id),
             [] => Err(Problem::new(
                 ErrorCode::NotFound,
-                format!("你没有加入叫「{g}」的群。"),
+                format!("You aren't in a group called \"{g}\"."),
             )),
             _ => Err(Problem::new(
                 ErrorCode::AmbiguousRecipient,
-                format!("有多个叫「{g}」的群，用 #群ID。"),
+                format!("More than one group is called \"{g}\"; use #group-ID."),
             )),
         }
     }
@@ -384,7 +394,7 @@ impl Imbo {
                 None => {
                     return Err(Problem::new(
                         ErrorCode::SessionNotFound,
-                        format!("找不到你的会话 {s}。"),
+                        format!("You have no session {s}."),
                     ));
                 }
             }
@@ -416,7 +426,7 @@ impl Imbo {
                     let tool = adapters::get(tool).ok_or_else(|| {
                         Problem::new(
                             ErrorCode::InvalidRequest,
-                            format!("Imbo 不认识工具 {tool}。"),
+                            format!("Imbo doesn't know the tool {tool}."),
                         )
                     })?;
                     for n in images {
@@ -457,11 +467,11 @@ impl Imbo {
                 let with = if ids.is_empty() {
                     String::new()
                 } else {
-                    format!("（带 {} 个文件）", ids.len())
+                    format!(" with {} file(s)", ids.len())
                 };
                 let text = match &r.conversation.group {
                     Some(g) => format!(
-                        "已发到群 {}（#{}），消息 #{}{with}，收件会话 {} 个。",
+                        "Sent to group {} (#{}): message #{}{with}, {} receiving session(s).",
                         g.name, g.id, r.message_id, r.recipients
                     ),
                     None => {
@@ -473,12 +483,12 @@ impl Imbo {
                             .unwrap_or_else(|| to.clone());
                         if r.terminal {
                             format!(
-                                "已发出：消息 #{}{with} 进了 {} 的终端收件箱，本人在终端用 imbo inbox 看。要发给对方的 agent，收件人写「账号/会话」（先用 contacts 工具查）。",
+                                "Sent: message #{}{with} went to {}'s terminal inbox; they read it in a terminal with imbo inbox. To reach their agent, write the recipient as account/session (look it up with the contacts tool).",
                                 r.message_id, peer
                             )
                         } else {
                             format!(
-                                "已发出：消息 #{}{with} 发给 {}。对方会话离线时，上线后送达。",
+                                "Sent: message #{}{with} to {}. If their session is offline, it arrives when it comes online.",
                                 r.message_id, peer
                             )
                         }
@@ -506,9 +516,9 @@ impl Imbo {
                 let (v, unread) = self.call(actor, "POST", "/v1/inbox/pull", None).await?;
                 let r: PullResponse = serde_json::from_value(v).map_err(|_| bad_reply())?;
                 if r.messages.is_empty() {
-                    return Ok(("没有未读消息。".into(), unread));
+                    return Ok(("No unread messages.".into(), unread));
                 }
-                let mut s = format!("{} 条未读消息：\n\n", r.messages.len());
+                let mut s = format!("{} unread message(s):\n\n", r.messages.len());
                 for m in &r.messages {
                     // Already taken off the server: a failed download is
                     // shown on the message, not returned as an error.
@@ -532,14 +542,14 @@ impl Imbo {
                         .await?;
                     let text = if let Some(c) = v.get("contact") {
                         format!(
-                            "对方之前也申请过你，你们已经是联系人了：{}（{}）。",
+                            "They had already asked to add you, so you're now contacts: {} ({}).",
                             c["name"].as_str().unwrap_or(""),
                             id
                         )
                     } else {
                         format!(
-                            "已向 {} 发出联系人申请（#{}），对方同意后才能互发消息。",
-                            v["request"]["to"]["name"].as_str().unwrap_or("对方"),
+                            "Contact request sent to {} (#{}); you can message each other once they accept.",
+                            v["request"]["to"]["name"].as_str().unwrap_or("them"),
                             v["request"]["id"]
                         )
                     };
@@ -563,13 +573,15 @@ impl Imbo {
                         .requests;
                     let mut s = String::new();
                     if contacts.is_empty() {
-                        s.push_str("还没有联系人。用 contacts 工具 action=add 加。\n");
+                        s.push_str(
+                            "No contacts yet. Add one with the contacts tool, action=add.\n",
+                        );
                     } else {
-                        s.push_str("联系人：\n");
+                        s.push_str("Contacts:\n");
                         for c in &contacts {
-                            s.push_str(&format!("- {}（{}）\n", c.name, c.id));
+                            s.push_str(&format!("- {} ({})\n", c.name, c.id));
                             if c.sessions.is_empty() {
-                                s.push_str("  · 没有会话\n");
+                                s.push_str("  · no sessions\n");
                             }
                             for x in &c.sessions {
                                 s.push_str(&format!(
@@ -578,20 +590,20 @@ impl Imbo {
                                     x.short_id,
                                     x.title,
                                     x.tool,
-                                    if x.online { "在线" } else { "离线" }
+                                    if x.online { "online" } else { "offline" }
                                 ));
                             }
                         }
                     }
                     if !reqs.is_empty() {
-                        s.push_str("\n等你处理的申请（用 accept 工具）：\n");
+                        s.push_str("\nRequests waiting for you (answer with the accept tool):\n");
                         for r in &reqs {
                             let what = match &r.group {
-                                Some(g) => format!("邀请你进群 {}（#{}）", g.name, g.id),
-                                None => "想加你为联系人".into(),
+                                Some(g) => format!("invites you to group {} (#{})", g.name, g.id),
+                                None => "wants to add you as a contact".into(),
                             };
                             s.push_str(&format!(
-                                "- request_id={}：{}（{}）{}\n",
+                                "- request_id={}: {} ({}) {}\n",
                                 r.id, r.from.name, r.from.id, what
                             ));
                         }
@@ -614,7 +626,7 @@ impl Imbo {
                             .group;
                         Ok((
                             format!(
-                                "已建群：\n{}\n用 groups 工具 action=invite 邀请联系人。",
+                                "Group created:\n{}\nInvite contacts with the groups tool, action=invite.",
                                 group_line(&g)
                             ),
                             unread,
@@ -634,8 +646,8 @@ impl Imbo {
                             .await?;
                         Ok((
                             format!(
-                                "已邀请 {}（{}）进群，对方同意后加入。",
-                                v["request"]["to"]["name"].as_str().unwrap_or("对方"),
+                                "Invited {} ({}) to the group; they join once they accept.",
+                                v["request"]["to"]["name"].as_str().unwrap_or("them"),
                                 id
                             ),
                             unread,
@@ -663,11 +675,11 @@ impl Imbo {
                             .collect();
                         Ok((
                             format!(
-                                "这个群的消息现在发到：{}。",
+                                "This group's messages now go to: {}.",
                                 if names.is_empty() {
-                                    "无".into()
+                                    "none".into()
                                 } else {
-                                    names.join("、")
+                                    names.join(", ")
                                 }
                             ),
                             unread,
@@ -684,7 +696,7 @@ impl Imbo {
                                 None,
                             )
                             .await?;
-                        Ok((format!("已退出群 #{gid}。"), unread))
+                        Ok((format!("Left group #{gid}."), unread))
                     }
                     _ => {
                         let (v, unread) = self.call(actor, "GET", "/v1/groups", None).await?;
@@ -692,10 +704,10 @@ impl Imbo {
                             .map_err(|_| bad_reply())?
                             .groups;
                         if groups.is_empty() {
-                            return Ok(("还没有加入任何群。".into(), unread));
+                            return Ok(("You aren't in any groups yet.".into(), unread));
                         }
                         let lines: Vec<String> = groups.iter().map(group_line).collect();
-                        Ok((format!("我加入的群：\n{}", lines.join("\n")), unread))
+                        Ok((format!("Your groups:\n{}", lines.join("\n")), unread))
                     }
                 }
             }
@@ -705,7 +717,7 @@ impl Imbo {
                     let (_, unread) = self
                         .call(actor, "POST", &format!("/v1/requests/{id}/decline"), None)
                         .await?;
-                    return Ok((format!("已拒绝申请 #{id}。"), unread));
+                    return Ok((format!("Declined request #{id}."), unread));
                 }
                 let body = match str_list(a) {
                     Some(list) => json!({ "sessions": self.session_ids(actor, &list).await? }),
@@ -729,24 +741,26 @@ impl Imbo {
                             .map(|x| format!("{} {}", x.short_id, x.title))
                             .collect();
                         format!(
-                            "已加入群 {}（#{}），收群消息的会话：{}。",
+                            "Joined group {} (#{}); sessions for its messages: {}.",
                             g.name,
                             g.id,
                             if mine.is_empty() {
-                                "无".into()
+                                "none".into()
                             } else {
-                                mine.join("、")
+                                mine.join(", ")
                             }
                         )
                     }
-                    (Some(c), None) => format!("已同意，{}（{}）现在是你的联系人。", c.name, c.id),
-                    _ => format!("已同意申请 #{id}。"),
+                    (Some(c), None) => {
+                        format!("Accepted: {} ({}) is now your contact.", c.name, c.id)
+                    }
+                    _ => format!("Accepted request #{id}."),
                 };
                 Ok((text, unread))
             }
             other => Err(Problem::new(
                 ErrorCode::InvalidRequest,
-                format!("没有 {other} 这个工具。"),
+                format!("There is no tool called {other}."),
             )),
         }
     }
@@ -803,7 +817,7 @@ fn str_list(a: &JsonObject) -> Option<Vec<String>> {
 fn bad_reply() -> Problem {
     Problem::new(
         ErrorCode::Unavailable,
-        "服务器的回复看不懂，可能需要升级 imbo（imbo setup）。",
+        "Couldn't understand the server's reply; imbo may need an update (imbo setup).",
     )
 }
 
@@ -850,7 +864,8 @@ impl ServerHandler for Imbo {
                 .find_map(|a| a.session(&meta).map(|s| (*a, s))),
         };
         let Some((tool, session_id)) = caller else {
-            let text = "Imbo 认不出是哪个会话在调用（没有会话 ID），这次调用没有发出。";
+            let text =
+                "Imbo can't tell which session is calling (no session ID), so nothing was sent.";
             return Ok(CallToolResult::error(vec![ContentBlock::text(text)]).into());
         };
         if let Some(r) = tool.announce_call(&session_id) {
@@ -874,7 +889,9 @@ impl ServerHandler for Imbo {
         let result = match self.dispatch(name, &args, &actor, budget).await {
             Ok((mut text, unread)) => {
                 if let Some(n) = unread.filter(|n| *n > 0) {
-                    text.push_str(&format!("\n\n还有 {n} 条未读，用 inbox 工具查看。"));
+                    text.push_str(&format!(
+                        "\n\n{n} more unread; read them with the inbox tool."
+                    ));
                 }
                 CallToolResult::success(vec![ContentBlock::text(text)])
             }

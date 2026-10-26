@@ -237,13 +237,13 @@ impl Adapter for Opencode {
 
     fn paste(&self) -> Paste {
         Paste::Numbered(
-            "用户在会话里粘贴的图片（[Image N]）把编号写进 images，作为附件发出；编号指用户最近一条带这个编号的消息里的图。",
+            " Images the user pasted in this session ([Image N]): put the numbers in images to send them as attachments; N refers to the user's latest message with that number.",
         )
     }
 
     fn pasted_image(&self, session_id: &str, n: u32) -> Result<PastedImage, String> {
         stored_image(session_id, n).ok_or_else(|| {
-            format!("会话记录里找不到粘贴的图片 [Image {n}]，请让使用者重新粘贴后再发。")
+            format!("Couldn't find the pasted image [Image {n}] in the session log; ask the user to paste it again, then send.")
         })
     }
 

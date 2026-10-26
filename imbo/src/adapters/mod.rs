@@ -443,7 +443,7 @@ async fn needs_listener(tool: &str, session_id: &str) -> bool {
 /// What the agent writes as the description of the background `imbo wait`
 /// (API-LOCAL-011): the wake turn shows it, and it says where the messages
 /// are.
-const WAKE: &str = "Imbo 新消息：调用 inbox 工具取信";
+const WAKE: &str = "Imbo: new messages. Call the inbox tool to fetch them.";
 
 /// `channel` of a tool that listens: without a listener, messages wait for
 /// the next prompt.

@@ -187,13 +187,13 @@ impl Adapter for Mcode {
 
     fn paste(&self) -> Paste {
         Paste::Numbered(
-            "用户在会话里粘贴的图片（[Image #N]）把编号写进 images，作为附件发出；编号指用户最近一条带图消息里的第 N 张。",
+            " Images the user pasted in this session ([Image #N]): put the numbers in images to send them as attachments. N counts within the user's latest message with images.",
         )
     }
 
     fn pasted_image(&self, session_id: &str, n: u32) -> Result<PastedImage, String> {
         stored_image(session_id, n).ok_or_else(|| {
-            format!("会话记录里找不到粘贴的图片 [Image #{n}]，请让使用者重新粘贴后再发。")
+            format!("Couldn't find the pasted image [Image #{n}] in the session log; ask the user to paste it again, then send.")
         })
     }
 
@@ -320,7 +320,7 @@ fn own_process() -> Option<u32> {
 /// The stop hook's request when no listener waits (API-LOCAL-011).
 fn rearm() -> String {
     format!(
-        "Imbo 收件监听没有在运行。请用 bash 工具在后台运行下面这条命令（run_in_background=true，timeout={WAIT_TIMEOUT_S}，description 写「{}」），不要等它结束，启动后直接结束本轮，不用再说别的：{}",
+        "Imbo's message listener isn't running. Use the bash tool to run the command below in the background (run_in_background=true, timeout={WAIT_TIMEOUT_S}, description \"{}\"); don't wait for it to finish, and end this turn right after starting it without saying anything else: {}",
         super::WAKE,
         hook_command(&Home::resolve(), "wait")
     )
