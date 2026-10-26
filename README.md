@@ -110,6 +110,17 @@ reply to the sender without checking with you. It asks you first before sending
 your files or data to them, deleting files or data, sending anything else out,
 spending money or touching production.
 
+## Update
+
+```sh
+imbo update                         # download, check and install the latest version
+```
+
+It keeps your sign-in and connected tools, and restarts the background daemon.
+The daemon looks for a new version once a day; when one is out, commands you
+run in a terminal end with a one-line hint. Versions before 0.2.11 don't have
+`imbo update`: run the install command again.
+
 ## Self-hosting
 
 `imbo-server` is one binary. Without `DATABASE_URL` it runs a bundled
