@@ -1,51 +1,34 @@
 #!/bin/sh
-# Install a release of imbo-server on the hosted machine.
+# Install a release of imbo-server on the hosted machine, through AWS Systems Manager.
 #   deploy/deploy.sh <tag>        e.g. deploy/deploy.sh v0.1.0
-# Env: IMBO_DEPLOY_HOST (ssh target, default ubuntu@api.imbo.dev),
-#      IMBO_SSH_KEY (default ~/.ssh/imbo-prod.pem).
-# Keeps earlier releases in /opt/imbo/releases; rolls the symlink back if
-# the new one doesn't answer /v1/health within 60 s.
+# The release workflow runs this for every v* tag; by hand it needs AWS credentials that may send
+# AWS-RunShellScript to the instance (AWS_PROFILE=kando). The machine runs deploy/install.sh from the tag,
+# which backs up, switches and rolls back on its own; this script then checks the public /v1/health.
+# Env: IMBO_INSTANCE (default i-09f359c6e35eba48f), AWS_REGION (default ap-east-1).
 set -eu
 TAG=${1:?usage: deploy.sh <tag>}
-HOST=${IMBO_DEPLOY_HOST:-ubuntu@api.imbo.dev}
-KEY=${IMBO_SSH_KEY:-$HOME/.ssh/imbo-prod.pem}
-DIR=$(cd "$(dirname "$0")" && pwd)
-SSH="ssh -i $KEY -o ConnectTimeout=15"
+INSTANCE=${IMBO_INSTANCE:-i-09f359c6e35eba48f}
+export AWS_REGION="${AWS_REGION:-ap-east-1}"
 
-scp -q -i "$KEY" "$DIR/imbo-server.service" "$DIR/imbo-backup.service" "$DIR/imbo-backup.timer" "$DIR/backup.sh" "$HOST:/tmp/"
-$SSH "$HOST" sudo TAG="$TAG" sh -s <<'REMOTE'
-set -eu
-install -m 0644 /tmp/imbo-server.service /tmp/imbo-backup.service /tmp/imbo-backup.timer /etc/systemd/system/
-install -m 0755 /tmp/backup.sh /opt/imbo/backup.sh
-rm -f /tmp/imbo-server.service /tmp/imbo-backup.service /tmp/imbo-backup.timer /tmp/backup.sh
-systemctl daemon-reload
-systemctl enable --now imbo-backup.timer >/dev/null
+script="https://raw.githubusercontent.com/Bearisbug/imbo/$TAG/deploy/install.sh"
+cmd="f=\$(mktemp) && curl -fsSL -o \"\$f\" $script && sh \"\$f\" $TAG; s=\$?; rm -f \"\$f\"; exit \$s"
+id=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript --comment "imbo-server $TAG" \
+  --parameters "$(jq -n --arg c "$cmd" '{commands: [$c], executionTimeout: ["900"]}')" \
+  --query Command.CommandId --output text)
+echo "SSM command $id: installing $TAG on $INSTANCE"
 
-base="https://github.com/Bearisbug/imbo/releases/download/$TAG"
-pkg="imbo-server-linux-arm64.tar.gz"
-rel="/opt/imbo/releases/$TAG"
-tmp=$(mktemp -d)
-curl -fsSL -o "$tmp/$pkg" "$base/$pkg"
-curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt"
-(cd "$tmp" && grep " $pkg\$" checksums.txt | sha256sum -c --quiet)
-mkdir -p "$rel"
-tar -xzf "$tmp/$pkg" -C "$rel"
-rm -rf "$tmp"
-
-prev=$(readlink /opt/imbo/current || true)
-ln -sfn "$rel" /opt/imbo/current
-systemctl enable imbo-server >/dev/null 2>&1
-systemctl restart imbo-server
-for i in $(seq 1 30); do
-  if curl -fsS --max-time 3 --resolve api.imbo.dev:443:127.0.0.1 https://api.imbo.dev/v1/health >/dev/null 2>&1 \
-     || curl -fsS --max-time 3 -k https://127.0.0.1/v1/health >/dev/null 2>&1; then
-    echo "imbo-server $TAG is up (previous: ${prev:-none})"
-    exit 0
-  fi
-  sleep 2
+status=Pending
+for _ in $(seq 200); do # the command itself times out after 900 s
+  sleep 5
+  status=$(aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE" --query Status --output text 2>/dev/null) || continue
+  case $status in Pending | InProgress | Delayed) ;; *) break ;; esac
 done
-echo "imbo-server $TAG did not come up; rolling back to ${prev:-nothing}" >&2
-journalctl -u imbo-server -n 30 --no-pager >&2
-if [ -n "$prev" ]; then ln -sfn "$prev" /opt/imbo/current; systemctl restart imbo-server; fi
-exit 1
-REMOTE
+aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE" \
+  --query '[StandardOutputContent, StandardErrorContent]' --output text
+[ "$status" = Success ] || { echo "install on the server ended as $status" >&2; exit 1; }
+
+health=$(curl -fsS --max-time 10 https://api.imbo.dev/v1/health)
+case $health in
+  *'"name":"imbo-server","version":"'"${TAG#v}"'"'*) echo "https://api.imbo.dev reports imbo-server ${TAG#v}" ;;
+  *) echo "https://api.imbo.dev does not report imbo-server ${TAG#v}: $health" >&2; exit 1 ;;
+esac

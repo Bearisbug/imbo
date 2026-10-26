@@ -6,6 +6,19 @@ permissions:
   contents: write
   packages: write
 jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: sh -n install.sh
+
   client:
     strategy:
       matrix:
@@ -53,7 +66,7 @@ jobs:
           path: out/*
 
   publish:
-    needs: [client, server]
+    needs: [test, client, server]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -94,3 +107,34 @@ jobs:
           tags: |
             ghcr.io/bearisbug/imbo-server:${{ github.ref_name }}
             ${{ !contains(github.ref_name, '-') && 'ghcr.io/bearisbug/imbo-server:latest' || '' }}
+
+  # Installs the release on api.imbo.dev through SSM (deploy/deploy.sh); pre-releases (tags with a "-") stay off it.
+  deploy:
+    needs: publish
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    concurrency: deploy-server
+    permissions:
+      contents: read
+      deployments: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::867492127909:role/imbo-deploy
+          aws-region: ap-east-1
+      - id: deployment
+        run: |
+          id=$(jq -n --arg ref "$GITHUB_REF_NAME" '{ref: $ref, environment: "api.imbo.dev", auto_merge: false, required_contexts: []}' \
+            | gh api "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress >/dev/null
+      - run: deploy/deploy.sh "$GITHUB_REF_NAME"
+      - if: always() && steps.deployment.outputs.id
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/deployments/${{ steps.deployment.outputs.id }}/statuses" \
+            -f state=${{ job.status == 'success' && 'success' || 'failure' }} -f environment_url=https://api.imbo.dev/v1/health \
+            -f log_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
