@@ -156,6 +156,12 @@ pub struct DaemonStatus {
     pub sessions: Vec<LocalSession>,
     #[serde(default)]
     pub notices: Vec<crate::frames::Notice>,
+    /// The newest released version the daemon found (REQ-046).
+    #[serde(default)]
+    pub latest_version: Option<String>,
+    /// The server's minimum client version, when this one is older (REQ-048).
+    #[serde(default)]
+    pub min_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

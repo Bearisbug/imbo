@@ -13,6 +13,7 @@ mod procs;
 mod render;
 mod service;
 mod ui;
+mod update;
 
 use clap::{Parser, Subcommand};
 
@@ -74,6 +75,8 @@ enum Cmd {
     },
     /// Daemon, connection and sessions on this computer.
     Status,
+    /// Download and install the latest version, keeping your sign-in and tools.
+    Update,
     /// Run the background daemon (started by launchd/systemd).
     #[command(hide = true)]
     Daemon,

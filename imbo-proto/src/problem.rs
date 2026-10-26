@@ -45,10 +45,11 @@ pub enum ErrorCode {
     RecipientInactive,
     AlreadySubscribed,
     PaymentProviderFailed,
+    ClientOutdated,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 41] = [
+    pub const ALL: [ErrorCode; 42] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -90,6 +91,7 @@ impl ErrorCode {
         Self::RecipientInactive,
         Self::AlreadySubscribed,
         Self::PaymentProviderFailed,
+        Self::ClientOutdated,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -135,6 +137,7 @@ impl ErrorCode {
             Self::RecipientInactive => "recipient-inactive",
             Self::AlreadySubscribed => "already-subscribed",
             Self::PaymentProviderFailed => "payment-provider-failed",
+            Self::ClientOutdated => "client-outdated",
         }
     }
 
@@ -172,6 +175,7 @@ impl ErrorCode {
             | Self::AlreadySubscribed => 409,
             Self::CodeExpired | Self::FileExpired => 410,
             Self::FileTooLarge => 413,
+            Self::ClientOutdated => 426,
             Self::NameRequired
             | Self::InvalidName
             | Self::CannotAddSelf
@@ -229,6 +233,7 @@ impl ErrorCode {
             Self::RecipientInactive => "Recipient account is inactive",
             Self::AlreadySubscribed => "Already subscribed",
             Self::PaymentProviderFailed => "Payment provider unavailable",
+            Self::ClientOutdated => "Imbo needs an update",
         }
     }
 }

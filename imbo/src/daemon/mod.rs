@@ -28,6 +28,8 @@ pub struct LinkState {
     pub connected: bool,
     pub revoked: bool,
     pub last_error: Option<String>,
+    /// The server's minimum client version, when this program is older (REQ-048).
+    pub outdated: Option<String>,
 }
 
 pub struct Daemon {
@@ -63,7 +65,11 @@ impl Daemon {
     pub fn reload_creds(&self) {
         *self.creds.write().unwrap() = self.home.credentials();
         self.uploads.lock().unwrap().clear();
-        self.link.lock().unwrap().revoked = false;
+        {
+            let mut l = self.link.lock().unwrap();
+            l.revoked = false;
+            l.outdated = None;
+        }
         self.reload.notify_waiters();
     }
 
@@ -279,6 +285,7 @@ pub async fn run() -> anyhow::Result<()> {
     tokio::spawn(socket::serve(daemon.clone(), listener));
     tokio::spawn(monitor(daemon.clone()));
     tokio::spawn(link::run(daemon.clone()));
+    tokio::spawn(check_updates(daemon.clone()));
 
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate())?;
@@ -317,5 +324,21 @@ async fn monitor(d: D) {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
+    }
+}
+
+/// Look for a newer release 10 s after start, then once a day (REQ-046).
+async fn check_updates(d: D) {
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    loop {
+        match tokio::task::spawn_blocking(crate::update::fetch_latest).await {
+            Ok(Ok(v)) => {
+                info!(latest = %v, "checked for a new version");
+                crate::update::save_latest(&d.home, &v);
+            }
+            Ok(Err(e)) => warn!(error = %format!("{e:#}"), "version check failed"),
+            Err(_) => {}
+        }
+        tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
     }
 }

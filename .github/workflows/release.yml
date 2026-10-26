@@ -64,6 +64,7 @@ jobs:
       - name: checksums
         run: |
           cp install.sh art/install.sh
+          echo "${GITHUB_REF_NAME#v}" > art/version
           cd art && sha256sum imbo-*.tar.gz > checksums.txt && cat checksums.txt
       - name: release
         env:

@@ -57,7 +57,7 @@ fn daemon_env(home: &Home) -> Vec<(String, String)> {
     let tools = adapters::all()
         .iter()
         .flat_map(|a| a.env_pass().iter().copied());
-    for k in tools.chain(["IMBO_FAULT_INJECT"]) {
+    for k in tools.chain(["IMBO_FAULT_INJECT", "IMBO_DOWNLOAD_BASE"]) {
         if let Ok(v) = std::env::var(k)
             && !v.is_empty()
         {

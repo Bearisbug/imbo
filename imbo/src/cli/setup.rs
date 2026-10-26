@@ -18,6 +18,10 @@ pub struct SetupArgs {
     /// Server to use (default https://api.imbo.dev).
     #[arg(long)]
     pub server: Option<String>,
+    /// Run by `imbo update` with the new program: restart the daemon and
+    /// reconnect the tools the last setup connected, without asking.
+    #[arg(long, hide = true)]
+    pub refresh: bool,
 }
 
 #[derive(Args)]
@@ -72,6 +76,9 @@ async fn daemon_status() -> Option<DaemonStatus> {
 pub async fn setup(a: SetupArgs) -> anyhow::Result<()> {
     let home = Home::resolve();
     home.ensure()?;
+    if a.refresh {
+        return refresh(&home).await;
+    }
     cliclack::intro(ui::heading("imbo setup"))?;
     let server = choose_server(&home, a.server)?;
 
@@ -159,12 +166,12 @@ pub async fn setup(a: SetupArgs) -> anyhow::Result<()> {
             changes.join("\n")
         ))?;
     }
-    let mut connected_any = false;
+    let mut connected = vec![];
     for (a, bin) in &chosen {
         let sp = Step::start(format!("Connecting {}", a.name()));
         match a.connect(&home, bin) {
             Ok(done) => {
-                connected_any = true;
+                connected.push(a.id());
                 sp.done(format!("{} connected  {}", a.name(), ui::dim(done.detail)));
                 if let Some(w) = done.warning {
                     cliclack::log::warning(w)?;
@@ -173,7 +180,8 @@ pub async fn setup(a: SetupArgs) -> anyhow::Result<()> {
             Err(e) => sp.fail(format!("{}: {e}", a.name())),
         }
     }
-    if connected_any {
+    save_tools(&home, &connected);
+    if !connected.is_empty() {
         cliclack::log::remark(ui::dim(
             "Sessions that were already open pick Imbo up after a restart.",
         ))?;
@@ -226,6 +234,7 @@ pub async fn uninstall(a: UninstallArgs) -> anyhow::Result<()> {
     }
     service::uninstall(&home);
     let _ = std::fs::remove_file(home.socket());
+    let _ = std::fs::remove_file(tools_path(&home));
     ui::ok_line("Background daemon stopped and removed");
     let bin = exe();
     eprintln!(
@@ -236,6 +245,74 @@ pub async fn uninstall(a: UninstallArgs) -> anyhow::Result<()> {
             home.dir.display()
         ))
     );
+    Ok(())
+}
+
+/// The tools the last setup connected (ADR-026): `imbo update` reconnects these.
+fn tools_path(home: &Home) -> PathBuf {
+    home.state().join("tools")
+}
+
+fn save_tools(home: &Home, ids: &[&str]) {
+    let _ = std::fs::write(
+        tools_path(home),
+        ids.iter().map(|i| format!("{i}\n")).collect::<String>(),
+    );
+}
+
+fn saved_tools(home: &Home) -> Vec<String> {
+    std::fs::read_to_string(tools_path(home))
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `imbo setup --refresh`, run by the new program after `imbo update`.
+async fn refresh(home: &Home) -> anyhow::Result<()> {
+    if home.credentials().is_none() {
+        ui::ok_line("Not signed in on this computer · run `imbo setup` to sign in");
+        return Ok(());
+    }
+    let how = match service::install(home) {
+        Ok(h) => h,
+        Err(e) => {
+            ui::error_line(&format!("Couldn't restart the daemon: {e:#}"));
+            return Err(Reported.into());
+        }
+    };
+    ui::ok_line(&format!("Background daemon restarted  {}", ui::dim(how)));
+    let mut reconnected = false;
+    for id in saved_tools(home) {
+        let Some(a) = adapters::get(&id) else {
+            continue;
+        };
+        match a.find() {
+            Install::Found(bin) => match a.connect(home, &bin) {
+                Ok(done) => {
+                    reconnected = true;
+                    ui::ok_line(&format!(
+                        "{} reconnected  {}",
+                        a.name(),
+                        ui::dim(done.detail)
+                    ));
+                    if let Some(w) = done.warning {
+                        ui::warn_line(&w);
+                    }
+                }
+                Err(e) => ui::error_line(&format!("{}: {e}", a.name())),
+            },
+            _ => ui::warn_line(&format!("{} is no longer installed, skipped", a.name())),
+        }
+    }
+    if reconnected {
+        eprintln!(
+            "  {}",
+            ui::dim("Sessions that were already open use the new version after a restart.")
+        );
+    }
     Ok(())
 }
 

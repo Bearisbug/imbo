@@ -165,6 +165,8 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
                 last_error: link.last_error.clone(),
                 sessions: d.sessions.lock().unwrap().list(),
                 notices: d.notices.lock().unwrap().iter().cloned().collect(),
+                latest_version: crate::update::available(&d.home),
+                min_version: link.outdated.clone(),
             };
             LocalResponse::ok(200, serde_json::to_value(status).unwrap_or_default(), None)
         }
@@ -222,6 +224,15 @@ pub(super) async fn call(
             "This computer is not signed in to Imbo. Run `imbo login` in a terminal.",
         ));
     };
+    if let Some(min) = d.link.lock().unwrap().outdated.clone() {
+        return LocalResponse::err(Problem::new(
+            ErrorCode::ClientOutdated,
+            format!(
+                "This Imbo server needs imbo {min} or newer; this computer has {}. Run `imbo update` in a terminal.",
+                crate::VERSION
+            ),
+        ));
+    }
     if let Some(a) = &actor {
         ensure_session(d, a);
     }

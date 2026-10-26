@@ -23,7 +23,11 @@ pub async fn run(d: D) {
             d.reload.notified().await;
             continue;
         };
-        if d.link.lock().unwrap().revoked {
+        let stopped = {
+            let l = d.link.lock().unwrap();
+            l.revoked || l.outdated.is_some()
+        };
+        if stopped {
             d.reload.notified().await;
             continue;
         }
@@ -108,7 +112,7 @@ async fn session(d: &D, ws: crate::net::Ws) {
                 last_seen = tokio::time::Instant::now();
                 match msg {
                     Message::Text(t) => match serde_json::from_str::<ServerFrame>(&t) {
-                        Ok(f) => handle(d, f),
+                        Ok(f) => if !handle(d, f) { break; },
                         Err(e) => warn!(error = %e, "unknown frame"),
                     },
                     Message::Ping(p) => { let _ = sink.send(Message::Pong(p)).await; }
@@ -139,12 +143,25 @@ async fn session(d: &D, ws: crate::net::Ws) {
     }
 }
 
-fn handle(d: &D, f: ServerFrame) {
+/// Returns false when the connection should end.
+fn handle(d: &D, f: ServerFrame) -> bool {
     match f {
         ServerFrame::Welcome {
-            account, device_id, ..
+            account,
+            device_id,
+            min_client_version,
         } => {
             info!(account = account.id, name = %account.name, %device_id, "welcome");
+            if crate::update::newer(&min_client_version, crate::VERSION) {
+                // REQ-048: stop until the program is updated or signed in again.
+                warn!(min = %min_client_version, "this server needs a newer imbo; run `imbo update`");
+                let mut l = d.link.lock().unwrap();
+                l.outdated = Some(min_client_version.clone());
+                l.last_error = Some(format!(
+                    "this server needs imbo {min_client_version} or newer; run `imbo update`"
+                ));
+                return false;
+            }
         }
         ServerFrame::Deliver(delivery) => {
             info!(msg = delivery.message.id, tool = %delivery.tool, session = %delivery.session_id, "deliver");
@@ -159,4 +176,5 @@ fn handle(d: &D, f: ServerFrame) {
         }
         ServerFrame::Notice(n) => d.push_notice(n),
     }
+    true
 }

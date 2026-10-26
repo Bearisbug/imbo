@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build release packages into crates/dist: imbo-<platform>.tar.gz,
-# checksums.txt and install.sh, laid out like a GitHub release.
+# checksums.txt, install.sh and version, laid out like a GitHub release.
 #   scripts/package.sh                 # this computer's platform
 #   scripts/package.sh <target> <platform> [<target> <platform> …]
 set -eu
@@ -37,6 +37,7 @@ else
 fi
 
 cp install.sh "$DIST/install.sh"
+sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1 > "$DIST/version"
 cd "$DIST"
 if command -v shasum >/dev/null 2>&1; then
   shasum -a 256 imbo-*.tar.gz > checksums.txt

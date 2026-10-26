@@ -174,7 +174,7 @@ impl Config {
             acme_staging: flag("IMBO_ACME_STAGING"),
             dev: flag("IMBO_DEV"),
             backup_stamp: var("IMBO_BACKUP_STAMP").map(PathBuf::from),
-            min_client_version: "0.1.0".into(),
+            min_client_version: var("IMBO_MIN_CLIENT_VERSION").unwrap_or_else(|| "0.1.0".into()),
             creem: creem_from_env()?,
             billing_start: billing_start_from_env()?,
             web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),

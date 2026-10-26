@@ -19,6 +19,14 @@ pub async fn status() -> anyhow::Result<()> {
         ui::heading("imbo"),
         ui::dim(format!("{} · daemon running, pid {}", st.version, st.pid))
     );
+    if let Some(v) = &st.latest_version {
+        println!(
+            "{} {}  {}",
+            ui::s(ui::warn(), "!"),
+            ui::s(ui::warn(), format!("imbo {v} is out")),
+            ui::dim("run `imbo update`")
+        );
+    }
     match home.credentials().filter(|_| st.logged_in) {
         Some(c) => println!(
             "{} Signed in as {} {}",

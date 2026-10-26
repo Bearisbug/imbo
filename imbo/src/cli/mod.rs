@@ -33,7 +33,12 @@ impl std::error::Error for Reported {}
 
 pub async fn dispatch(cmd: crate::Cmd) -> anyhow::Result<()> {
     use crate::Cmd;
-    match cmd {
+    // The new-version hint (REQ-046); status shows it in its own output.
+    let hint = !matches!(
+        cmd,
+        Cmd::Setup(_) | Cmd::Uninstall(_) | Cmd::Update | Cmd::Status | Cmd::Wait | Cmd::Dev(_)
+    );
+    let r = match cmd {
         Cmd::Setup(a) => setup::setup(a).await,
         Cmd::Uninstall(a) => setup::uninstall(a).await,
         Cmd::Login(a) => login::login(a).await,
@@ -47,10 +52,15 @@ pub async fn dispatch(cmd: crate::Cmd) -> anyhow::Result<()> {
         Cmd::Get { message_id } => messages::get(message_id).await,
         Cmd::Inbox { message_id, all } => messages::inbox(message_id, all).await,
         Cmd::Status => status::status().await,
+        Cmd::Update => crate::update::update().await,
         Cmd::Wait => wait::wait().await,
         Cmd::Dev(c) => dev::run(c).await,
         Cmd::Daemon | Cmd::Mcp | Cmd::Hook { .. } => unreachable!("handled in main"),
+    };
+    if hint {
+        crate::update::hint();
     }
+    r
 }
 
 /// Print a problem the way every command does, and return `Reported`.
