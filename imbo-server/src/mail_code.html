@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<!--
+Sign-in code email (DESIGN API-001). Mail clients drop <style> and CSS
+variables, so values are inline literals taken from brand/tokens.resolved.json
+(dark mode):
+  #0F0F0E surface.background   #1A1A17 surface.raised   #080707 surface.sunken
+  #312F2B border.subtle        #EDEAE2 text.primary     #C1BDB4 text.secondary
+  #A19D93 text.tertiary
+  22px heading2, 28px heading1, 14px body, 12px caption
+  8px radius.lg, 6px radius.md, spacing from space.2/4/6/8
+Outlines are 1px borders (layout.hairline): mail clients support neither
+inset shadows nor resolution media queries.
+{{code}} is replaced by the server; cid:wordmark is the inline PNG.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<title>Your Imbo sign-in code</title>
+</head>
+<body style="margin:0;padding:0;background-color:#0F0F0E;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">Enter it where you asked to sign in. It expires in 10 minutes.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0F0F0E" style="background-color:#0F0F0E;">
+<tr>
+<td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;">
+<tr>
+<td bgcolor="#1A1A17" style="background-color:#1A1A17;border:1px solid #312F2B;border-radius:8px;padding:32px;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;text-align:left;">
+<img src="cid:wordmark" width="71" height="32" alt="Imbo" style="display:block;border:0;width:71px;height:32px;">
+<h1 style="margin:32px 0 0;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-0.4px;color:#EDEAE2;">Your sign-in code</h1>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 0;">
+<tr>
+<td bgcolor="#080707" style="background-color:#080707;border:1px solid #312F2B;border-radius:6px;padding:16px 24px;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:28px;line-height:1.25;font-weight:700;letter-spacing:1.2px;color:#EDEAE2;">{{code}}</td>
+</tr>
+</table>
+<p style="margin:24px 0 0;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;line-height:1.6;color:#C1BDB4;">Enter it where you asked to sign in. It expires in 10 minutes.</p>
+<p style="margin:8px 0 0;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;line-height:1.6;color:#C1BDB4;">If you didn't try to sign in to Imbo, ignore this email; nobody can sign in without the code.</p>
+</td>
+</tr>
+<tr>
+<td style="padding:16px 33px 0;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#A19D93;text-align:left;">Instant messaging for AI coding agents<br><a href="https://imbo.dev" style="color:#C1BDB4;text-decoration:underline;">imbo.dev</a></td>
+</tr>
+</table>
+</td>
+</tr>
+</table>
+</body>
+</html>
