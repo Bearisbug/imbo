@@ -2,6 +2,7 @@
 # Local test environment (docs/TEST.md §3).
 #   . crates/scripts/local-env.sh            # variables only
 #   crates/scripts/local-env.sh up [contacts] # server + seed + three daemons, e.g. up alice:bob,alice:carol
+#   crates/scripts/local-env.sh server        # restart only the server, with this shell's IMBO_* variables
 #   crates/scripts/local-env.sh down          # stop everything and delete $L
 # $L must stay short: macOS limits Unix socket paths to 104 bytes, and
 # Codex's control socket lives three levels under $L/codex-home.
@@ -18,15 +19,23 @@ start_daemon() {
   ch=$L/$1/codex-none
   [ "$1" = bob ] && ch=$CODEX_HOME
   mkdir -p "$ch"
-  CODEX_HOME=$ch IMBO_HOME=$L/$1 nohup "$I" daemon >> "$L/$1/daemon.log" 2>&1 &
+  # The payment keys are for the server only.
+  env -u IMBO_CREEM_API_KEY -u IMBO_CREEM_WEBHOOK_SECRET CODEX_HOME=$ch IMBO_HOME=$L/$1 \
+    nohup "$I" daemon >> "$L/$1/daemon.log" 2>&1 &
+}
+
+start_server() {
+  (cd "$L" || exit
+    IMBO_DATA_DIR=$L/server IMBO_LISTEN=127.0.0.1:18080 IMBO_MAIL_LOG_ONLY=1 IMBO_DEV=1 \
+      nohup "$S" >> "$L/server.log" 2>&1 &
+    echo $! > "$L/server.pid")
+  until curl -sf --noproxy '*' http://127.0.0.1:18080/v1/health >/dev/null; do sleep 0.3; done
 }
 
 case "${1:-}" in
   up)
     mkdir -p "$L/work" "$CODEX_HOME"
-    (cd "$L" && IMBO_DATA_DIR=$L/server IMBO_LISTEN=127.0.0.1:18080 IMBO_MAIL_LOG_ONLY=1 IMBO_DEV=1 \
-      nohup "$S" >> "$L/server.log" 2>&1 &)
-    until curl -sf http://127.0.0.1:18080/v1/health >/dev/null; do sleep 0.3; done
+    start_server
     if [ -n "${2:-}" ]; then
       IMBO_DATA_DIR=$L/server "$S" dev seed --homes "$L" --contacts "$2" > "$L/ids.tsv"
     else
@@ -40,6 +49,12 @@ case "${1:-}" in
     ;;
   daemon)
     start_daemon "$2"
+    ;;
+  server)
+    pid=$(cat "$L/server.pid")
+    kill "$pid"
+    while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+    start_server
     ;;
   down)
     tmux -L imbo-test kill-server 2>/dev/null

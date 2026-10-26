@@ -113,6 +113,7 @@ pub async fn request_contact(
     Extension(c): Extension<Caller>,
     Body(req): Body<ContactRequestBody>,
 ) -> ApiResult<Response> {
+    crate::billing::require_active(&st, c.account_id, "API-008").await?;
     let target = req.account_id;
     if target == c.account_id {
         return Err(err(
@@ -319,6 +320,7 @@ pub async fn accept(
     Path(id): Path<i64>,
     raw: axum::body::Bytes,
 ) -> ApiResult<Json<AcceptResponse>> {
+    crate::billing::require_active(&st, c.account_id, "API-010").await?;
     let body: AcceptBody = if raw.iter().all(|b| b.is_ascii_whitespace()) {
         AcceptBody::default()
     } else {
@@ -527,6 +529,7 @@ pub async fn list_contacts(
                 id: r.peer_id,
                 name: r.peer_name.clone(),
                 sessions: vec![],
+                active: true,
             });
         }
         if let (Some(short_id), Some(title), Some(tool), Some(online)) =
@@ -540,6 +543,11 @@ pub async fn list_contacts(
                 last_online_at: r.last_online_at,
             });
         }
+    }
+    let ids: Vec<i32> = contacts.iter().map(|x| x.id).collect();
+    let access = crate::billing::access_many(&st.db, &st.cfg, &ids).await?;
+    for x in &mut contacts {
+        x.active = access.get(&x.id).is_none_or(|a| a.active());
     }
     Ok(Json(ContactsResponse { contacts }))
 }

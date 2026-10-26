@@ -57,6 +57,7 @@ pub async fn upload(
     headers: HeaderMap,
     body: RawBody,
 ) -> ApiResult<(StatusCode, Json<UploadResponse>)> {
+    crate::billing::require_active(&st, c.account_id, "API-026").await?;
     let size: u64 = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -248,8 +249,8 @@ pub async fn download(
     let not_found = || err(ErrorCode::NotFound, "No such file.");
     let id = Uuid::parse_str(&id).map_err(|_| not_found())?;
     // The uploader, or anyone who can see the message (same rule as API-024).
-    let row: Option<(i64, Vec<u8>, String)> = sqlx::query_as(
-        "SELECT f.size, f.sha256, f.state FROM files f
+    let row: Option<(String, i64, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT f.name, f.size, f.sha256, f.state FROM files f
          WHERE f.id = $1 AND (f.account_id = $2 OR EXISTS (
            SELECT 1 FROM messages m JOIN conversations cv ON cv.id = m.conversation_id
            WHERE m.id = f.message_id AND (
@@ -261,7 +262,7 @@ pub async fn download(
     .bind(c.account_id)
     .fetch_optional(&st.db)
     .await?;
-    let Some((size, sha, state)) = row else {
+    let Some((name, size, sha, state)) = row else {
         return Err(not_found());
     };
     match state.as_str() {
@@ -303,7 +304,24 @@ pub async fn download(
     if let Ok(v) = HeaderValue::from_str(&hex::encode(sha)) {
         h.insert(HEADER_FILE_SHA256, v);
     }
+    if let Ok(v) = HeaderValue::from_str(&attachment(&name)) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
     Ok(res)
+}
+
+/// `Content-Disposition` that makes a browser save the file under its
+/// original name (RFC 6266, with the RFC 8187 `filename*` form for non-ASCII).
+fn attachment(name: &str) -> String {
+    let mut encoded = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("attachment; filename*=UTF-8''{encoded}")
 }
 
 #[cfg(test)]
@@ -322,5 +340,17 @@ mod tests {
         // One minute later it's the 26th in Beijing.
         let (start, _) = upload_day(t + TimeDelta::minutes(1));
         assert_eq!(start.to_rfc3339(), "2026-10-25T16:00:00+00:00");
+    }
+
+    #[test]
+    fn attachment_keeps_the_name() {
+        assert_eq!(
+            attachment("a b.txt"),
+            "attachment; filename*=UTF-8''a%20b.txt"
+        );
+        assert_eq!(
+            attachment("报告.pdf"),
+            "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf"
+        );
     }
 }

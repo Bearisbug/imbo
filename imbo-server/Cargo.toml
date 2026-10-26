@@ -38,6 +38,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-acme = { version = "0.15", default-features = false, features = ["ring", "tls12", "webpki-roots", "axum", "tokio"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "macros"] }
 tokio-stream = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
 
 [lints]
 workspace = true

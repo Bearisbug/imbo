@@ -71,7 +71,22 @@ pub struct DeviceRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeResponse {
     pub account: Account,
-    pub device: DeviceRef,
+    /// Absent when the web app asks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceRef>,
+    /// Absent from servers older than 0.2.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<AccessView>,
+}
+
+/// Whether the account may send and receive (RULE-007).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AccessView {
+    /// `free`, `trial`, `paid` or `expired`.
+    pub state: String,
+    /// End of the trial, paid-through date, or when access ended; absent for `free`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +183,13 @@ pub struct ContactItem {
     pub id: AccountId,
     pub name: String,
     pub sessions: Vec<SessionInfo>,
+    /// False when the contact's trial ended without a subscription (RULE-008).
+    #[serde(default = "yes")]
+    pub active: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +216,10 @@ pub struct Agent {
     pub tool: String,
     pub online: bool,
     pub device_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_online_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +257,10 @@ pub struct SendResponse {
     /// Went to the peer's terminal inbox instead of a session.
     #[serde(default)]
     pub terminal: bool,
+    /// Group sends only: other members skipped because their account is
+    /// inactive (RULE-008).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inactive_members: Option<u32>,
 }
 
 /// Who sent a message, as determined by the server.
@@ -264,6 +294,9 @@ pub struct MessageView {
     pub reply_to: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileView>,
+    /// The receiving session of a direct message; `terminal` for the terminal inbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<AgentRef>,
 }
 
 /// An attachment as messages and uploads show it (DESIGN §8).
@@ -311,6 +344,96 @@ pub struct PullResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageResponse {
     pub message: MessageView,
+}
+
+// ---- web (API-028–031, API-036) ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebLoginRequest {
+    pub email: String,
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebLoginResponse {
+    pub account: Account,
+    pub new_account: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastMessage {
+    pub id: MessageId,
+    pub from: Sender,
+    /// The first 100 characters of the body.
+    pub preview: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationItem {
+    pub id: i64,
+    /// `direct` or `group`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<AccountRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<GroupRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<LastMessage>,
+    /// Messages to me here not yet in a session or read in the terminal.
+    pub pending: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationsResponse {
+    pub conversations: Vec<ConversationItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagesPage {
+    pub messages: Vec<MessageView>,
+    pub has_more: bool,
+}
+
+// ---- billing (API-032–034) ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionView {
+    /// `monthly` or `yearly`.
+    pub plan: String,
+    /// Creem's status as received.
+    pub status: String,
+    pub paid_until: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BillingResponse {
+    pub enabled: bool,
+    /// `test` or `live`; absent when Creem is not configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    pub access: AccessView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_ends_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<SubscriptionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckoutRequest {
+    pub plan: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckoutResponse {
+    pub checkout_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortalResponse {
+    pub portal_url: String,
 }
 
 // ---- groups ----
@@ -372,4 +495,6 @@ pub struct Health {
     pub disk_free_pct: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ack_p95_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_webhook_errors_24h: Option<i64>,
 }

@@ -1,6 +1,7 @@
 //! `imbo-server`: one binary for the central server and for self-hosting.
 
 mod auth;
+mod billing;
 mod config;
 mod db;
 mod delivery;
@@ -41,6 +42,18 @@ enum Cmd {
         #[command(subcommand)]
         cmd: dev::DevCmd,
     },
+    /// Payment records (Creem).
+    Billing {
+        #[command(subcommand)]
+        cmd: BillingCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum BillingCmd {
+    /// Fetch a subscription from Creem and record it, for a webhook that never
+    /// arrived (RB-005). Uses the server's environment and DATABASE_URL.
+    Pull { subscription_id: String },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -61,6 +74,9 @@ fn main() -> anyhow::Result<()> {
         match cli.cmd.unwrap_or(Cmd::Serve) {
             Cmd::Serve => serve().await,
             Cmd::Dev { cmd } => dev::run_cli(cmd).await,
+            Cmd::Billing {
+                cmd: BillingCmd::Pull { subscription_id },
+            } => billing_pull(&subscription_id).await,
         }
     })
 }
@@ -126,6 +142,39 @@ async fn serve() -> anyhow::Result<()> {
         axum_server::bind(listen).handle(shutdown).serve(make).await
     };
     result.context("server")?;
+    database.close().await;
+    Ok(())
+}
+
+async fn billing_pull(id: &str) -> anyhow::Result<()> {
+    let cfg = config::Config::from_env()?;
+    let creem = cfg
+        .creem
+        .clone()
+        .context("Creem is not configured (IMBO_CREEM_API_KEY and the rest)")?;
+    if cfg.database_url.is_none() {
+        anyhow::bail!("billing pull needs DATABASE_URL");
+    }
+    let database = db::open(&cfg).await?;
+    let sub = billing::fetch_subscription(&billing::http_client(), &creem, id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e.0.detail))?;
+    let mut tx = database.pool.begin().await?;
+    let outcome =
+        billing::upsert_subscription(&mut tx, &creem, &sub, false, chrono::Utc::now()).await?;
+    tx.commit().await?;
+    println!(
+        "{id}: {} (status {}, paid until {})",
+        match outcome {
+            billing::Outcome::Applied => "recorded",
+            billing::Outcome::Stale => "already up to date",
+            billing::Outcome::UnknownAccount => "no account in its metadata, not recorded",
+            billing::Outcome::UnknownProduct => "not one of the two plans, not recorded",
+            _ => "not recorded",
+        },
+        sub["status"].as_str().unwrap_or("?"),
+        sub["current_period_end_date"].as_str().unwrap_or("?"),
+    );
     database.close().await;
     Ok(())
 }

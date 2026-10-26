@@ -1,5 +1,5 @@
-//! Development helpers (`IMBO_DEV=1` only): seed accounts, expire codes and
-//! age attachments.
+//! Development helpers (`IMBO_DEV=1` only): seed accounts, expire codes,
+//! age attachments and accounts.
 //! The CLI side talks to the running server found via `server.json` in the
 //! data directory, so it works with the embedded database too.
 
@@ -51,6 +51,12 @@ pub enum DevCmd {
         account: Option<i32>,
         #[arg(long)]
         hours: i32,
+    },
+    /// Move an account's sign-up time back, to end its trial (RULE-007).
+    AgeAccount {
+        account: i32,
+        #[arg(long)]
+        days: i32,
     },
 }
 
@@ -222,6 +228,28 @@ pub async fn age_files(
     Ok(Json(serde_json::json!({ "aged": r.rows_affected() })))
 }
 
+#[derive(Deserialize)]
+pub struct AgeAccountIn {
+    account_id: i32,
+    days: i32,
+}
+
+pub async fn age_account(
+    State(st): State<St>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Body(req): Body<AgeAccountIn>,
+) -> ApiResult<Json<serde_json::Value>> {
+    local_only(&peer)?;
+    let r = sqlx::query(
+        "UPDATE accounts SET created_at = created_at - make_interval(days => $2) WHERE id = $1",
+    )
+    .bind(req.account_id)
+    .bind(req.days)
+    .execute(&st.db)
+    .await?;
+    Ok(Json(serde_json::json!({ "aged": r.rows_affected() })))
+}
+
 // ---- CLI side ----
 
 fn data_dir() -> PathBuf {
@@ -301,6 +329,15 @@ pub async fn run_cli(cmd: DevCmd) -> anyhow::Result<()> {
             )
             .await?;
             println!("aged {} file(s) by {hours} h; file.cleanup ran", v["aged"]);
+        }
+        DevCmd::AgeAccount { account, days } => {
+            let v = post(
+                &addr,
+                "/v1/dev/age-account",
+                &serde_json::json!({ "account_id": account, "days": days }),
+            )
+            .await?;
+            println!("aged {} account(s) by {days} days", v["aged"]);
         }
         DevCmd::Seed {
             homes,

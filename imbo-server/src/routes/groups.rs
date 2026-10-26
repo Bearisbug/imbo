@@ -110,6 +110,7 @@ pub async fn create(
     Extension(c): Extension<Caller>,
     Body(req): Body<CreateGroupBody>,
 ) -> ApiResult<(StatusCode, Json<GroupResponse>)> {
+    crate::billing::require_active(&st, c.account_id, "API-018").await?;
     let name = validate_group_name(&req.name).map_err(|m| err(ErrorCode::InvalidRequest, m))?;
     let sessions = match req.sessions {
         Some(s) => owned_sessions(&st, &c, &s).await?,
@@ -184,6 +185,7 @@ pub async fn invite(
     Path(raw): Path<String>,
     Body(req): Body<InviteBody>,
 ) -> ApiResult<(StatusCode, Json<RequestResponse>)> {
+    crate::billing::require_active(&st, c.account_id, "API-020").await?;
     let g = require_member(&st, &c, &raw).await?;
     let target = req.account_id;
     let contact: bool = sqlx::query_scalar(

@@ -13,10 +13,12 @@ use imbo_proto::{
 };
 use serde::Deserialize;
 use sqlx::PgPool;
+use tracing::info;
 use uuid::Uuid;
 
 use super::Body;
 use crate::auth::Caller;
+use crate::billing;
 use crate::delivery;
 use crate::error::{ApiError, ApiResult, err};
 use crate::state::St;
@@ -326,6 +328,7 @@ async fn existing_result(st: &St, me: i32, client_msg_id: &str) -> ApiResult<Opt
         conversation: v.conversation,
         recipients: recipients as u32,
         terminal,
+        inactive_members: None,
     }))
 }
 
@@ -451,9 +454,28 @@ pub async fn send(
     if let Some(done) = existing_result(&st, c.account_id, &client_msg_id).await? {
         return Ok((StatusCode::CREATED, Json(done)));
     }
+    billing::require_active(&st, c.account_id, "API-015").await?;
     let target = resolve(&st.db, c.account_id, &to).await?;
+    if let Target::Direct { peer, .. } = &target
+        && !billing::access(&st.db, &st.cfg, peer.id).await?.active()
+    {
+        info!(
+            event = "recipient_inactive",
+            from_account = c.account_id,
+            to_account = peer.id,
+            "send refused"
+        );
+        return Err(err(
+            ErrorCode::RecipientInactive,
+            format!(
+                "{}'s account is inactive, so they can't receive new messages.",
+                peer.name
+            ),
+        ));
+    }
     let from_agent = c.actor.as_ref().map(|a| a.id);
 
+    let mut inactive_members = None;
     let mut tx = st.db.begin().await?;
     let (conversation, recipients): (ConversationRef, Vec<(Uuid, i32)>) = match &target {
         Target::Direct { peer, agent } => {
@@ -506,7 +528,7 @@ pub async fn send(
                 .fetch_one(&mut *tx)
                 .await?;
             rate_check(&mut tx, id, c.account_id, true).await?;
-            let rows: Vec<(Uuid, i32)> = sqlx::query_as(
+            let mut rows: Vec<(Uuid, i32)> = sqlx::query_as(
                 "SELECT ms.agent_id, ms.account_id FROM member_sessions ms
                  WHERE ms.group_id = $1 AND ($2::uuid IS NULL OR ms.agent_id <> $2)",
             )
@@ -514,6 +536,33 @@ pub async fn send(
             .bind(from_agent)
             .fetch_all(&mut *tx)
             .await?;
+            // RULE-008: inactive members are skipped; nobody else active means no send.
+            inactive_members = Some(0);
+            if st.cfg.billing_on() {
+                let others: Vec<i32> = sqlx::query_scalar(
+                    "SELECT account_id FROM group_members WHERE group_id = $1 AND account_id <> $2",
+                )
+                .bind(g.id)
+                .bind(c.account_id)
+                .fetch_all(&mut *tx)
+                .await?;
+                let access = billing::access_many(&st.db, &st.cfg, &others).await?;
+                let inactive = |a: &i32| access.get(a).is_some_and(|x| !x.active());
+                if !others.is_empty() && others.iter().all(inactive) {
+                    info!(
+                        event = "recipient_inactive",
+                        from_account = c.account_id,
+                        group_id = g.id,
+                        "send refused"
+                    );
+                    return Err(err(
+                        ErrorCode::RecipientInactive,
+                        "Everyone else in this group has an inactive account, so nobody can receive it.",
+                    ));
+                }
+                rows.retain(|(_, account)| !inactive(account));
+                inactive_members = Some(others.iter().filter(|a| inactive(a)).count() as u32);
+            }
             (
                 ConversationRef {
                     kind: "group".into(),
@@ -585,6 +634,7 @@ pub async fn send(
             conversation,
             recipients: if terminal { 0 } else { recipients.len() as u32 },
             terminal,
+            inactive_members,
         }),
     ))
 }

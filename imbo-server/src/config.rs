@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
+use chrono::{DateTime, NaiveDate, Utc};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Config {
     /// Public host name. With TLS on, certificates are fetched for it.
     pub domain: Option<String>,
@@ -23,6 +24,95 @@ pub struct Config {
     /// File whose mtime is the last successful backup (for /v1/health).
     pub backup_stamp: Option<PathBuf>,
     pub min_client_version: String,
+    /// Payments; `None` means nobody is charged and the web app hides billing (ADR-021).
+    pub creem: Option<Creem>,
+    /// First day of charging; unset means everyone is free (RULE-007).
+    pub billing_start: Option<DateTime<Utc>>,
+    /// The web app's origin, the only one allowed cross-origin with cookies (ADR-023).
+    pub web_origin: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct Creem {
+    pub api_key: String,
+    pub webhook_secret: String,
+    pub product_monthly: String,
+    pub product_yearly: String,
+}
+
+impl std::fmt::Debug for Creem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Creem({} mode)", self.mode())
+    }
+}
+
+impl Creem {
+    /// `test` for `creem_test_` keys, otherwise `live` (ADR-021).
+    pub fn mode(&self) -> &'static str {
+        if self.api_key.starts_with("creem_test_") {
+            "test"
+        } else {
+            "live"
+        }
+    }
+
+    pub fn api_base(&self) -> &'static str {
+        if self.mode() == "test" {
+            "https://test-api.creem.io"
+        } else {
+            "https://api.creem.io"
+        }
+    }
+
+    pub fn plan_of(&self, product: &str) -> Option<&'static str> {
+        if product == self.product_monthly {
+            Some("monthly")
+        } else if product == self.product_yearly {
+            Some("yearly")
+        } else {
+            None
+        }
+    }
+}
+
+fn creem_from_env() -> anyhow::Result<Option<Creem>> {
+    let names = [
+        "IMBO_CREEM_API_KEY",
+        "IMBO_CREEM_WEBHOOK_SECRET",
+        "IMBO_CREEM_PRODUCT_MONTHLY",
+        "IMBO_CREEM_PRODUCT_YEARLY",
+    ];
+    let vals: Vec<Option<String>> = names.iter().map(|n| var(n)).collect();
+    if vals.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    if let Some(i) = vals.iter().position(Option::is_none) {
+        bail!(
+            "{} is not set; set all of {} or none",
+            names[i],
+            names.join(", ")
+        );
+    }
+    let mut v = vals.into_iter().map(Option::unwrap_or_default);
+    Ok(Some(Creem {
+        api_key: v.next().unwrap_or_default(),
+        webhook_secret: v.next().unwrap_or_default(),
+        product_monthly: v.next().unwrap_or_default(),
+        product_yearly: v.next().unwrap_or_default(),
+    }))
+}
+
+/// `2026-11-01` (midnight UTC) or an RFC 3339 time.
+fn billing_start_from_env() -> anyhow::Result<Option<DateTime<Utc>>> {
+    let Some(raw) = var("IMBO_BILLING_START") else {
+        return Ok(None);
+    };
+    if let Ok(t) = DateTime::parse_from_rfc3339(&raw) {
+        return Ok(Some(t.with_timezone(&Utc)));
+    }
+    let day = NaiveDate::parse_from_str(&raw, "%Y-%m-%d")
+        .with_context(|| format!("IMBO_BILLING_START={raw}: use 2026-11-01 or an RFC 3339 time"))?;
+    Ok(day.and_hms_opt(0, 0, 0).map(|t| t.and_utc()))
 }
 
 fn var(name: &str) -> Option<String> {
@@ -85,7 +175,15 @@ impl Config {
             dev: flag("IMBO_DEV"),
             backup_stamp: var("IMBO_BACKUP_STAMP").map(PathBuf::from),
             min_client_version: "0.1.0".into(),
+            creem: creem_from_env()?,
+            billing_start: billing_start_from_env()?,
+            web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),
         })
+    }
+
+    /// RULE-007: charging needs both Creem and a start day.
+    pub fn billing_on(&self) -> bool {
+        self.creem.is_some() && self.billing_start.is_some()
     }
 
     pub fn signup_allowed(&self, email: &str) -> bool {

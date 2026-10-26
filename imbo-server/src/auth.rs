@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderValue, header};
+use axum::extract::{MatchedPath, Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
@@ -38,8 +38,11 @@ pub struct Actor {
 pub struct Caller {
     pub account_id: i32,
     pub name: String,
+    /// Nil for the web app, which has no device (ADR-023).
     pub device_id: Uuid,
     pub actor: Option<Actor>,
+    /// The web sign-in the request came with (ROLE-WebPerson).
+    pub web: Option<Uuid>,
 }
 
 impl Caller {
@@ -93,13 +96,60 @@ pub async fn device_for_token(st: &St, token: &str) -> ApiResult<(i32, String, U
     })
 }
 
-async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
-    let token = bearer(headers).ok_or_else(|| {
+/// Name of the web sign-in cookie (API-028).
+pub const WEB_COOKIE: &str = "imbo_session";
+
+fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|kv| kv.trim().split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.trim())
+        .filter(|v| !v.is_empty())
+}
+
+async fn resolve_web(st: &St, token: &str) -> ApiResult<Caller> {
+    let row: Option<(Uuid, i32, String)> = sqlx::query_as(
+        "SELECT w.id, a.id, a.name FROM web_sessions w JOIN accounts a ON a.id = w.account_id
+         WHERE w.token_hash = $1 AND w.revoked_at IS NULL AND w.expires_at > now()",
+    )
+    .bind(token_hash(token))
+    .fetch_optional(&st.db)
+    .await?;
+    let (web, account_id, name) = row.ok_or_else(|| {
         err(
             ErrorCode::Unauthorized,
-            "Missing device token. Run `imbo login`.",
+            "Your web sign-in has expired. Sign in again.",
         )
     })?;
+    if let Err(wait) = st
+        .limiter
+        .hit(&format!("web:{web}"), 600, Duration::from_secs(60))
+    {
+        return Err(err(ErrorCode::RateLimited, "Too many requests.").retry_after(wait));
+    }
+    Ok(Caller {
+        account_id,
+        name,
+        device_id: Uuid::nil(),
+        actor: None,
+        web: Some(web),
+    })
+}
+
+async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
+    let Some(token) = bearer(headers) else {
+        if let Some(t) = cookie(headers, WEB_COOKIE) {
+            return resolve_web(st, t).await;
+        }
+        return Err(err(
+            ErrorCode::Unauthorized,
+            "Missing device token. Run `imbo login`.",
+        ));
+    };
     let (account_id, name, device_id) = device_for_token(st, token).await?;
     if let Err(wait) = st
         .limiter
@@ -153,7 +203,75 @@ async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
         name,
         device_id,
         actor,
+        web: None,
     })
+}
+
+/// What the web app may call: the ROLE-WebPerson column of DESIGN §10.
+const WEB_ALLOWED: &[(Method, &str)] = &[
+    (Method::GET, "/v1/me"),
+    (Method::GET, "/v1/requests"),
+    (Method::GET, "/v1/contacts"),
+    (Method::GET, "/v1/agents"),
+    (Method::GET, "/v1/agents/{id}/messages"),
+    (Method::GET, "/v1/groups"),
+    (Method::GET, "/v1/messages/{id}"),
+    (Method::GET, "/v1/files/{id}"),
+    (Method::GET, "/v1/conversations"),
+    (Method::GET, "/v1/conversations/{id}/messages"),
+    (Method::GET, "/v1/billing"),
+    (Method::POST, "/v1/billing/checkout"),
+    (Method::POST, "/v1/billing/portal"),
+    (Method::DELETE, "/v1/web/session"),
+];
+
+/// What only the web app may call.
+const WEB_ONLY: &[(Method, &str)] = &[
+    (Method::POST, "/v1/billing/checkout"),
+    (Method::POST, "/v1/billing/portal"),
+    (Method::DELETE, "/v1/web/session"),
+];
+
+fn listed(list: &[(Method, &str)], method: &Method, path: &str) -> bool {
+    list.iter().any(|(m, p)| m == method && *p == path)
+}
+
+/// Writes with a web sign-in must come from the web app's page (ADR-023).
+pub fn require_web_origin(st: &St, headers: &HeaderMap) -> ApiResult<()> {
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    match (&st.cfg.web_origin, origin) {
+        (Some(want), Some(got)) if want == got => Ok(()),
+        _ => Err(err(
+            ErrorCode::Forbidden,
+            "This request must come from the Imbo web app.",
+        )),
+    }
+}
+
+fn permitted(st: &St, c: &Caller, req: &Request) -> ApiResult<()> {
+    let path = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or_default();
+    let method = req.method();
+    if c.web.is_some() {
+        if !listed(WEB_ALLOWED, method, path) {
+            return Err(err(
+                ErrorCode::Forbidden,
+                "The web app can't do this. Use imbo on your computer.",
+            ));
+        }
+        if method != Method::GET {
+            require_web_origin(st, req.headers())?;
+        }
+    } else if listed(WEB_ONLY, method, path) {
+        return Err(err(
+            ErrorCode::Forbidden,
+            "Only the Imbo web app can do this.",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn unread_count(st: &St, agent: Uuid) -> Result<i64, sqlx::Error> {
@@ -183,12 +301,59 @@ pub async fn common(req: Request, next: Next) -> Response {
     res
 }
 
+/// Cross-origin access for the web app only, with cookies (DESIGN §8).
+pub async fn cors(State(st): State<St>, req: Request, next: Next) -> Response {
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .filter(|o| st.cfg.web_origin.as_deref() == Some(*o))
+        .and_then(|o| HeaderValue::from_str(o).ok());
+    let Some(origin) = origin else {
+        return next.run(req).await;
+    };
+    let mut res = if req.method() == Method::OPTIONS {
+        let mut r = StatusCode::NO_CONTENT.into_response();
+        let h = r.headers_mut();
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST, PATCH, PUT, DELETE"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("content-type, imbo-request-id"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("600"),
+        );
+        r
+    } else {
+        next.run(req).await
+    };
+    let h = res.headers_mut();
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        HeaderValue::from_static("true"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("retry-after, imbo-request-id"),
+    );
+    h.append(header::VARY, HeaderValue::from_static("origin"));
+    res
+}
+
 /// Authenticate, attach [`Caller`], and add `Imbo-Unread` for agent calls.
 pub async fn require(State(st): State<St>, mut req: Request, next: Next) -> Response {
     let caller = match resolve(&st, req.headers()).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
+    if let Err(e) = permitted(&st, &caller, &req) {
+        return e.into_response();
+    }
     let actor = caller.actor.as_ref().map(|a| a.id);
     req.extensions_mut().insert(caller);
     let mut res = next.run(req).await;

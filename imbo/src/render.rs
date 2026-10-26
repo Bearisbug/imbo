@@ -213,6 +213,7 @@ mod tests {
 
     fn msg(body: &str, group: bool) -> MessageView {
         MessageView {
+            to: None,
             id: 7,
             from: Sender {
                 account_id: 51730462,

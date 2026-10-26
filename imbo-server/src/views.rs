@@ -26,6 +26,10 @@ struct MessageRow {
     agent_tool: Option<String>,
     account_lo: Option<i32>,
     account_hi: Option<i32>,
+    to_agent_id: Option<Uuid>,
+    to_short_id: Option<String>,
+    to_title: Option<String>,
+    to_tool: Option<String>,
 }
 
 /// Message views by id, in id order. `viewer` decides which side of a direct
@@ -42,12 +46,14 @@ pub async fn messages(
         "SELECT m.id, m.body, m.created_at, m.conversation_id, c.kind, c.group_id, g.name AS group_name,
                 m.from_account, fa.name AS from_name, m.from_agent_id,
                 ag.short_id AS agent_short_id, ag.title AS agent_title, ag.tool AS agent_tool,
-                c.account_lo, c.account_hi
+                c.account_lo, c.account_hi,
+                m.to_agent_id, ta.short_id AS to_short_id, ta.title AS to_title, ta.tool AS to_tool
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
          LEFT JOIN chat_groups g ON g.id = c.group_id
          JOIN accounts fa ON fa.id = m.from_account
          LEFT JOIN agents ag ON ag.id = m.from_agent_id
+         LEFT JOIN agents ta ON ta.id = m.to_agent_id
          WHERE m.id = ANY($1)
          ORDER BY m.id",
     )
@@ -131,6 +137,15 @@ pub async fn messages(
                 (None, Some(a)) => format!("{}/{}", r.from_account, a.short_id),
                 (None, None) => r.from_account.to_string(),
             };
+            let to = match (r.to_agent_id, r.to_short_id, r.to_title, r.to_tool) {
+                (Some(id), Some(short_id), Some(title), Some(tool)) => Some(AgentRef {
+                    id,
+                    short_id,
+                    title,
+                    tool,
+                }),
+                _ => None,
+            };
             MessageView {
                 id: r.id,
                 from: Sender {
@@ -148,6 +163,7 @@ pub async fn messages(
                 created_at: r.created_at,
                 reply_to,
                 files: files.remove(&r.id).unwrap_or_default(),
+                to,
             }
         })
         .collect())

@@ -1,5 +1,7 @@
 mod auth;
+mod billing;
 mod contacts;
+mod conversations;
 mod files;
 mod groups;
 mod health;
@@ -45,6 +47,19 @@ pub fn router(st: St) -> Router {
         .route("/v1/groups/{id}/sessions", put(groups::set_sessions))
         .route("/v1/groups/{id}/members/me", delete(groups::leave))
         .route("/v1/ws", get(ws::upgrade))
+        .route("/v1/web/session", delete(auth::web_logout))
+        .route("/v1/conversations", get(conversations::list))
+        .route(
+            "/v1/conversations/{id}/messages",
+            get(conversations::messages),
+        )
+        .route(
+            "/v1/agents/{id}/messages",
+            get(conversations::agent_messages),
+        )
+        .route("/v1/billing", get(billing::get))
+        .route("/v1/billing/checkout", post(billing::checkout))
+        .route("/v1/billing/portal", post(billing::portal))
         .route_layer(middleware::from_fn_with_state(
             st.clone(),
             crate::auth::require,
@@ -53,12 +68,15 @@ pub fn router(st: St) -> Router {
     let mut public = Router::new()
         .route("/v1/auth/code", post(auth::request_code))
         .route("/v1/auth/verify", post(auth::verify))
-        .route("/v1/health", get(health::health));
+        .route("/v1/health", get(health::health))
+        .route("/v1/web/session", post(auth::web_login))
+        .route("/v1/billing/creem/webhook", post(billing::webhook));
     if st.cfg.dev {
         public = public
             .route("/v1/dev/seed", post(dev::seed))
             .route("/v1/dev/expire-code", post(dev::expire_code))
-            .route("/v1/dev/age-files", post(dev::age_files));
+            .route("/v1/dev/age-files", post(dev::age_files))
+            .route("/v1/dev/age-account", post(dev::age_account));
     }
 
     Router::new()
@@ -66,6 +84,10 @@ pub fn router(st: St) -> Router {
         .merge(authed)
         .fallback(|| async { err(ErrorCode::NotFound, "No such endpoint.") })
         .layer(middleware::from_fn(crate::auth::common))
+        .layer(middleware::from_fn_with_state(
+            st.clone(),
+            crate::auth::cors,
+        ))
         .with_state(st)
 }
 

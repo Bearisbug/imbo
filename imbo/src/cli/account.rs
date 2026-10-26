@@ -1,7 +1,7 @@
 //! `imbo logout | whoami | rename | device …`
 
 use clap::Subcommand;
-use imbo_proto::api::{AccountResponse, DevicesResponse, MeResponse};
+use imbo_proto::api::{AccessView, AccountResponse, DevicesResponse, MeResponse};
 use imbo_proto::text::validate_name;
 use serde_json::json;
 
@@ -58,9 +58,42 @@ pub async fn whoami() -> anyhow::Result<()> {
     if let Some(e) = &me.account.email {
         println!("{}", ui::dim(format!("email     {e}")));
     }
-    println!("{}", ui::dim(format!("computer  {}", me.device.name)));
+    if let Some(d) = &me.device {
+        println!("{}", ui::dim(format!("computer  {}", d.name)));
+    }
     println!("{}", ui::dim(format!("server    {server}")));
+    if let Some(line) = me.access.as_ref().and_then(|a| access_line(a, &server)) {
+        println!("{line}");
+    }
     Ok(())
+}
+
+/// Trial days left, paid-through date, or where to subscribe (FLOW-ACCESS S3).
+fn access_line(a: &AccessView, server: &str) -> Option<String> {
+    let until = a.until?;
+    let day = until.format("%Y-%m-%d");
+    Some(match a.state.as_str() {
+        "trial" => {
+            let left = ((until - chrono::Utc::now()).num_hours().max(0) + 23) / 24;
+            let unit = if left == 1 { "day" } else { "days" };
+            ui::dim(format!(
+                "plan      free trial, {left} {unit} left (until {day})"
+            ))
+        }
+        "paid" => ui::dim(format!("plan      subscribed, paid through {day}")),
+        "expired" => {
+            let web = match server.strip_prefix("https://api.") {
+                Some(rest) => format!("https://app.{}/account", rest.trim_end_matches('/')),
+                None => "the Imbo web app".into(),
+            };
+            ui::s(
+                ui::bad(),
+                format!("plan      inactive since {day}: subscribe at {web} to send again"),
+            )
+            .to_string()
+        }
+        _ => return None,
+    })
 }
 
 pub async fn rename(name: String) -> anyhow::Result<()> {

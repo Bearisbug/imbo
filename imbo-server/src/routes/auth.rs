@@ -1,27 +1,35 @@
-//! API-001 requestCode, API-002 verifyCode.
+//! API-001 requestCode, API-002 verifyCode, API-028 webLogin, API-029 webLogout.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use axum::Extension;
 use axum::Json;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use imbo_proto::ErrorCode;
-use imbo_proto::api::{Account, CodeRequest, CodeResponse, VerifyRequest, VerifyResponse};
+use imbo_proto::api::{
+    Account, CodeRequest, CodeResponse, VerifyRequest, VerifyResponse, WebLoginRequest,
+    WebLoginResponse,
+};
 use imbo_proto::text::{strip_control, valid_email, validate_name};
 use rand::Rng;
 use sha2::{Digest, Sha256};
+use sqlx::{Postgres, Transaction};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::Body;
-use crate::auth::{new_token, token_hash};
+use crate::auth::{Caller, WEB_COOKIE, new_token, require_web_origin, token_hash};
 use crate::error::{ApiResult, err};
 use crate::state::St;
 
 const CODE_TTL_MIN: i64 = 10;
 const MAX_ATTEMPTS: i32 = 5;
+/// A web sign-in lasts 30 days (ADR-023).
+const WEB_DAYS: i64 = 30;
 
 fn code_hash(salt: &[u8], code: &str) -> Vec<u8> {
     let mut h = Sha256::new();
@@ -138,12 +146,17 @@ struct CodeRow {
     expires_at: DateTime<Utc>,
 }
 
-pub async fn verify(
-    State(st): State<St>,
-    Body(req): Body<VerifyRequest>,
-) -> ApiResult<Json<VerifyResponse>> {
-    let email = req.email.trim().to_lowercase();
-    let code = req.code.trim();
+/// Check the code and find or create the account. The code is consumed and
+/// the account written in the returned transaction; the caller adds its
+/// sign-in and commits.
+async fn sign_in(
+    st: &St,
+    email: &str,
+    code: &str,
+    name: Option<&String>,
+) -> ApiResult<(Transaction<'static, Postgres>, Account, bool)> {
+    let email = email.trim().to_lowercase();
+    let code = code.trim();
     let row: Option<CodeRow> = sqlx::query_as(
         "SELECT id, code_salt, code_hash, status, expires_at FROM email_codes
          WHERE lower(email) = $1 AND status IN ('active', 'locked') ORDER BY id DESC LIMIT 1",
@@ -199,7 +212,7 @@ pub async fn verify(
             .bind(&email)
             .fetch_optional(&st.db)
             .await?;
-    let new_name = match (&existing, &req.name) {
+    let new_name = match (&existing, name) {
         (Some(_), _) => None,
         (None, None) => {
             return Err(err(
@@ -272,6 +285,15 @@ pub async fn verify(
             )
         }
     };
+    Ok((tx, account, new_account))
+}
+
+pub async fn verify(
+    State(st): State<St>,
+    Body(req): Body<VerifyRequest>,
+) -> ApiResult<Json<VerifyResponse>> {
+    let (mut tx, account, new_account) =
+        sign_in(&st, &req.email, &req.code, req.name.as_ref()).await?;
     let token = new_token();
     let device_id = Uuid::now_v7();
     let device_name: String = strip_control(req.device_name.trim(), false)
@@ -306,4 +328,66 @@ pub async fn verify(
         token,
         new_account,
     }))
+}
+
+fn session_cookie(value: &str, max_age: i64) -> HeaderValue {
+    HeaderValue::from_str(&format!(
+        "{WEB_COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
+    ))
+    .expect("cookie is ASCII")
+}
+
+/// API-028: sign the web app in with an email code; the token only lives in
+/// an HttpOnly cookie (ADR-023).
+pub async fn web_login(
+    State(st): State<St>,
+    headers: HeaderMap,
+    Body(req): Body<WebLoginRequest>,
+) -> ApiResult<Response> {
+    require_web_origin(&st, &headers)?;
+    let (mut tx, account, new_account) =
+        sign_in(&st, &req.email, &req.code, req.name.as_ref()).await?;
+    let token = new_token();
+    sqlx::query(
+        "INSERT INTO web_sessions (id, account_id, token_hash, expires_at)
+         VALUES ($1, $2, $3, now() + make_interval(days => $4))",
+    )
+    .bind(Uuid::now_v7())
+    .bind(account.id)
+    .bind(token_hash(&token))
+    .bind(WEB_DAYS as i32)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    info!(
+        event = "web_login",
+        account_id = account.id,
+        new_account,
+        "web signed in"
+    );
+    let mut res = Json(WebLoginResponse {
+        account,
+        new_account,
+    })
+    .into_response();
+    res.headers_mut().insert(
+        header::SET_COOKIE,
+        session_cookie(&token, WEB_DAYS * 24 * 3600),
+    );
+    Ok(res)
+}
+
+/// API-029: end this web sign-in and clear the cookie.
+pub async fn web_logout(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+) -> ApiResult<Response> {
+    sqlx::query("UPDATE web_sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
+        .bind(c.web)
+        .execute(&st.db)
+        .await?;
+    let mut res = StatusCode::NO_CONTENT.into_response();
+    res.headers_mut()
+        .insert(header::SET_COOKIE, session_cookie("", 0));
+    Ok(res)
 }

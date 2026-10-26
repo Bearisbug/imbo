@@ -41,10 +41,14 @@ pub enum ErrorCode {
     UploadQuotaExceeded,
     StorageFull,
     FileUnreadable,
+    SubscriptionRequired,
+    RecipientInactive,
+    AlreadySubscribed,
+    PaymentProviderFailed,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 37] = [
+    pub const ALL: [ErrorCode; 41] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -82,6 +86,10 @@ impl ErrorCode {
         Self::UploadQuotaExceeded,
         Self::StorageFull,
         Self::FileUnreadable,
+        Self::SubscriptionRequired,
+        Self::RecipientInactive,
+        Self::AlreadySubscribed,
+        Self::PaymentProviderFailed,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -123,6 +131,10 @@ impl ErrorCode {
             Self::UploadQuotaExceeded => "upload-quota-exceeded",
             Self::StorageFull => "storage-full",
             Self::FileUnreadable => "file-unreadable",
+            Self::SubscriptionRequired => "subscription-required",
+            Self::RecipientInactive => "recipient-inactive",
+            Self::AlreadySubscribed => "already-subscribed",
+            Self::PaymentProviderFailed => "payment-provider-failed",
         }
     }
 
@@ -142,7 +154,12 @@ impl ErrorCode {
             | Self::CodeInvalid
             | Self::FileUnreadable => 400,
             Self::Unauthorized | Self::NotLoggedIn => 401,
-            Self::Forbidden | Self::SignupClosed | Self::NotContact | Self::NotMember => 403,
+            Self::SubscriptionRequired => 402,
+            Self::Forbidden
+            | Self::SignupClosed
+            | Self::NotContact
+            | Self::NotMember
+            | Self::RecipientInactive => 403,
             Self::NotFound
             | Self::AccountNotFound
             | Self::RecipientNotFound
@@ -151,7 +168,8 @@ impl ErrorCode {
             | Self::RequestPending
             | Self::RequestClosed
             | Self::AlreadyMember
-            | Self::AmbiguousRecipient => 409,
+            | Self::AmbiguousRecipient
+            | Self::AlreadySubscribed => 409,
             Self::CodeExpired | Self::FileExpired => 410,
             Self::FileTooLarge => 413,
             Self::NameRequired
@@ -161,7 +179,7 @@ impl ErrorCode {
             | Self::BodyInvalid
             | Self::FileHashMismatch => 422,
             Self::RateLimited | Self::CodeLocked | Self::UploadQuotaExceeded => 429,
-            Self::EmailSendFailed => 502,
+            Self::EmailSendFailed | Self::PaymentProviderFailed => 502,
             Self::Unavailable | Self::ServerUnreachable | Self::DaemonUnavailable => 503,
             Self::InjectFailed => 500,
             Self::StorageFull => 507,
@@ -207,6 +225,10 @@ impl ErrorCode {
             Self::UploadQuotaExceeded => "Daily upload limit reached",
             Self::StorageFull => "Server storage is full",
             Self::FileUnreadable => "Cannot read the file",
+            Self::SubscriptionRequired => "Subscription required",
+            Self::RecipientInactive => "Recipient account is inactive",
+            Self::AlreadySubscribed => "Already subscribed",
+            Self::PaymentProviderFailed => "Payment provider unavailable",
         }
     }
 }

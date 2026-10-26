@@ -58,6 +58,7 @@ pub async fn health(State(st): State<St>) -> ApiResult<Json<Health>> {
         Some((age.as_secs_f64() / 360.0).round() / 10.0)
     });
     Ok(Json(Health {
+        billing_webhook_errors_24h: st.cfg.creem.as_ref().map(|_| st.webhook_errors_24h()),
         status: "ok".into(),
         name: "imbo-server".into(),
         version: crate::VERSION.into(),

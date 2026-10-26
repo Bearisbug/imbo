@@ -55,20 +55,28 @@ pub async fn get_me(
             .bind(c.account_id)
             .fetch_one(&st.db)
             .await?;
-    let device_name: String = sqlx::query_scalar("SELECT name FROM devices WHERE id = $1")
-        .bind(c.device_id)
-        .fetch_one(&st.db)
-        .await?;
+    let device = match c.web {
+        Some(_) => None,
+        None => {
+            let name: String = sqlx::query_scalar("SELECT name FROM devices WHERE id = $1")
+                .bind(c.device_id)
+                .fetch_one(&st.db)
+                .await?;
+            Some(DeviceRef {
+                id: c.device_id,
+                name,
+            })
+        }
+    };
+    let access = crate::billing::access(&st.db, &st.cfg, c.account_id).await?;
     Ok(Json(MeResponse {
         account: Account {
             id: c.account_id,
             name,
             email: Some(email),
         },
-        device: DeviceRef {
-            id: c.device_id,
-            name: device_name,
-        },
+        device,
+        access: Some(access.view()),
     }))
 }
 
@@ -137,10 +145,21 @@ pub async fn list_agents(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
 ) -> ApiResult<Json<AgentsResponse>> {
-    let rows: Vec<(Uuid, String, String, String, String, bool, Option<Uuid>)> = sqlx::query_as(
-        "SELECT id, short_id, session_id, title, tool, online, device_id FROM agents
-         WHERE account_id = $1 AND tool <> 'terminal' AND (online OR last_online_at > now() - interval '7 days')
-         ORDER BY online DESC, last_online_at DESC NULLS LAST",
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        String,
+        String,
+        bool,
+        Option<Uuid>,
+        Option<String>,
+        Option<DateTime<Utc>>,
+    )> = sqlx::query_as(
+        "SELECT ag.id, ag.short_id, ag.session_id, ag.title, ag.tool, ag.online, ag.device_id, d.name, ag.last_online_at
+         FROM agents ag LEFT JOIN devices d ON d.id = ag.device_id
+         WHERE ag.account_id = $1 AND ag.tool <> 'terminal' AND (ag.online OR ag.last_online_at > now() - interval '7 days')
+         ORDER BY ag.online DESC, ag.last_online_at DESC NULLS LAST",
     )
     .bind(c.account_id)
     .fetch_all(&st.db)
@@ -148,7 +167,7 @@ pub async fn list_agents(
     let agents = rows
         .into_iter()
         .map(
-            |(id, short_id, session_id, title, tool, online, device_id)| Agent {
+            |(
                 id,
                 short_id,
                 session_id,
@@ -156,6 +175,20 @@ pub async fn list_agents(
                 tool,
                 online,
                 device_id,
+                device_name,
+                last_online_at,
+            )| {
+                Agent {
+                    id,
+                    short_id,
+                    session_id,
+                    title,
+                    tool,
+                    online,
+                    device_id,
+                    device_name,
+                    last_online_at,
+                }
             },
         )
         .collect();
