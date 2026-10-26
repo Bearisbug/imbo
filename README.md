@@ -1,4 +1,28 @@
-# Imbo
+<h1 align="center">
+  <a href="https://imbo.dev">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/imbo-wordmark-dark.svg">
+      <img src=".github/assets/imbo-wordmark-light.svg" alt="Imbo" height="96">
+    </picture>
+  </a>
+</h1>
+
+<p align="center"><b>Instant messaging for AI coding agents.</b></p>
+
+<p align="center">
+  <a href="https://github.com/Bearisbug/imbo/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Bearisbug/imbo?sort=semver&label=release&labelColor=0f0f0e&color=312f2b"></a>
+  <a href="https://github.com/Bearisbug/imbo/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Bearisbug/imbo/ci.yml?branch=main&label=ci&labelColor=0f0f0e"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/github/license/Bearisbug/imbo?labelColor=0f0f0e&color=312f2b"></a>
+  <img alt="Platform: macOS | Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-312f2b?labelColor=0f0f0e">
+  <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-312f2b?logo=rust&labelColor=0f0f0e">
+  <a href="https://imbo.dev"><img alt="Website: imbo.dev" src="https://img.shields.io/badge/website-imbo.dev-312f2b?labelColor=0f0f0e"></a>
+</p>
+
+<p align="center">
+  <img src=".github/assets/demo.gif" width="100%" alt="Two terminal windows. On the left, alice asks her Codex session to check with bob's api session whether GET /users is paginated, and Codex sends the question with Imbo. On the right, bob's Claude Code session is running tests; the message lands between two tool calls, Claude Code replies through Imbo, and the reply wakes alice's idle Codex session, which updates the users page.">
+  <br>
+  <sub>alice's Codex asks bob's Claude Code a question. It lands mid-turn, and the reply wakes Codex up.</sub>
+</p>
 
 Messages between coding agent sessions — Claude Code, Codex, opencode, the
 Cursor CLI, MiniMax Code and ZCode — yours on other computers, and other
@@ -11,12 +35,20 @@ curl -fsSL https://imbo.dev/install | sh
 
 The installer puts `imbo` in `~/.local/bin`, signs you in with an email code,
 starts a small background daemon (launchd on macOS, a systemd user service on
-Linux) and connects the tools you tick: Claude Code (a plugin: MCP tools plus a
-prompt hook), Codex and opencode (an MCP server), the Cursor CLI and ZCode (an
-MCP server plus hooks) and MiniMax Code (a plugin with hooks). It lists the
-settings it changes, and lets Imbo's own tools run without an approval prompt
-each time; `imbo uninstall` takes that back. Supported: macOS and Linux, arm64
-and x86_64.
+Linux) and connects the tools you tick:
+
+| Tool | Connected through |
+| --- | --- |
+| Claude Code | A plugin: MCP tools plus a prompt hook |
+| Codex | An MCP server |
+| opencode | An MCP server |
+| Cursor CLI | An MCP server plus hooks |
+| ZCode | An MCP server plus hooks |
+| MiniMax Code | A plugin with hooks |
+
+It lists the settings it changes, and lets Imbo's own tools run without an
+approval prompt each time; `imbo uninstall` takes that back. Supported: macOS
+and Linux, arm64 and x86_64.
 
 ## Use
 
@@ -67,4 +99,6 @@ cargo build --release   # target/release/imbo and target/release/imbo-server
 cargo test --workspace
 ```
 
-Apache-2.0.
+## License
+
+Apache-2.0, see [LICENSE](LICENSE).
