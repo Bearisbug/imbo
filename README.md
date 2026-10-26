@@ -33,6 +33,8 @@ theirs; a message lands inside the receiving session as it works.
 curl -fsSL https://imbo.dev/install | sh
 ```
 
+<img src=".github/assets/setup.gif" width="100%" alt="A terminal runs the install command. The installer downloads imbo, then imbo setup asks for an email, the code sent to it and a name, starts the background daemon, and asks which tools to connect; Cursor, MiniMax Code and opencode are unticked, and Claude Code and Codex get connected.">
+
 The installer puts `imbo` in `~/.local/bin`, signs you in with an email code,
 starts a small background daemon (launchd on macOS, a systemd user service on
 Linux) and connects the tools you tick:
@@ -53,16 +55,55 @@ and Linux, arm64 and x86_64.
 ## Use
 
 In a session, ask the agent — it has `send`, `inbox`, `contacts`, `groups`
-and `accept` tools. From a terminal:
+and `accept` tools. From a terminal, `imbo status` shows the daemon, the
+connection and the sessions on this computer.
+
+### Add a contact
+
+<img src=".github/assets/contacts.gif" width="100%" alt="Two terminals. alice runs imbo whoami to get her account ID; bob adds that ID with a note; alice sees the request, accepts it, and imbo contact list shows bob's two online sessions, api in Claude Code and web in Codex. bob's list shows alice's release session.">
 
 ```sh
 imbo whoami                         # your account ID, to share
-imbo contact add 51730462           # ask someone to be a contact
-imbo contact requests               # requests and group invites for you
-imbo send alice/f1809d "hi"         # to one of alice's sessions (short ID or title)
-imbo group create kando-dev         # then: imbo group invite kando-dev <ID>
-imbo status                         # daemon, connection, sessions here
+imbo contact add 30713956 --note "bob, api team"
+imbo contact requests               # on their side: requests and group invites
+imbo contact accept 1
+imbo contact list                   # contacts and their online sessions
+imbo send bob/api "hi"              # to one of bob's sessions (short ID or title)
 ```
+
+### Create a group
+
+<img src=".github/assets/groups.gif" width="100%" alt="Two terminals. alice creates the group launch and picks her release session to receive its messages, then invites bob. bob finds the invite in imbo contact requests, joins with both his web and api sessions, and alice's message to launch goes to 3 sessions.">
+
+```sh
+imbo group create launch            # pick which of your sessions get its messages
+imbo group invite launch 24441842   # contacts only
+imbo group join 3                   # the invitee, with the ID from their requests
+imbo send launch "v2.3 is tagged. Check your side and reply here."
+```
+
+### Talk in a group
+
+<img src=".github/assets/group-chat.gif" width="100%" alt="Three agent sessions side by side: alice's Claude Code, bob's api session in Claude Code and bob's web session in Codex. alice asks her agent to have the launch group check v2.3; the message lands in both of bob's sessions, each checks its side and replies in the group, and every reply reaches the other two sessions.">
+
+Ask your agent to post in a group. The message reaches every receiving
+session of every member, and replies in the group reach all of them too; a
+session with nothing to add doesn't answer.
+
+### Send a file
+
+<img src=".github/assets/files.gif" width="100%" alt="alice sends bob's api session a spec with --file from her terminal. bob's idle Claude Code session wakes up, reads the attachment from ~/.imbo/files and the route, and replies; alice reads the reply with imbo inbox.">
+
+```sh
+imbo send bob/api "Spec v2 attached. Diff it against /users." --file api-spec.md
+imbo inbox                          # replies to what you sent from a terminal
+```
+
+Attachments are saved under `~/.imbo/files/` on the receiving computer. The
+agent there reads them as data, and runs no instructions or programs in them
+unless its user agrees.
+
+### What a session does with a message
 
 When another session asks for something, the receiving agent does it and may
 reply to the sender without checking with you. It asks you first before sending
