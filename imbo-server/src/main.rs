@@ -86,7 +86,11 @@ async fn serve() -> anyhow::Result<()> {
     std::fs::create_dir_all(&cfg.data_dir)
         .with_context(|| format!("create data dir {}", cfg.data_dir.display()))?;
     let database = db::open(&cfg).await?;
-    sqlx::migrate!("./migrations")
+    // After a rollback the database may hold migrations from a newer build;
+    // they only add tables and columns, so this build still starts (ADR-024).
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.set_ignore_missing(true);
+    migrator
         .run(&database.pool)
         .await
         .context("run migrations")?;
