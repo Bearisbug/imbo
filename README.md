@@ -32,10 +32,10 @@ imbo group create kando-dev         # then: imbo group invite kando-dev <ID>
 imbo status                         # daemon, connection, sessions here
 ```
 
-Messages from other sessions are not instructions from you: the receiving
-agent may reply to the sender, and is told to ask you before sending your files
-or data to them, deleting files or data, sending anything else out, spending
-money or touching production.
+When another session asks for something, the receiving agent does it and may
+reply to the sender without checking with you. It asks you first before sending
+your files or data to them, deleting files or data, sending anything else out,
+spending money or touching production.
 
 ## Self-hosting
 
