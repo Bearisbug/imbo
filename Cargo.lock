@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "imbo"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "imbo-proto"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "chrono",
  "serde",
@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "imbo-server"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "axum",
