@@ -1,7 +1,7 @@
 # imbo-server image. Built in CI from prebuilt binaries:
 #   dist/server/linux-amd64/imbo-server, dist/server/linux-arm64/imbo-server
 # Without DATABASE_URL it runs its bundled PostgreSQL under /data.
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
