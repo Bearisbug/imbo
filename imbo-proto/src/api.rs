@@ -366,7 +366,8 @@ pub struct WebLoginResponse {
 pub struct LastMessage {
     pub id: MessageId,
     pub from: Sender,
-    /// The first 100 characters of the body.
+    /// The first 100 characters of the body, or the file names when the
+    /// body is empty.
     pub preview: String,
     pub created_at: DateTime<Utc>,
 }

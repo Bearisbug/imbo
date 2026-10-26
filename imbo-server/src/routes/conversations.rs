@@ -5,7 +5,8 @@ use axum::extract::{Path, Query, State};
 use axum::{Extension, Json};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    AccountRef, ConversationItem, ConversationsResponse, GroupRef, LastMessage, MessagesPage,
+    AccountRef, ConversationItem, ConversationsResponse, FileView, GroupRef, LastMessage,
+    MessagesPage,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -14,6 +15,21 @@ use crate::auth::Caller;
 use crate::error::{ApiResult, err};
 use crate::state::St;
 use crate::views;
+
+/// The first 100 characters of the body; the file names when a message
+/// carries only files.
+fn preview(body: &str, files: &[FileView]) -> String {
+    let text = if body.is_empty() {
+        files
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        body.to_string()
+    };
+    text.chars().take(100).collect()
+}
 
 #[derive(sqlx::FromRow)]
 struct ConvRow {
@@ -71,7 +87,7 @@ pub async fn list(
                 .map(|m| LastMessage {
                     id: m.id,
                     from: m.from,
-                    preview: m.body.chars().take(100).collect(),
+                    preview: preview(&m.body, &m.files),
                     created_at: m.created_at,
                 });
             ConversationItem {
@@ -189,4 +205,27 @@ pub async fn agent_messages(
     let (ids, has_more) = page(&st, None, Some(agent), &q).await?;
     let messages = views::messages(&st.db, &ids, c.account_id).await?;
     Ok(Json(MessagesPage { messages, has_more }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(name: &str) -> FileView {
+        FileView {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            size: 1,
+            sha256: String::new(),
+            expires_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn preview_falls_back_to_file_names() {
+        assert_eq!(preview("hi", &[file("a.txt")]), "hi");
+        assert_eq!(preview("", &[file("a.txt"), file("b.png")]), "a.txt, b.png");
+        assert_eq!(preview("", &[]), "");
+        assert_eq!(preview(&"x".repeat(150), &[]).chars().count(), 100);
+    }
 }
