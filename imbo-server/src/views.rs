@@ -147,6 +147,8 @@ pub async fn messages(
                 _ => None,
             };
             MessageView {
+                from_me: r.from_account == viewer && r.from_agent_id.is_none(),
+                state: None,
                 id: r.id,
                 from: Sender {
                     account_id: r.from_account,

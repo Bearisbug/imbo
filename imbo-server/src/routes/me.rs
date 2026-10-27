@@ -155,8 +155,13 @@ pub async fn list_agents(
         Option<Uuid>,
         Option<String>,
         Option<DateTime<Utc>>,
+        i64,
     )> = sqlx::query_as(
-        "SELECT ag.id, ag.short_id, ag.session_id, ag.title, ag.tool, ag.online, ag.device_id, d.name, ag.last_online_at
+        "SELECT ag.id, ag.short_id, ag.session_id, ag.title, ag.tool, ag.online, ag.device_id, d.name, ag.last_online_at,
+                (SELECT count(*) FROM deliveries dl JOIN messages m ON m.id = dl.message_id
+                 JOIN agents t ON t.id = dl.agent_id
+                 WHERE m.from_agent_id = ag.id AND t.account_id = $1 AND t.tool = 'terminal'
+                   AND dl.state IN ('pending', 'pushed')) AS unread
          FROM agents ag LEFT JOIN devices d ON d.id = ag.device_id
          WHERE ag.account_id = $1 AND ag.tool <> 'terminal' AND (ag.online OR ag.last_online_at > now() - interval '7 days')
          ORDER BY ag.online DESC, ag.last_online_at DESC NULLS LAST",
@@ -177,6 +182,7 @@ pub async fn list_agents(
                 device_id,
                 device_name,
                 last_online_at,
+                unread,
             )| {
                 Agent {
                     id,
@@ -188,6 +194,7 @@ pub async fn list_agents(
                     device_id,
                     device_name,
                     last_online_at,
+                    unread,
                 }
             },
         )

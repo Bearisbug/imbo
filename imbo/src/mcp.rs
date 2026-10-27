@@ -237,7 +237,12 @@ fn problem_text(p: &Problem) -> String {
 }
 
 fn message_text(m: &MessageView, files: &[LocalFile]) -> String {
-    let reply = if m.from.agent.is_none() && m.conversation.group.is_none() {
+    let reply = if m.from_me && m.conversation.group.is_none() {
+        format!(
+            "{} (from your own user in person; the reply goes to their terminal inbox)",
+            m.reply_to
+        )
+    } else if m.from.agent.is_none() && m.conversation.group.is_none() {
         format!(
             "{} (sent from a terminal; the reply goes to their terminal inbox)",
             m.reply_to
@@ -509,7 +514,7 @@ impl Imbo {
                     let mut s = message_text(&r.message, &files);
                     if !files.is_empty() {
                         s.push_str("\n\n");
-                        s.push_str(&render::footer_rules(true));
+                        s.push_str(&render::footer_rules(true, r.message.from_me));
                     }
                     return Ok((s, unread));
                 }
@@ -527,7 +532,8 @@ impl Imbo {
                     s.push_str("\n\n");
                 }
                 let with_files = r.messages.iter().any(|m| !m.files.is_empty());
-                s.push_str(&render::footer_rules(with_files));
+                let own = r.messages.iter().any(|m| m.from_me);
+                s.push_str(&render::footer_rules(with_files, own));
                 Ok((s, unread))
             }
             "contacts" => match arg_str(a, "action").as_deref().unwrap_or("list") {

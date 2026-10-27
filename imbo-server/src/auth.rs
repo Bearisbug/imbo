@@ -214,7 +214,10 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::GET, "/v1/contacts"),
     (Method::GET, "/v1/agents"),
     (Method::GET, "/v1/agents/{id}/messages"),
+    (Method::POST, "/v1/agents/{id}/messages"),
+    (Method::POST, "/v1/agents/{id}/read"),
     (Method::GET, "/v1/groups"),
+    (Method::POST, "/v1/messages"),
     (Method::GET, "/v1/messages/{id}"),
     (Method::GET, "/v1/files/{id}"),
     (Method::GET, "/v1/conversations"),
@@ -227,6 +230,8 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
 
 /// What only the web app may call.
 const WEB_ONLY: &[(Method, &str)] = &[
+    (Method::POST, "/v1/agents/{id}/messages"),
+    (Method::POST, "/v1/agents/{id}/read"),
     (Method::POST, "/v1/billing/checkout"),
     (Method::POST, "/v1/billing/portal"),
     (Method::DELETE, "/v1/web/session"),

@@ -220,6 +220,9 @@ pub struct Agent {
     pub device_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_online_at: Option<DateTime<Utc>>,
+    /// Messages this session sent the terminal inbox that are still unread.
+    #[serde(default)]
+    pub unread: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,6 +300,14 @@ pub struct MessageView {
     /// The receiving session of a direct message; `terminal` for the terminal inbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<AgentRef>,
+    /// The reader sent it in person, from a terminal or the web app, not
+    /// from a session (RULE-012).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_me: bool,
+    /// Delivery state to `to`, on what the person sent their own session
+    /// (API-036, API-043): `pending`, `pushed`, `delivered` or `canceled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 /// An attachment as messages and uploads show it (DESIGN §8).
@@ -396,6 +407,12 @@ pub struct ConversationsResponse {
 pub struct MessagesPage {
     pub messages: Vec<MessageView>,
     pub has_more: bool,
+}
+
+/// API-044: how many replies were marked read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadResponse {
+    pub marked: u64,
 }
 
 // ---- billing (API-032–034) ----

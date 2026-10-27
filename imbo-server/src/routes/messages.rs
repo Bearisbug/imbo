@@ -1,11 +1,12 @@
-//! API-015 send, API-016 inbox, API-017 pull, API-024 message.
+//! API-015 send, API-016 inbox, API-017 pull, API-024 message,
+//! API-043 send to my session, API-044 mark my session's replies read.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use imbo_proto::api::{
     AccountRef, AgentRef, ConversationRef, GroupRef, InboxItem, InboxResponse, MessageResponse,
-    PullResponse, SendResponse,
+    PullResponse, ReadResponse, SendResponse,
 };
 use imbo_proto::text::{Address, parse_address};
 use imbo_proto::{
@@ -161,7 +162,7 @@ fn by_name<'a>(contacts: &'a [AccountRef], who: &str) -> Vec<&'a AccountRef> {
 }
 
 /// DESIGN §9 收件人写法.
-async fn resolve(db: &PgPool, me: i32, to: &str) -> ApiResult<Target> {
+async fn resolve(db: &PgPool, me: &AccountRef, to: &str) -> ApiResult<Target> {
     let Some(addr) = parse_address(to) else {
         return Err(err(
             ErrorCode::RecipientNotFound,
@@ -170,7 +171,7 @@ async fn resolve(db: &PgPool, me: i32, to: &str) -> ApiResult<Target> {
     };
     match addr {
         Address::Group(gid) => {
-            let mine = my_groups(db, me).await?;
+            let mine = my_groups(db, me.id).await?;
             if let Some(g) = mine.into_iter().find(|g| g.id == gid) {
                 return Ok(Target::Group(g));
             }
@@ -192,9 +193,11 @@ async fn resolve(db: &PgPool, me: i32, to: &str) -> ApiResult<Target> {
             }
         }
         Address::Direct { who, session } => {
-            let contacts = my_contacts(db, me).await?;
+            let contacts = my_contacts(db, me.id).await?;
             let matched = by_name(&contacts, &who);
             let peer = match matched.as_slice() {
+                // My own account ID reaches my own sessions (RULE-011).
+                _ if who == me.id.to_string() => me.clone(),
                 [one] => (*one).clone(),
                 [] => {
                     if let Some(e) = not_contact(db, &who).await? {
@@ -265,13 +268,18 @@ async fn resolve(db: &PgPool, me: i32, to: &str) -> ApiResult<Target> {
                 }
             }
         }
+        // My own account ID alone: my terminal inbox (RULE-011).
+        Address::Bare(name) if name == me.id.to_string() => Ok(Target::Direct {
+            peer: me.clone(),
+            agent: terminal_of(db, me.id).await?,
+        }),
         Address::Bare(name) => {
-            let groups: Vec<GroupRef> = my_groups(db, me)
+            let groups: Vec<GroupRef> = my_groups(db, me.id)
                 .await?
                 .into_iter()
                 .filter(|g| g.name == name)
                 .collect();
-            let contacts = my_contacts(db, me).await?;
+            let contacts = my_contacts(db, me.id).await?;
             let people: Vec<AccountRef> = by_name(&contacts, &name).into_iter().cloned().collect();
             match (groups.len(), people.len()) {
                 (1, 0) => Ok(Target::Group(groups.into_iter().next().unwrap())),
@@ -455,8 +463,21 @@ pub async fn send(
         return Ok((StatusCode::CREATED, Json(done)));
     }
     billing::require_active(&st, c.account_id, "API-015").await?;
-    let target = resolve(&st.db, c.account_id, &to).await?;
+    let me = AccountRef {
+        id: c.account_id,
+        name: c.name.clone(),
+    };
+    let target = resolve(&st.db, &me, &to).await?;
+    if let Target::Direct { agent, .. } = &target
+        && c.actor.as_ref().is_some_and(|a| a.id == agent.id)
+    {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "A session can't message itself.",
+        ));
+    }
     if let Target::Direct { peer, .. } = &target
+        && peer.id != c.account_id
         && !billing::access(&st.db, &st.cfg, peer.id).await?.active()
     {
         info!(
@@ -473,11 +494,25 @@ pub async fn send(
             ),
         ));
     }
+    let done = store(&st, &c, &target, &body, &client_msg_id, &files).await?;
+    Ok((StatusCode::CREATED, Json(done)))
+}
+
+/// Stores a message from the caller to `target` with its deliveries, the
+/// part API-015 and API-043 share.
+async fn store(
+    st: &St,
+    c: &Caller,
+    target: &Target,
+    body: &str,
+    client_msg_id: &str,
+    files: &[Uuid],
+) -> ApiResult<SendResponse> {
     let from_agent = c.actor.as_ref().map(|a| a.id);
 
     let mut inactive_members = None;
     let mut tx = st.db.begin().await?;
-    let (conversation, recipients): (ConversationRef, Vec<(Uuid, i32)>) = match &target {
+    let (conversation, recipients): (ConversationRef, Vec<(Uuid, i32)>) = match target {
         Target::Direct { peer, agent } => {
             let still: Option<i32> = sqlx::query_scalar(
                 "SELECT peer_id FROM contacts WHERE account_id = $1 AND peer_id = $2 FOR SHARE",
@@ -486,7 +521,8 @@ pub async fn send(
             .bind(peer.id)
             .fetch_optional(&mut *tx)
             .await?;
-            if still.is_none() {
+            // Writing to myself needs no contact (RULE-011).
+            if still.is_none() && peer.id != c.account_id {
                 return Err(err(
                     ErrorCode::NotContact,
                     format!("{} is not your contact.", peer.name),
@@ -574,13 +610,13 @@ pub async fn send(
             )
         }
     };
-    let to_agent = match &target {
+    let to_agent = match target {
         Target::Direct { agent, .. } => Some(agent.id),
         Target::Group(_) => None,
     };
-    let terminal = matches!(&target, Target::Direct { agent, .. } if agent.tool == TOOL_TERMINAL);
+    let terminal = matches!(target, Target::Direct { agent, .. } if agent.tool == TOOL_TERMINAL);
     if !files.is_empty() {
-        check_files(&mut tx, c.account_id, &files).await?;
+        check_files(&mut tx, c.account_id, files).await?;
     }
     let message_id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO messages (conversation_id, from_account, from_agent_id, to_agent_id, body, client_msg_id)
@@ -591,16 +627,14 @@ pub async fn send(
     .bind(c.account_id)
     .bind(from_agent)
     .bind(to_agent)
-    .bind(&body)
-    .bind(&client_msg_id)
+    .bind(body)
+    .bind(client_msg_id)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(message_id) = message_id else {
         drop(tx);
-        let done = existing_result(&st, c.account_id, &client_msg_id).await?;
-        return done
-            .map(|d| (StatusCode::CREATED, Json(d)))
-            .ok_or_else(|| err(ErrorCode::Unavailable, "Retry."));
+        let done = existing_result(st, c.account_id, client_msg_id).await?;
+        return done.ok_or_else(|| err(ErrorCode::Unavailable, "Retry."));
     };
     if !files.is_empty() {
         // `state = 'ready'` loses to a cleanup that got there first.
@@ -608,7 +642,7 @@ pub async fn send(
             "UPDATE files SET state = 'sent', message_id = $1 WHERE id = ANY($2) AND state = 'ready'",
         )
         .bind(message_id)
-        .bind(&files)
+        .bind(files)
         .execute(&mut *tx)
         .await?;
         if r.rows_affected() != files.len() as u64 {
@@ -626,17 +660,150 @@ pub async fn send(
         .await?;
     }
     tx.commit().await?;
-    delivery::kick(&st, recipients.iter().map(|(a, _)| *a));
-    Ok((
-        StatusCode::CREATED,
-        Json(SendResponse {
-            message_id,
-            conversation,
-            recipients: if terminal { 0 } else { recipients.len() as u32 },
-            terminal,
-            inactive_members,
-        }),
-    ))
+    delivery::kick(st, recipients.iter().map(|(a, _)| *a));
+    Ok(SendResponse {
+        message_id,
+        conversation,
+        recipients: if terminal { 0 } else { recipients.len() as u32 },
+        terminal,
+        inactive_members,
+    })
+}
+
+/// One of my sessions as API-014 lists it: not the terminal inbox, seen in
+/// the last 7 days.
+async fn my_session(st: &St, me: i32, raw: &str) -> ApiResult<AgentRow> {
+    let not_found = || err(ErrorCode::NotFound, "No such session.");
+    let id = Uuid::parse_str(raw).map_err(|_| not_found())?;
+    sqlx::query_as(
+        "SELECT id, short_id, title, tool, online FROM agents
+         WHERE id = $1 AND account_id = $2 AND tool <> 'terminal'
+           AND (online OR last_online_at > now() - interval '7 days')",
+    )
+    .bind(id)
+    .bind(me)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(not_found)
+}
+
+/// The delivery state of each message the person sent `agent` (API-036).
+pub async fn with_states(
+    db: &PgPool,
+    messages: &mut [imbo_proto::api::MessageView],
+    agent: Uuid,
+) -> Result<(), sqlx::Error> {
+    let ids: Vec<i64> = messages
+        .iter()
+        .filter(|m| m.from_me && m.to.as_ref().is_some_and(|t| t.id == agent))
+        .map(|m| m.id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let states: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT message_id, state FROM deliveries WHERE agent_id = $1 AND message_id = ANY($2)",
+    )
+    .bind(agent)
+    .bind(&ids)
+    .fetch_all(db)
+    .await?;
+    for (id, state) in states {
+        if let Some(m) = messages.iter_mut().find(|m| m.id == id) {
+            m.state = Some(state);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct AgentSendIn {
+    body: Option<String>,
+    client_msg_id: Option<String>,
+}
+
+/// API-043: the web app writes to one of my sessions; the sender is my
+/// terminal inbox, as with `imbo send` (ADR-030).
+pub async fn send_to_agent(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(raw): Path<String>,
+    Body(req): Body<AgentSendIn>,
+) -> ApiResult<(StatusCode, Json<MessageResponse>)> {
+    let body = req.body.unwrap_or_default();
+    let client_msg_id = req.client_msg_id.unwrap_or_default();
+    if body.trim().is_empty() || body.chars().count() > MAX_BODY_CHARS {
+        return Err(err(
+            ErrorCode::BodyInvalid,
+            "The message must be 1 to 32000 characters.",
+        ));
+    }
+    if client_msg_id.is_empty() || client_msg_id.len() > 64 {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "client_msg_id must be 1 to 64 characters.",
+        ));
+    }
+    let agent = my_session(&st, c.account_id, &raw).await?;
+    let message_id = match existing_result(&st, c.account_id, &client_msg_id).await? {
+        Some(done) => done.message_id,
+        None => {
+            billing::require_active(&st, c.account_id, "API-043").await?;
+            let target = Target::Direct {
+                peer: AccountRef {
+                    id: c.account_id,
+                    name: c.name.clone(),
+                },
+                agent,
+            };
+            store(&st, &c, &target, &body, &client_msg_id, &[])
+                .await?
+                .message_id
+        }
+    };
+    let mut messages = views::messages(&st.db, &[message_id], c.account_id).await?;
+    if let Some(to) = messages.first().and_then(|m| m.to.as_ref()).map(|t| t.id) {
+        with_states(&st.db, &mut messages, to).await?;
+    }
+    let message = messages
+        .into_iter()
+        .next()
+        .ok_or_else(|| err(ErrorCode::Unavailable, "Retry."))?;
+    Ok((StatusCode::CREATED, Json(MessageResponse { message })))
+}
+
+#[derive(Deserialize)]
+pub struct ReadIn {
+    up_to: Option<i64>,
+}
+
+/// API-044: what the web app has shown of a session's replies to my
+/// terminal inbox counts as read, as `imbo inbox` would (ADR-030).
+pub async fn mark_read(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(raw): Path<String>,
+    Body(req): Body<ReadIn>,
+) -> ApiResult<Json<ReadResponse>> {
+    let Some(up_to) = req.up_to else {
+        return Err(err(ErrorCode::InvalidRequest, "up_to is required."));
+    };
+    let agent = my_session(&st, c.account_id, &raw).await?;
+    let marked = sqlx::query(
+        "UPDATE deliveries d SET state = 'delivered', delivered_at = now(), via = 'web'
+         FROM messages m, agents t
+         WHERE m.id = d.message_id AND t.id = d.agent_id
+           AND t.account_id = $1 AND t.tool = 'terminal'
+           AND m.from_agent_id = $2 AND m.id <= $3
+           AND d.state IN ('pending', 'pushed')",
+    )
+    .bind(c.account_id)
+    .bind(agent.id)
+    .bind(up_to)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    Ok(Json(ReadResponse { marked }))
 }
 
 #[derive(Deserialize)]

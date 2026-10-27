@@ -53,7 +53,8 @@ pub async fn list(
            SELECT cv.id, cv.kind, cv.group_id,
                   CASE WHEN cv.account_lo = $1 THEN cv.account_hi ELSE cv.account_lo END AS peer_id
            FROM conversations cv
-           WHERE (cv.kind = 'direct' AND $1 IN (cv.account_lo, cv.account_hi))
+           WHERE (cv.kind = 'direct' AND $1 IN (cv.account_lo, cv.account_hi)
+                  AND cv.account_lo <> cv.account_hi)
               OR cv.group_id IN (SELECT group_id FROM group_members WHERE account_id = $1)
          )
          SELECT mine.id, mine.kind, mine.group_id, g.name AS group_name, mine.peer_id, p.name AS peer_name,
@@ -203,7 +204,8 @@ pub async fn agent_messages(
         return Err(not_found());
     }
     let (ids, has_more) = page(&st, None, Some(agent), &q).await?;
-    let messages = views::messages(&st.db, &ids, c.account_id).await?;
+    let mut messages = views::messages(&st.db, &ids, c.account_id).await?;
+    super::messages::with_states(&st.db, &mut messages, agent).await?;
     Ok(Json(MessagesPage { messages, has_more }))
 }
 
