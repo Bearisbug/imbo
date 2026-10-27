@@ -1,4 +1,5 @@
-//! API-001 requestCode, API-002 verifyCode, API-028 webLogin, API-029 webLogout.
+//! API-001 requestCode, API-002 verifyCode, API-028 webLogin, API-029 webLogout,
+//! API-048 appLogin.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -11,8 +12,8 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    Account, CodeRequest, CodeResponse, VerifyRequest, VerifyResponse, WebLoginRequest,
-    WebLoginResponse,
+    Account, AppLoginRequest, AppLoginResponse, CodeRequest, CodeResponse, VerifyRequest,
+    VerifyResponse, WebLoginRequest, WebLoginResponse,
 };
 use imbo_proto::text::{strip_control, valid_email, validate_name};
 use rand::Rng;
@@ -22,7 +23,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::Body;
-use crate::auth::{Caller, WEB_COOKIE, new_token, require_web_origin, token_hash};
+use crate::auth::{
+    APP_DAYS, Caller, WEB_COOKIE, new_app_token, new_token, require_web_origin, token_hash,
+};
 use crate::error::{ApiResult, err};
 use crate::state::St;
 
@@ -390,4 +393,46 @@ pub async fn web_logout(
     res.headers_mut()
         .insert(header::SET_COOKIE, session_cookie("", 0));
     Ok(res)
+}
+
+/// API-048: sign the App in with an email code; the token goes in the
+/// `Authorization` header and needs no `Origin` (ADR-033).
+pub async fn app_login(
+    State(st): State<St>,
+    Body(req): Body<AppLoginRequest>,
+) -> ApiResult<Json<AppLoginResponse>> {
+    let platform = req.platform.trim();
+    if !matches!(platform, "ios" | "android") {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "platform must be ios or android.",
+        ));
+    }
+    let (mut tx, account, new_account) =
+        sign_in(&st, &req.email, &req.code, req.name.as_ref()).await?;
+    let token = new_app_token();
+    sqlx::query(
+        "INSERT INTO app_sessions (id, account_id, token_hash, platform, expires_at)
+         VALUES ($1, $2, $3, $4, now() + make_interval(days => $5))",
+    )
+    .bind(Uuid::now_v7())
+    .bind(account.id)
+    .bind(token_hash(&token))
+    .bind(platform)
+    .bind(APP_DAYS)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    info!(
+        event = "app_login",
+        account_id = account.id,
+        new_account,
+        platform,
+        "app signed in"
+    );
+    Ok(Json(AppLoginResponse {
+        account,
+        token,
+        new_account,
+    }))
 }

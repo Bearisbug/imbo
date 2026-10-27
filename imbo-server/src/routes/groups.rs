@@ -18,7 +18,7 @@ use super::Body;
 use crate::auth::Caller;
 use crate::error::{ApiError, ApiResult, err};
 use crate::state::St;
-use crate::{billing, delivery, notify, views};
+use crate::{billing, delivery, notify, push, views};
 
 async fn owned_sessions(st: &St, c: &Caller, ids: &[Uuid]) -> ApiResult<Vec<Uuid>> {
     let mut want = ids.to_vec();
@@ -134,7 +134,7 @@ async fn not_owner(tx: &mut PgConnection, g: &GroupRef, what: &str) -> ApiResult
 }
 
 /// Cancel the group's undelivered messages to `account`, or to everyone.
-async fn cancel_group(
+pub(super) async fn cancel_group(
     tx: &mut PgConnection,
     gid: i32,
     account: Option<i32>,
@@ -155,8 +155,14 @@ async fn cancel_group(
 }
 
 /// A notice from the owner's terminal into `to`'s terminal inbox, in the
-/// two accounts' direct conversation (ADR-028). Returns the inbox agent.
-async fn post_notice(tx: &mut PgConnection, from: i32, to: i32, body: String) -> ApiResult<Uuid> {
+/// two accounts' direct conversation (ADR-028). Returns the inbox agent and
+/// the message.
+pub(super) async fn post_notice(
+    tx: &mut PgConnection,
+    from: i32,
+    to: i32,
+    body: String,
+) -> ApiResult<(Uuid, i64)> {
     let (lo, hi) = (from.min(to), from.max(to));
     sqlx::query(
         "INSERT INTO conversations (kind, account_lo, account_hi) VALUES ('direct', $1, $2) ON CONFLICT DO NOTHING",
@@ -201,7 +207,7 @@ async fn post_notice(tx: &mut PgConnection, from: i32, to: i32, body: String) ->
         .bind(to)
         .execute(&mut *tx)
         .await?;
-    Ok(inbox)
+    Ok((inbox, message))
 }
 
 async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
@@ -536,17 +542,19 @@ pub async fn remove(
     .execute(&mut *tx)
     .await?;
     let canceled = cancel_group(&mut tx, g.id, Some(target), "removed_from_group").await?;
-    let mut inbox = vec![];
+    let mut notices = vec![];
     if active {
         let body = format!(
             "You were removed from group {} (#{}) by {}.",
             g.name, g.id, c.name
         );
-        inbox.push(post_notice(&mut tx, c.account_id, target, body).await?);
+        notices.push(post_notice(&mut tx, c.account_id, target, body).await?);
     }
     tx.commit().await?;
     delivery::notify_canceled(&st, canceled).await;
+    let (inbox, messages): (Vec<Uuid>, Vec<i64>) = notices.into_iter().unzip();
     delivery::kick(&st, inbox);
+    push::messages(&st, messages);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -624,16 +632,18 @@ pub async fn dissolve(
     let others: Vec<i32> = members.into_iter().filter(|a| *a != c.account_id).collect();
     // RULE-008: inactive members get no notice (INV-014).
     let access = billing::access_many(&st.db, &st.cfg, &others).await?;
-    let mut inbox = vec![];
+    let mut notices = vec![];
     for to in others {
         if access.get(&to).is_some_and(|a| !a.active()) {
             continue;
         }
         let body = format!("Group {} (#{}) was dissolved by {}.", g.name, g.id, c.name);
-        inbox.push(post_notice(&mut tx, c.account_id, to, body).await?);
+        notices.push(post_notice(&mut tx, c.account_id, to, body).await?);
     }
     tx.commit().await?;
     delivery::notify_canceled(&st, canceled).await;
+    let (inbox, messages): (Vec<Uuid>, Vec<i64>) = notices.into_iter().unzip();
     delivery::kick(&st, inbox);
+    push::messages(&st, messages);
     Ok(StatusCode::NO_CONTENT)
 }

@@ -269,6 +269,16 @@ pub async fn portal_link(st: &St, creem: &Creem, customer: &str) -> ApiResult<St
         .ok_or_else(provider_failed)
 }
 
+/// API-052: end a subscription now, before its account is deleted.
+pub async fn cancel_subscription(st: &St, creem: &Creem, id: &str) -> ApiResult<()> {
+    let req = st
+        .http
+        .post(format!("{}/v1/subscriptions/{id}/cancel", creem.api_base()))
+        .json(&json!({ "mode": "immediate" }));
+    creem_call(creem, req, "cancel").await?;
+    Ok(())
+}
+
 /// `imbo-server billing pull`: Creem's current record of a subscription.
 pub async fn fetch_subscription(
     http: &reqwest::Client,

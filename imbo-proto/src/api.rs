@@ -373,6 +373,38 @@ pub struct WebLoginResponse {
     pub new_account: bool,
 }
 
+// ---- App (API-048–052) ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppLoginRequest {
+    pub email: String,
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `ios` or `android`.
+    pub platform: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppLoginResponse {
+    pub account: Account,
+    /// Shown only here; the server keeps its SHA-256 (ADR-033).
+    pub token: String,
+    pub new_account: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushTokenRequest {
+    /// An Expo push token, `ExponentPushToken[…]`.
+    pub push_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteAccountRequest {
+    /// Must be `DELETE`.
+    pub confirm: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastMessage {
     pub id: MessageId,

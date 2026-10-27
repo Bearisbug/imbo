@@ -1,3 +1,4 @@
+mod app;
 mod auth;
 mod billing;
 mod contacts;
@@ -67,6 +68,12 @@ pub fn router(st: St) -> Router {
         .route("/v1/billing", get(billing::get))
         .route("/v1/billing/checkout", post(billing::checkout))
         .route("/v1/billing/portal", post(billing::portal))
+        .route("/v1/app/session", delete(app::logout))
+        .route(
+            "/v1/app/push",
+            put(app::register_push).delete(app::unregister_push),
+        )
+        .route("/v1/account", delete(app::delete_account))
         .route_layer(middleware::from_fn_with_state(
             st.clone(),
             crate::auth::require,
@@ -77,6 +84,7 @@ pub fn router(st: St) -> Router {
         .route("/v1/auth/verify", post(auth::verify))
         .route("/v1/health", get(health::health))
         .route("/v1/web/session", post(auth::web_login))
+        .route("/v1/app/session", post(auth::app_login))
         .route("/v1/billing/creem/webhook", post(billing::webhook));
     if st.cfg.dev {
         public = public

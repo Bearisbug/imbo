@@ -190,9 +190,13 @@ pub async fn agent_refs(db: &PgPool, ids: &[Uuid]) -> Result<Vec<AgentRef>, sqlx
 }
 
 pub async fn account_ref(db: &PgPool, id: i32) -> Result<Option<AccountRef>, sqlx::Error> {
-    let row: Option<(i32, String)> = sqlx::query_as("SELECT id, name FROM accounts WHERE id = $1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?;
+    // A deleted account keeps its row for others' messages, but is gone (ADR-035).
+    let row: Option<(i32, String)> = sqlx::query_as(
+        "SELECT id, name FROM accounts
+         WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM deleted_accounts WHERE id = $1)",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
     Ok(row.map(|(id, name)| AccountRef { id, name }))
 }

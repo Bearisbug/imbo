@@ -513,6 +513,19 @@ async fn store(
 
     let mut inactive_members = None;
     let mut tx = st.db.begin().await?;
+    // Waits out a deletion of the sender's account in progress (DESIGN §16).
+    sqlx::query("SELECT 1 FROM accounts WHERE id = $1 FOR SHARE")
+        .bind(c.account_id)
+        .execute(&mut *tx)
+        .await?;
+    let deleted: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM deleted_accounts WHERE id = $1)")
+            .bind(c.account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if deleted {
+        return Err(err(ErrorCode::Unauthorized, "This account was deleted."));
+    }
     let (conversation, recipients): (ConversationRef, Vec<(Uuid, i32)>) = match target {
         Target::Direct { peer, agent } => {
             let still: Option<i32> = sqlx::query_scalar(
@@ -685,6 +698,7 @@ async fn store(
     }
     tx.commit().await?;
     delivery::kick(st, recipients.iter().map(|(a, _)| *a));
+    crate::push::messages(st, vec![message_id]);
     Ok(SendResponse {
         message_id,
         conversation,

@@ -55,18 +55,17 @@ pub async fn get_me(
             .bind(c.account_id)
             .fetch_one(&st.db)
             .await?;
-    let device = match c.web {
-        Some(_) => None,
-        None => {
-            let name: String = sqlx::query_scalar("SELECT name FROM devices WHERE id = $1")
-                .bind(c.device_id)
-                .fetch_one(&st.db)
-                .await?;
-            Some(DeviceRef {
-                id: c.device_id,
-                name,
-            })
-        }
+    let device = if c.web_person() {
+        None
+    } else {
+        let name: String = sqlx::query_scalar("SELECT name FROM devices WHERE id = $1")
+            .bind(c.device_id)
+            .fetch_one(&st.db)
+            .await?;
+        Some(DeviceRef {
+            id: c.device_id,
+            name,
+        })
     };
     let access = crate::billing::access(&st.db, &st.cfg, c.account_id).await?;
     Ok(Json(MeResponse {

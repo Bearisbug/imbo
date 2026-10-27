@@ -30,6 +30,10 @@ pub struct Config {
     pub billing_start: Option<DateTime<Utc>>,
     /// The web app's origin, the only one allowed cross-origin with cookies (ADR-023).
     pub web_origin: Option<String>,
+    /// Sent with every Expo push request when the project requires it (ADR-034).
+    pub expo_access_token: Option<String>,
+    /// Log the notifications instead of calling Expo, for local tests.
+    pub push_log_only: bool,
 }
 
 #[derive(Clone)]
@@ -178,6 +182,8 @@ impl Config {
             creem: creem_from_env()?,
             billing_start: billing_start_from_env()?,
             web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),
+            expo_access_token: var("IMBO_EXPO_ACCESS_TOKEN"),
+            push_log_only: flag("IMBO_PUSH_LOG_ONLY"),
         })
     }
 

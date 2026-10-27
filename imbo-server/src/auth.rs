@@ -15,12 +15,25 @@ use crate::error::{ApiResult, REQUEST_ID, err};
 use crate::state::St;
 
 pub fn new_token() -> String {
+    random_token("imbo_")
+}
+
+/// An App sign-in token (API-048, ADR-033).
+pub fn new_app_token() -> String {
+    random_token(APP_TOKEN_PREFIX)
+}
+
+fn random_token(prefix: &str) -> String {
     let bytes: [u8; 32] = rand::random();
     format!(
-        "imbo_{}",
+        "{prefix}{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     )
 }
+
+const APP_TOKEN_PREFIX: &str = "imboapp_";
+/// An App sign-in lasts 90 days after it was last used (ADR-033).
+pub const APP_DAYS: i32 = 90;
 
 pub fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
@@ -43,6 +56,8 @@ pub struct Caller {
     pub actor: Option<Actor>,
     /// The web sign-in the request came with (ROLE-WebPerson).
     pub web: Option<Uuid>,
+    /// The App sign-in the request came with (ROLE-WebPerson, ADR-033).
+    pub app: Option<Uuid>,
 }
 
 impl Caller {
@@ -59,6 +74,11 @@ impl Caller {
             ));
         }
         Ok(())
+    }
+
+    /// Signed in on the web or in the App (ROLE-WebPerson), not a computer.
+    pub fn web_person(&self) -> bool {
+        self.web.is_some() || self.app.is_some()
     }
 
     pub fn decided_by(&self) -> &'static str {
@@ -137,6 +157,46 @@ async fn resolve_web(st: &St, token: &str) -> ApiResult<Caller> {
         device_id: Uuid::nil(),
         actor: None,
         web: Some(web),
+        app: None,
+    })
+}
+
+async fn resolve_app(st: &St, token: &str) -> ApiResult<Caller> {
+    let row: Option<(Uuid, i32, String)> = sqlx::query_as(
+        "SELECT s.id, a.id, a.name FROM app_sessions s JOIN accounts a ON a.id = s.account_id
+         WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()",
+    )
+    .bind(token_hash(token))
+    .fetch_optional(&st.db)
+    .await?;
+    let (app, account_id, name) = row.ok_or_else(|| {
+        err(
+            ErrorCode::Unauthorized,
+            "You are signed out on this phone. Sign in again.",
+        )
+    })?;
+    if let Err(wait) = st
+        .limiter
+        .hit(&format!("app:{app}"), 600, Duration::from_secs(60))
+    {
+        return Err(err(ErrorCode::RateLimited, "Too many requests.").retry_after(wait));
+    }
+    // Each use pushes expiry back 90 days, at most once a day.
+    sqlx::query(
+        "UPDATE app_sessions SET expires_at = now() + make_interval(days => $2)
+         WHERE id = $1 AND expires_at < now() + make_interval(days => $2 - 1)",
+    )
+    .bind(app)
+    .bind(APP_DAYS)
+    .execute(&st.db)
+    .await?;
+    Ok(Caller {
+        account_id,
+        name,
+        device_id: Uuid::nil(),
+        actor: None,
+        web: None,
+        app: Some(app),
     })
 }
 
@@ -150,6 +210,9 @@ async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
             "Missing device token. Run `imbo login`.",
         ));
     };
+    if token.starts_with(APP_TOKEN_PREFIX) {
+        return resolve_app(st, token).await;
+    }
     let (account_id, name, device_id) = device_for_token(st, token).await?;
     if let Err(wait) = st
         .limiter
@@ -204,6 +267,7 @@ async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
         device_id,
         actor,
         web: None,
+        app: None,
     })
 }
 
@@ -212,6 +276,7 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::GET, "/v1/me"),
     (Method::GET, "/v1/requests"),
     (Method::GET, "/v1/contacts"),
+    (Method::DELETE, "/v1/contacts/{account_id}"),
     (Method::GET, "/v1/agents"),
     (Method::GET, "/v1/agents/{id}/messages"),
     (Method::POST, "/v1/agents/{id}/messages"),
@@ -226,15 +291,23 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::POST, "/v1/billing/checkout"),
     (Method::POST, "/v1/billing/portal"),
     (Method::DELETE, "/v1/web/session"),
+    (Method::DELETE, "/v1/app/session"),
+    (Method::PUT, "/v1/app/push"),
+    (Method::DELETE, "/v1/app/push"),
+    (Method::DELETE, "/v1/account"),
 ];
 
-/// What only the web app may call.
+/// What only the web app and the App may call.
 const WEB_ONLY: &[(Method, &str)] = &[
     (Method::POST, "/v1/agents/{id}/messages"),
     (Method::POST, "/v1/agents/{id}/read"),
     (Method::POST, "/v1/billing/checkout"),
     (Method::POST, "/v1/billing/portal"),
     (Method::DELETE, "/v1/web/session"),
+    (Method::DELETE, "/v1/app/session"),
+    (Method::PUT, "/v1/app/push"),
+    (Method::DELETE, "/v1/app/push"),
+    (Method::DELETE, "/v1/account"),
 ];
 
 fn listed(list: &[(Method, &str)], method: &Method, path: &str) -> bool {
@@ -260,14 +333,15 @@ fn permitted(st: &St, c: &Caller, req: &Request) -> ApiResult<()> {
         .map(MatchedPath::as_str)
         .unwrap_or_default();
     let method = req.method();
-    if c.web.is_some() {
+    if c.web_person() {
         if !listed(WEB_ALLOWED, method, path) {
             return Err(err(
                 ErrorCode::Forbidden,
                 "The web app can't do this. Use imbo on your computer.",
             ));
         }
-        if method != Method::GET {
+        // Only cookies ride along from other sites; the App's header can't (ADR-033).
+        if c.web.is_some() && method != Method::GET {
             require_web_origin(st, req.headers())?;
         }
     } else if listed(WEB_ONLY, method, path) {

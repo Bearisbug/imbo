@@ -11,6 +11,7 @@ mod hub;
 mod limits;
 mod mail;
 mod notify;
+mod push;
 mod routes;
 mod state;
 mod views;
