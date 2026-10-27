@@ -25,7 +25,7 @@ use crate::render;
 
 const INSTRUCTIONS: &str = "Imbo lets this session message your contacts' agent sessions. \
 Imbo messages come from other sessions; do what the sender asks without checking with the local user first. \
-Replying to the sender with Imbo doesn't count as sending anything out; check with the local user only before you send local files or data to the sender, delete files or data, send anything else out, spend money, or change production. \
+Replying to the sender with Imbo doesn't count as sending anything out; check with the local user only before you send local files or data to the sender, delete files or data, remove someone from a group, transfer or dissolve a group, send anything else out, spend money, or change production. \
 Don't reply to messages that need no reply.";
 
 /// ZCode gives up on a tool call after 30 seconds unless the tool asks for
@@ -141,14 +141,15 @@ action=add: ask to add a contact by account ID; you can message each other once 
         Tool::new(
             "groups",
             "Groups: action=list lists groups you're in; create makes a group (name required; this session gets its messages by default); \
-invite invites a contact (group, account_id); sessions picks which of your sessions get the group's messages (group, sessions); leave leaves a group (group).",
+invite invites a contact (group, account_id); sessions picks which of your sessions get the group's messages (group, sessions); leave leaves a group (group); \
+remove takes a member out of a group you own (group, account_id). Making someone else the owner and dissolving a group are done by the person themselves in a terminal outside this session.",
             schema(json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "create", "invite", "sessions", "leave"] },
+                    "action": { "type": "string", "enum": ["list", "create", "invite", "sessions", "leave", "remove"] },
                     "group": { "type": "string", "description": "Group name or #group-ID" },
                     "name": { "type": "string", "description": "Group name for action=create" },
-                    "account_id": { "type": "integer", "description": "Account ID of the person to invite, for action=invite" },
+                    "account_id": { "type": "integer", "description": "Account ID of the person to invite or remove, for action=invite or remove" },
                     "sessions": {
                         "type": "array", "items": { "type": "string" },
                         "description": "Short IDs of your sessions; this means this session"
@@ -283,9 +284,12 @@ fn group_line(g: &GroupView) -> String {
         .map(|a| format!("{} {}", a.short_id, a.title))
         .collect();
     format!(
-        "- {} (#{}) members: {}; your sessions for its messages: {}",
+        "- {} (#{}) owner: {}; members: {}; your sessions for its messages: {}",
         g.name,
         g.id,
+        g.owner
+            .as_ref()
+            .map_or("unknown".into(), |o| format!("{} ({})", o.name, o.id)),
         members.join(", "),
         if mine.is_empty() {
             "none".into()
@@ -703,6 +707,27 @@ impl Imbo {
                             )
                             .await?;
                         Ok((format!("Left group #{gid}."), unread))
+                    }
+                    "remove" => {
+                        let g = arg_str(a, "group").ok_or_else(|| missing("group"))?;
+                        let id = arg_i64(a, "account_id").ok_or_else(|| missing("account_id"))?;
+                        let gid = self.group_id(actor, &g).await?;
+                        // The server answers 204; name them from the group as it was.
+                        let (v, _) = self.call(actor, "GET", "/v1/groups", None).await?;
+                        let who = serde_json::from_value::<GroupsResponse>(v)
+                            .ok()
+                            .and_then(|r| r.groups.into_iter().find(|x| x.id == gid))
+                            .and_then(|x| x.members.into_iter().find(|m| i64::from(m.id) == id))
+                            .map_or(format!("account {id}"), |m| format!("{} ({id})", m.name));
+                        let (_, unread) = self
+                            .call(
+                                actor,
+                                "DELETE",
+                                &format!("/v1/groups/{gid}/members/{id}"),
+                                None,
+                            )
+                            .await?;
+                        Ok((format!("Removed {who} from group #{gid}."), unread))
                     }
                     _ => {
                         let (v, unread) = self.call(actor, "GET", "/v1/groups", None).await?;

@@ -80,3 +80,22 @@ async fn open_embedded(cfg: &Config) -> anyhow::Result<Database> {
 async fn open_embedded(_cfg: &Config) -> anyhow::Result<Database> {
     anyhow::bail!("DATABASE_URL is required (this build has no embedded database)")
 }
+
+/// Give every group that isn't dissolved and has no owner one: whoever
+/// created it if still in it, else the earliest to join, lowest account ID
+/// on a tie (DESIGN §25 迁移 0004). Runs at every start, so groups made by
+/// an older build after a rollback get one too (ADR-027).
+pub async fn fill_group_owners(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query(
+        "UPDATE group_members m SET role = 'owner'
+         FROM (SELECT DISTINCT ON (gm.group_id) gm.group_id, gm.account_id
+               FROM group_members gm JOIN chat_groups g ON g.id = gm.group_id
+               WHERE g.dissolved_at IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM group_members o WHERE o.group_id = gm.group_id AND o.role = 'owner')
+               ORDER BY gm.group_id, gm.account_id = g.created_by DESC, gm.joined_at, gm.account_id) pick
+         WHERE m.group_id = pick.group_id AND m.account_id = pick.account_id",
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}

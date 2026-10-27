@@ -37,12 +37,42 @@ pub enum GroupCmd {
         #[arg(long, value_delimiter = ',')]
         sessions: Option<Vec<String>>,
     },
-    /// Leave a group.
+    /// Leave a group. The owner transfers or dissolves it instead.
     Leave {
         group: String,
         #[arg(long, short)]
         yes: bool,
     },
+    /// Remove a member from a group you own.
+    Remove {
+        group: String,
+        account_id: i32,
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Make another member the owner of a group you own.
+    Transfer {
+        group: String,
+        account_id: i32,
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Dissolve a group you own: everyone leaves it.
+    Dissolve {
+        group: String,
+        #[arg(long, short)]
+        yes: bool,
+    },
+}
+
+/// Ask once, no by default; `--yes` or no terminal skips the question (PAGE-GROUP).
+fn confirmed(yes: bool, question: String) -> anyhow::Result<bool> {
+    if yes || !ui::is_interactive() {
+        return Ok(true);
+    }
+    Ok(cliclack::confirm(question)
+        .initial_value(false)
+        .interact()?)
 }
 
 pub async fn run(cmd: GroupCmd) -> anyhow::Result<()> {
@@ -69,16 +99,83 @@ pub async fn run(cmd: GroupCmd) -> anyhow::Result<()> {
         GroupCmd::Sessions { group, sessions } => set_sessions(group, sessions).await,
         GroupCmd::Leave { group, yes } => {
             let gid = group_id(&group).await?;
-            if !yes && ui::is_interactive() {
-                let go: bool = cliclack::confirm(format!("Leave {group}? Its messages to your sessions that haven't arrived are canceled."))
-                    .initial_value(false)
-                    .interact()?;
-                if !go {
-                    return Ok(());
-                }
+            if !confirmed(
+                yes,
+                format!(
+                    "Leave {group}? Its messages to your sessions that haven't arrived are canceled."
+                ),
+            )? {
+                return Ok(());
             }
             api("DELETE", &format!("/v1/groups/{gid}/members/me"), None).await?;
             ui::ok_line(&format!("Left {}", ui::heading(&group)));
+            Ok(())
+        }
+        GroupCmd::Remove {
+            group,
+            account_id,
+            yes,
+        } => {
+            let gid = group_id(&group).await?;
+            if !confirmed(
+                yes,
+                format!(
+                    "Remove {account_id} from {group}? Only you, the owner, can invite them back."
+                ),
+            )? {
+                return Ok(());
+            }
+            api(
+                "DELETE",
+                &format!("/v1/groups/{gid}/members/{account_id}"),
+                None,
+            )
+            .await?;
+            ui::ok_line(&format!(
+                "Removed {} from {}",
+                ui::heading(account_id.to_string()),
+                ui::heading(&group)
+            ));
+            Ok(())
+        }
+        GroupCmd::Transfer {
+            group,
+            account_id,
+            yes,
+        } => {
+            let gid = group_id(&group).await?;
+            if !confirmed(
+                yes,
+                format!("Make {account_id} the owner of {group}? You stay in it as a member."),
+            )? {
+                return Ok(());
+            }
+            let r: GroupResponse = api_as(
+                "PUT",
+                &format!("/v1/groups/{gid}/owner"),
+                Some(json!({ "account_id": account_id })),
+            )
+            .await?;
+            let owner = r.group.owner.as_ref().map_or(String::new(), |o| {
+                format!("{} {}", o.name, ui::dim(format!("({})", o.id)))
+            });
+            ui::ok_line(&format!(
+                "{} now owns {}",
+                ui::heading(owner),
+                ui::heading(&r.group.name)
+            ));
+            Ok(())
+        }
+        GroupCmd::Dissolve { group, yes } => {
+            let gid = group_id(&group).await?;
+            if !confirmed(
+                yes,
+                format!("Dissolve {group}? Everyone leaves it and it can't be used again."),
+            )? {
+                return Ok(());
+            }
+            api("DELETE", &format!("/v1/groups/{gid}"), None).await?;
+            ui::ok_line(&format!("Dissolved {}", ui::heading(&group)));
             Ok(())
         }
     }
@@ -90,7 +187,18 @@ fn print_group(g: &GroupView) {
         ui::heading(&g.name),
         ui::dim(format!("#{}", g.id))
     );
-    let members: Vec<&str> = g.members.iter().map(|m| m.name.as_str()).collect();
+    let owner = g.owner.as_ref().map(|o| o.id);
+    let members: Vec<String> = g
+        .members
+        .iter()
+        .map(|m| {
+            if Some(m.id) == owner {
+                format!("{} {}", m.name, ui::dim("owner"))
+            } else {
+                m.name.clone()
+            }
+        })
+        .collect();
     println!(
         "  {} {}",
         ui::dim("members "),

@@ -1,22 +1,24 @@
-//! API-018..022: groups.
+//! API-018..022, API-037..039: groups, their owner, removing and dissolving.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use imbo_proto::ErrorCode;
 use imbo_proto::api::{
     AccountRef, CreateGroupBody, GroupRef, GroupResponse, GroupView, GroupsResponse, InviteBody,
     MySessionsResponse, RequestItem, RequestResponse, SessionsBody,
 };
 use imbo_proto::text::validate_group_name;
+use imbo_proto::{ErrorCode, TOOL_TERMINAL};
 use rand::Rng;
+use serde::Deserialize;
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::Body;
 use crate::auth::Caller;
-use crate::error::{ApiResult, err};
+use crate::error::{ApiError, ApiResult, err};
 use crate::state::St;
-use crate::{delivery, notify, views};
+use crate::{billing, delivery, notify, views};
 
 async fn owned_sessions(st: &St, c: &Caller, ids: &[Uuid]) -> ApiResult<Vec<Uuid>> {
     let mut want = ids.to_vec();
@@ -51,8 +53,9 @@ async fn is_member(st: &St, gid: i32, account: i32) -> Result<bool, sqlx::Error>
     .await
 }
 
+/// A dissolved group counts as missing (ADR-029).
 async fn group_name(st: &St, gid: i32) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT name FROM chat_groups WHERE id = $1")
+    sqlx::query_scalar("SELECT name FROM chat_groups WHERE id = $1 AND dissolved_at IS NULL")
         .bind(gid)
         .fetch_optional(&st.db)
         .await
@@ -79,9 +82,131 @@ async fn require_member(st: &St, c: &Caller, raw: &str) -> ApiResult<GroupRef> {
     Ok(GroupRef { id: gid, name })
 }
 
-async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
-    let members: Vec<(i32, String)> = sqlx::query_as(
+/// The group lock: the group conversation's advisory lock, the one a group
+/// send takes for its rate limit (DESIGN §16).
+pub(super) async fn lock_group(tx: &mut PgConnection, gid: i32) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(-id) FROM conversations WHERE group_id = $1")
+        .bind(gid)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+/// Take the group lock, then the account's role in the group.
+async fn role_locked(tx: &mut PgConnection, g: &GroupRef, account: i32) -> ApiResult<String> {
+    lock_group(tx, g.id).await?;
+    let (dissolved, role): (bool, Option<String>) = sqlx::query_as(
+        "SELECT g.dissolved_at IS NOT NULL,
+                (SELECT role FROM group_members WHERE group_id = g.id AND account_id = $2)
+         FROM chat_groups g WHERE g.id = $1",
+    )
+    .bind(g.id)
+    .bind(account)
+    .fetch_one(&mut *tx)
+    .await?;
+    if dissolved {
+        return Err(err(ErrorCode::NotFound, format!("No group #{}.", g.id)));
+    }
+    role.ok_or_else(|| {
+        err(
+            ErrorCode::NotMember,
+            format!("You are not in group {} (#{}).", g.name, g.id),
+        )
+    })
+}
+
+/// RULE-010, naming the owner.
+async fn not_owner(tx: &mut PgConnection, g: &GroupRef, what: &str) -> ApiResult<ApiError> {
+    let owner: Option<(i32, String)> = sqlx::query_as(
         "SELECT a.id, a.name FROM group_members m JOIN accounts a ON a.id = m.account_id
+         WHERE m.group_id = $1 AND m.role = 'owner'",
+    )
+    .bind(g.id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let who = owner
+        .map(|(id, name)| format!(" The owner is {name} ({id})."))
+        .unwrap_or_default();
+    Ok(err(
+        ErrorCode::NotOwner,
+        format!("Only the owner of {} (#{}) can {what}.{who}", g.name, g.id),
+    ))
+}
+
+/// Cancel the group's undelivered messages to `account`, or to everyone.
+async fn cancel_group(
+    tx: &mut PgConnection,
+    gid: i32,
+    account: Option<i32>,
+    reason: &str,
+) -> Result<Vec<(i64, Uuid)>, sqlx::Error> {
+    sqlx::query_as(
+        "UPDATE deliveries d SET state = 'canceled', canceled_at = now(), cancel_reason = $3
+         FROM messages m JOIN conversations cv ON cv.id = m.conversation_id
+         WHERE d.message_id = m.id AND cv.group_id = $1 AND ($2::integer IS NULL OR d.account_id = $2)
+           AND d.state IN ('pending', 'pushed')
+         RETURNING d.message_id, d.agent_id",
+    )
+    .bind(gid)
+    .bind(account)
+    .bind(reason)
+    .fetch_all(&mut *tx)
+    .await
+}
+
+/// A notice from the owner's terminal into `to`'s terminal inbox, in the
+/// two accounts' direct conversation (ADR-028). Returns the inbox agent.
+async fn post_notice(tx: &mut PgConnection, from: i32, to: i32, body: String) -> ApiResult<Uuid> {
+    let (lo, hi) = (from.min(to), from.max(to));
+    sqlx::query(
+        "INSERT INTO conversations (kind, account_lo, account_hi) VALUES ('direct', $1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(lo)
+    .bind(hi)
+    .execute(&mut *tx)
+    .await?;
+    let conversation: i64 = sqlx::query_scalar(
+        "SELECT id FROM conversations WHERE account_lo = $1 AND account_hi = $2",
+    )
+    .bind(lo)
+    .bind(hi)
+    .fetch_one(&mut *tx)
+    .await?;
+    // The terminal inbox row, as in messages::terminal_of (ADR-010).
+    let inbox: Uuid = sqlx::query_scalar(
+        "INSERT INTO agents (id, account_id, tool, session_id, short_id, title)
+         VALUES ($1, $2, $3, $3, $3, $3)
+         ON CONFLICT (account_id, tool, session_id) DO UPDATE SET online = false
+         RETURNING id",
+    )
+    .bind(Uuid::now_v7())
+    .bind(to)
+    .bind(TOOL_TERMINAL)
+    .fetch_one(&mut *tx)
+    .await?;
+    let message: i64 = sqlx::query_scalar(
+        "INSERT INTO messages (conversation_id, from_account, to_agent_id, body, client_msg_id)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+    )
+    .bind(conversation)
+    .bind(from)
+    .bind(inbox)
+    .bind(body)
+    .bind(format!("group-notice-{}", Uuid::now_v7()))
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query("INSERT INTO deliveries (message_id, agent_id, account_id) VALUES ($1, $2, $3)")
+        .bind(message)
+        .bind(inbox)
+        .bind(to)
+        .execute(&mut *tx)
+        .await?;
+    Ok(inbox)
+}
+
+async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
+    let members: Vec<(i32, String, String)> = sqlx::query_as(
+        "SELECT a.id, a.name, m.role FROM group_members m JOIN accounts a ON a.id = m.account_id
          WHERE m.group_id = $1 ORDER BY m.joined_at",
     )
     .bind(g.id)
@@ -94,12 +219,20 @@ async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
     .bind(c.account_id)
     .fetch_all(&st.db)
     .await?;
+    let owner = members
+        .iter()
+        .find(|(_, _, role)| role == "owner")
+        .map(|(id, name, _)| AccountRef {
+            id: *id,
+            name: name.clone(),
+        });
     Ok(GroupView {
         id: g.id,
         name: g.name,
+        owner,
         members: members
             .into_iter()
-            .map(|(id, name)| AccountRef { id, name })
+            .map(|(id, name, _)| AccountRef { id, name })
             .collect(),
         my_sessions: views::agent_refs(&st.db, &mine).await?,
     })
@@ -141,7 +274,7 @@ pub async fn create(
         .bind(gid)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO group_members (group_id, account_id) VALUES ($1, $2)")
+    sqlx::query("INSERT INTO group_members (group_id, account_id, role) VALUES ($1, $2, 'owner')")
         .bind(gid)
         .bind(c.account_id)
         .execute(&mut *tx)
@@ -167,7 +300,7 @@ pub async fn list(
 ) -> ApiResult<Json<GroupsResponse>> {
     let rows: Vec<(i32, String)> = sqlx::query_as(
         "SELECT g.id, g.name FROM group_members m JOIN chat_groups g ON g.id = m.group_id
-         WHERE m.account_id = $1 ORDER BY g.name, g.id",
+         WHERE m.account_id = $1 AND g.dissolved_at IS NULL ORDER BY g.name, g.id",
     )
     .bind(c.account_id)
     .fetch_all(&st.db)
@@ -205,6 +338,25 @@ pub async fn invite(
         return Err(err(
             ErrorCode::AlreadyMember,
             format!("{target} is already in {}.", g.name),
+        ));
+    }
+    // RULE-009: someone the owner removed comes back only on the owner's invite.
+    let (removed, owner): (bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM group_removals WHERE group_id = $1 AND account_id = $2),
+                EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND account_id = $3 AND role = 'owner')",
+    )
+    .bind(g.id)
+    .bind(target)
+    .bind(c.account_id)
+    .fetch_one(&st.db)
+    .await?;
+    if removed && !owner {
+        return Err(err(
+            ErrorCode::RemovedFromGroup,
+            format!(
+                "{target} was removed from {} by its owner. Only the owner can invite them back.",
+                g.name
+            ),
         ));
     }
     let pending: bool = sqlx::query_scalar(
@@ -310,23 +462,178 @@ pub async fn leave(
     Path(raw): Path<String>,
 ) -> ApiResult<StatusCode> {
     let g = require_member(&st, &c, &raw).await?;
+    leave_group(&st, &c, &g).await
+}
+
+/// API-022, also API-037 on yourself. Under the group lock, so a group send
+/// either reaches the leaver and is canceled here, or skips them (INV-020).
+async fn leave_group(st: &St, c: &Caller, g: &GroupRef) -> ApiResult<StatusCode> {
     let mut tx = st.db.begin().await?;
+    if role_locked(&mut tx, g, c.account_id).await? == "owner" {
+        let others: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM group_members WHERE group_id = $1 AND account_id <> $2",
+        )
+        .bind(g.id)
+        .bind(c.account_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let detail = if others > 0 {
+            format!(
+                "You own {} (#{}). Make someone else the owner first: imbo group transfer #{} <account ID>.",
+                g.name, g.id, g.id
+            )
+        } else {
+            format!(
+                "You're the only one left in {} (#{}). Dissolve it instead: imbo group dissolve #{}.",
+                g.name, g.id, g.id
+            )
+        };
+        return Err(err(ErrorCode::OwnerCannotLeave, detail));
+    }
     sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND account_id = $2")
         .bind(g.id)
         .bind(c.account_id)
         .execute(&mut *tx)
         .await?;
-    let canceled: Vec<(i64, Uuid)> = sqlx::query_as(
-        "UPDATE deliveries d SET state = 'canceled', canceled_at = now(), cancel_reason = 'left_group'
-         FROM messages m JOIN conversations cv ON cv.id = m.conversation_id
-         WHERE d.message_id = m.id AND cv.group_id = $1 AND d.account_id = $2 AND d.state IN ('pending', 'pushed')
-         RETURNING d.message_id, d.agent_id",
+    let canceled = cancel_group(&mut tx, g.id, Some(c.account_id), "left_group").await?;
+    tx.commit().await?;
+    delivery::notify_canceled(st, canceled).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// API-037: the owner, or an agent of theirs, removes a member.
+pub async fn remove(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path((raw, who)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let g = require_member(&st, &c, &raw).await?;
+    let missing = || err(ErrorCode::NotFound, format!("{who} is not in {}.", g.name));
+    let target: i32 = who.parse().map_err(|_| missing())?;
+    if target == c.account_id {
+        return leave_group(&st, &c, &g).await;
+    }
+    // RULE-008: an inactive account gets no notice (INV-014).
+    let active = billing::access(&st.db, &st.cfg, target).await?.active();
+    let mut tx = st.db.begin().await?;
+    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
+        return Err(not_owner(&mut tx, &g, "remove members").await?);
+    }
+    let gone = sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND account_id = $2")
+        .bind(g.id)
+        .bind(target)
+        .execute(&mut *tx)
+        .await?;
+    if gone.rows_affected() == 0 {
+        return Err(missing());
+    }
+    sqlx::query(
+        "INSERT INTO group_removals (group_id, account_id) VALUES ($1, $2)
+         ON CONFLICT (group_id, account_id) DO UPDATE SET removed_at = now()",
     )
     .bind(g.id)
-    .bind(c.account_id)
-    .fetch_all(&mut *tx)
+    .bind(target)
+    .execute(&mut *tx)
     .await?;
+    let canceled = cancel_group(&mut tx, g.id, Some(target), "removed_from_group").await?;
+    let mut inbox = vec![];
+    if active {
+        let body = format!(
+            "You were removed from group {} (#{}) by {}.",
+            g.name, g.id, c.name
+        );
+        inbox.push(post_notice(&mut tx, c.account_id, target, body).await?);
+    }
     tx.commit().await?;
     delivery::notify_canceled(&st, canceled).await;
+    delivery::kick(&st, inbox);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct OwnerBody {
+    account_id: i32,
+}
+
+/// API-038: only the owner, in person, hands the group to another member.
+pub async fn transfer(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(raw): Path<String>,
+    Body(req): Body<OwnerBody>,
+) -> ApiResult<Json<GroupResponse>> {
+    c.require_person()?;
+    let g = require_member(&st, &c, &raw).await?;
+    let mut tx = st.db.begin().await?;
+    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
+        return Err(not_owner(&mut tx, &g, "make someone else the owner").await?);
+    }
+    if req.account_id != c.account_id {
+        // At most one owner per group: step down first.
+        sqlx::query(
+            "UPDATE group_members SET role = 'member' WHERE group_id = $1 AND account_id = $2",
+        )
+        .bind(g.id)
+        .bind(c.account_id)
+        .execute(&mut *tx)
+        .await?;
+        let made = sqlx::query(
+            "UPDATE group_members SET role = 'owner' WHERE group_id = $1 AND account_id = $2",
+        )
+        .bind(g.id)
+        .bind(req.account_id)
+        .execute(&mut *tx)
+        .await?;
+        if made.rows_affected() == 0 {
+            return Err(err(
+                ErrorCode::NotFound,
+                format!(
+                    "{} is not in {}. Invite them first.",
+                    req.account_id, g.name
+                ),
+            ));
+        }
+    }
+    tx.commit().await?;
+    let group = view(&st, &c, g).await?;
+    Ok(Json(GroupResponse { group }))
+}
+
+/// API-039: only the owner, in person, dissolves the group.
+pub async fn dissolve(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(raw): Path<String>,
+) -> ApiResult<StatusCode> {
+    c.require_person()?;
+    let g = require_member(&st, &c, &raw).await?;
+    let mut tx = st.db.begin().await?;
+    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
+        return Err(not_owner(&mut tx, &g, "dissolve it").await?);
+    }
+    let members: Vec<i32> =
+        sqlx::query_scalar("DELETE FROM group_members WHERE group_id = $1 RETURNING account_id")
+            .bind(g.id)
+            .fetch_all(&mut *tx)
+            .await?;
+    sqlx::query("UPDATE chat_groups SET dissolved_at = now() WHERE id = $1")
+        .bind(g.id)
+        .execute(&mut *tx)
+        .await?;
+    let canceled = cancel_group(&mut tx, g.id, None, "group_dissolved").await?;
+    let others: Vec<i32> = members.into_iter().filter(|a| *a != c.account_id).collect();
+    // RULE-008: inactive members get no notice (INV-014).
+    let access = billing::access_many(&st.db, &st.cfg, &others).await?;
+    let mut inbox = vec![];
+    for to in others {
+        if access.get(&to).is_some_and(|a| !a.active()) {
+            continue;
+        }
+        let body = format!("Group {} (#{}) was dissolved by {}.", g.name, g.id, c.name);
+        inbox.push(post_notice(&mut tx, c.account_id, to, body).await?);
+    }
+    tx.commit().await?;
+    delivery::notify_canceled(&st, canceled).await;
+    delivery::kick(&st, inbox);
     Ok(StatusCode::NO_CONTENT)
 }

@@ -94,6 +94,10 @@ async fn serve() -> anyhow::Result<()> {
         .run(&database.pool)
         .await
         .context("run migrations")?;
+    let owners = db::fill_group_owners(&database.pool).await?;
+    if owners > 0 {
+        info!(groups = owners, "filled in group owners");
+    }
     // Every device connection is gone after a restart.
     sqlx::query("UPDATE agents SET online = false, last_online_at = now() WHERE online")
         .execute(&database.pool)

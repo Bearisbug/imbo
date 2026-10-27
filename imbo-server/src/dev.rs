@@ -60,6 +60,17 @@ pub enum DevCmd {
     },
 }
 
+/// With `IMBO_DEV=1`, `IMBO_FAULT_INJECT=slow-group-send` holds each group
+/// send 3 seconds after it took the group lock and picked its recipients,
+/// so a test can leave or remove someone in that window.
+pub async fn fault_pause(st: &St, point: &str) {
+    if st.cfg.dev
+        && std::env::var("IMBO_FAULT_INJECT").is_ok_and(|v| v.split(',').any(|p| p.trim() == point))
+    {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct ServerFile {
     listen: String,

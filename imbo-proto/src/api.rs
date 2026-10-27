@@ -467,6 +467,9 @@ pub struct CreateGroupBody {
 pub struct GroupView {
     pub id: GroupId,
     pub name: String,
+    /// Missing from servers before group owners (ADR-027).
+    #[serde(default)]
+    pub owner: Option<AccountRef>,
     pub members: Vec<AccountRef>,
     pub my_sessions: Vec<AgentRef>,
 }

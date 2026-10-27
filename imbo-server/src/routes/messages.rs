@@ -175,11 +175,12 @@ async fn resolve(db: &PgPool, me: &AccountRef, to: &str) -> ApiResult<Target> {
             if let Some(g) = mine.into_iter().find(|g| g.id == gid) {
                 return Ok(Target::Group(g));
             }
-            let exists: bool =
-                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM chat_groups WHERE id = $1)")
-                    .bind(gid)
-                    .fetch_one(db)
-                    .await?;
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM chat_groups WHERE id = $1 AND dissolved_at IS NULL)",
+            )
+            .bind(gid)
+            .fetch_one(db)
+            .await?;
             if exists {
                 Err(err(
                     ErrorCode::NotMember,
@@ -564,6 +565,28 @@ async fn store(
                 .fetch_one(&mut *tx)
                 .await?;
             rate_check(&mut tx, id, c.account_id, true).await?;
+            // Under the group lock: removed or dissolved in the meantime (DESIGN §16).
+            let (dissolved, member): (bool, bool) = sqlx::query_as(
+                "SELECT dissolved_at IS NOT NULL,
+                        EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND account_id = $2)
+                 FROM chat_groups WHERE id = $1",
+            )
+            .bind(g.id)
+            .bind(c.account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if dissolved {
+                return Err(err(
+                    ErrorCode::RecipientNotFound,
+                    format!("No group #{}.", g.id),
+                ));
+            }
+            if !member {
+                return Err(err(
+                    ErrorCode::NotMember,
+                    format!("You are not in group #{}.", g.id),
+                ));
+            }
             let mut rows: Vec<(Uuid, i32)> = sqlx::query_as(
                 "SELECT ms.agent_id, ms.account_id FROM member_sessions ms
                  WHERE ms.group_id = $1 AND ($2::uuid IS NULL OR ms.agent_id <> $2)",
@@ -572,6 +595,7 @@ async fn store(
             .bind(from_agent)
             .fetch_all(&mut *tx)
             .await?;
+            crate::dev::fault_pause(st, "slow-group-send").await;
             // RULE-008: inactive members are skipped; nobody else active means no send.
             inactive_members = Some(0);
             if st.cfg.billing_on() {

@@ -13,6 +13,8 @@ pub enum ErrorCode {
     SignupClosed,
     NotContact,
     NotMember,
+    NotOwner,
+    RemovedFromGroup,
     NotFound,
     AccountNotFound,
     RecipientNotFound,
@@ -21,6 +23,7 @@ pub enum ErrorCode {
     RequestPending,
     RequestClosed,
     AlreadyMember,
+    OwnerCannotLeave,
     AmbiguousRecipient,
     CodeExpired,
     NameRequired,
@@ -49,7 +52,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 42] = [
+    pub const ALL: [ErrorCode; 45] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -59,6 +62,8 @@ impl ErrorCode {
         Self::SignupClosed,
         Self::NotContact,
         Self::NotMember,
+        Self::NotOwner,
+        Self::RemovedFromGroup,
         Self::NotFound,
         Self::AccountNotFound,
         Self::RecipientNotFound,
@@ -67,6 +72,7 @@ impl ErrorCode {
         Self::RequestPending,
         Self::RequestClosed,
         Self::AlreadyMember,
+        Self::OwnerCannotLeave,
         Self::AmbiguousRecipient,
         Self::CodeExpired,
         Self::NameRequired,
@@ -105,6 +111,8 @@ impl ErrorCode {
             Self::SignupClosed => "signup-closed",
             Self::NotContact => "not-contact",
             Self::NotMember => "not-member",
+            Self::NotOwner => "not-owner",
+            Self::RemovedFromGroup => "removed-from-group",
             Self::NotFound => "not-found",
             Self::AccountNotFound => "account-not-found",
             Self::RecipientNotFound => "recipient-not-found",
@@ -113,6 +121,7 @@ impl ErrorCode {
             Self::RequestPending => "request-pending",
             Self::RequestClosed => "request-closed",
             Self::AlreadyMember => "already-member",
+            Self::OwnerCannotLeave => "owner-cannot-leave",
             Self::AmbiguousRecipient => "ambiguous-recipient",
             Self::CodeExpired => "code-expired",
             Self::NameRequired => "name-required",
@@ -162,6 +171,8 @@ impl ErrorCode {
             | Self::SignupClosed
             | Self::NotContact
             | Self::NotMember
+            | Self::NotOwner
+            | Self::RemovedFromGroup
             | Self::RecipientInactive => 403,
             Self::NotFound
             | Self::AccountNotFound
@@ -171,6 +182,7 @@ impl ErrorCode {
             | Self::RequestPending
             | Self::RequestClosed
             | Self::AlreadyMember
+            | Self::OwnerCannotLeave
             | Self::AmbiguousRecipient
             | Self::AlreadySubscribed => 409,
             Self::CodeExpired | Self::FileExpired => 410,
@@ -201,6 +213,8 @@ impl ErrorCode {
             Self::SignupClosed => "Sign-up is closed for this email",
             Self::NotContact => "Not a contact",
             Self::NotMember => "Not a group member",
+            Self::NotOwner => "Not the group owner",
+            Self::RemovedFromGroup => "Removed from this group",
             Self::NotFound => "Not found",
             Self::AccountNotFound => "No such account",
             Self::RecipientNotFound => "Recipient not found",
@@ -209,6 +223,7 @@ impl ErrorCode {
             Self::RequestPending => "Request already pending",
             Self::RequestClosed => "Request already handled",
             Self::AlreadyMember => "Already a member",
+            Self::OwnerCannotLeave => "The group owner can't leave",
             Self::AmbiguousRecipient => "Recipient is ambiguous",
             Self::CodeExpired => "Code expired",
             Self::NameRequired => "Name required",

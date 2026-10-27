@@ -405,6 +405,35 @@ pub async fn accept(
             id: gid,
             name: row.group_name.clone().unwrap_or_default(),
         };
+        // Under the group lock, like leaving, removing and dissolving (DESIGN §16).
+        super::groups::lock_group(&mut tx, gid).await?;
+        let (dissolved, removed, by_owner): (bool, bool, bool) = sqlx::query_as(
+            "SELECT g.dissolved_at IS NOT NULL,
+                    EXISTS (SELECT 1 FROM group_removals WHERE group_id = g.id AND account_id = $2),
+                    EXISTS (SELECT 1 FROM group_members WHERE group_id = g.id AND account_id = $3 AND role = 'owner')
+             FROM chat_groups g WHERE g.id = $1",
+        )
+        .bind(gid)
+        .bind(c.account_id)
+        .bind(row.from_account)
+        .fetch_one(&mut *tx)
+        .await?;
+        if dissolved {
+            return Err(err(
+                ErrorCode::NotFound,
+                format!("Group {} (#{gid}) was dissolved.", group.name),
+            ));
+        }
+        // RULE-009: checked again when the invite is accepted.
+        if removed && !by_owner {
+            return Err(err(
+                ErrorCode::RemovedFromGroup,
+                format!(
+                    "You were removed from {} by its owner. Only the owner can invite you back.",
+                    group.name
+                ),
+            ));
+        }
         let joined = sqlx::query("INSERT INTO group_members (group_id, account_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
             .bind(gid)
             .bind(c.account_id)
@@ -416,6 +445,11 @@ pub async fn accept(
                 format!("You are already in {}.", group.name),
             ));
         }
+        sqlx::query("DELETE FROM group_removals WHERE group_id = $1 AND account_id = $2")
+            .bind(gid)
+            .bind(c.account_id)
+            .execute(&mut *tx)
+            .await?;
         for agent in &sessions {
             sqlx::query("INSERT INTO member_sessions (group_id, account_id, agent_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
                 .bind(gid)
