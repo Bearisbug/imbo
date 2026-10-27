@@ -54,10 +54,22 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/imbo-install.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 pkg="imbo-$platform.tar.gz"
 
+# A failed download is tried 3 more times, 2 seconds apart: connections to
+# GitHub sometimes drop mid-way.
+fetch() { # <url> <file> <curl options>…
+  url=$1 file=$2 tried=0
+  shift 2
+  until curl "$@" -o "$file" "$url"; do
+    [ $tried -lt 3 ] || return 1
+    tried=$((tried + 1))
+    sleep 2
+  done
+}
+
 say "${D}downloading $BASE/$pkg${N}"
 if [ -t 2 ]; then progress="-#"; else progress="-s"; fi
-curl -fL $progress -o "$tmp/$pkg" "$BASE/$pkg" || die "download failed: $BASE/$pkg"
-curl -fsSL -o "$tmp/checksums.txt" "$BASE/checksums.txt" || die "download failed: $BASE/checksums.txt"
+fetch "$BASE/$pkg" "$tmp/$pkg" -fL $progress || die "download failed: $BASE/$pkg"
+fetch "$BASE/checksums.txt" "$tmp/checksums.txt" -fsSL || die "download failed: $BASE/checksums.txt"
 
 want="$(grep " $pkg\$" "$tmp/checksums.txt" | cut -d' ' -f1 | head -n1)"
 [ -n "$want" ] || die "checksum mismatch: $pkg is not listed in checksums.txt"

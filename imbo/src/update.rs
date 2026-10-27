@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
@@ -11,6 +12,10 @@ use crate::paths::{Home, exe};
 use crate::ui;
 
 const DEFAULT_BASE: &str = "https://github.com/Bearisbug/imbo/releases/latest/download";
+/// `imbo update` tries a failed download this many more times, like install.sh:
+/// connections to GitHub sometimes drop mid-way.
+const RETRIES: u32 = 3;
+const RETRY_GAP: Duration = Duration::from_secs(2);
 
 /// Where releases are downloaded from; `IMBO_DOWNLOAD_BASE` as in install.sh.
 pub fn base() -> String {
@@ -41,28 +46,40 @@ pub fn newer(a: &str, b: &str) -> bool {
     }
 }
 
-fn curl(args: &[&str]) -> anyhow::Result<Vec<u8>> {
-    let out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "30"])
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .context("run curl")?;
-    if !out.status.success() {
-        bail!(
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-                .trim()
-                .trim_start_matches("curl: ")
-        );
+fn curl(args: &[&str], retries: u32) -> anyhow::Result<Vec<u8>> {
+    let mut tried = 0;
+    loop {
+        let out = Command::new("curl")
+            .args(["-fsSL", "--max-time", "30"])
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .context("run curl")?;
+        if out.status.success() {
+            return Ok(out.stdout);
+        }
+        if tried == retries {
+            bail!(
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+                    .trim()
+                    .trim_start_matches("curl: ")
+            );
+        }
+        tried += 1;
+        std::thread::sleep(RETRY_GAP);
     }
-    Ok(out.stdout)
+}
+
+/// The daemon's daily check: one try, a failure waits for the next day.
+pub fn fetch_latest() -> anyhow::Result<String> {
+    latest(0)
 }
 
 /// The latest released version, read from the release's `version` file.
-pub fn fetch_latest() -> anyhow::Result<String> {
+fn latest(retries: u32) -> anyhow::Result<String> {
     let url = format!("{}/version", base());
-    let body = curl(&[&url]).with_context(|| format!("download {url}"))?;
+    let body = curl(&[&url], retries).with_context(|| format!("download {url}"))?;
     let v = String::from_utf8_lossy(&body).trim().to_string();
     if parse(&v).is_none() {
         bail!("{url} doesn't hold a version number");
@@ -120,9 +137,12 @@ fn platform() -> anyhow::Result<String> {
 fn download(base: &str, tmp: &Path) -> anyhow::Result<PathBuf> {
     let pkg = format!("imbo-{}.tar.gz", platform()?);
     let pkg_path = tmp.join(&pkg);
-    curl(&["-o", &pkg_path.to_string_lossy(), &format!("{base}/{pkg}")])
-        .with_context(|| format!("download {base}/{pkg}"))?;
-    let sums = curl(&[&format!("{base}/checksums.txt")])
+    curl(
+        &["-o", &pkg_path.to_string_lossy(), &format!("{base}/{pkg}")],
+        RETRIES,
+    )
+    .with_context(|| format!("download {base}/{pkg}"))?;
+    let sums = curl(&[&format!("{base}/checksums.txt")], RETRIES)
         .with_context(|| format!("download {base}/checksums.txt"))?;
     let sums = String::from_utf8_lossy(&sums);
     let want = sums
@@ -177,7 +197,7 @@ fn replace(new: &Path, target: &Path) -> anyhow::Result<()> {
 /// `imbo update`.
 pub async fn update() -> anyhow::Result<()> {
     let base = base();
-    let latest = fetch_latest().map_err(|e| failed(&e))?;
+    let latest = latest(RETRIES).map_err(|e| failed(&e))?;
     if !newer(&latest, crate::VERSION) {
         save_latest(&Home::resolve(), &latest);
         ui::ok_line(&format!("imbo {} is the latest version", crate::VERSION));
