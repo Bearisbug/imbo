@@ -52,6 +52,13 @@ pub async fn health(State(st): State<St>) -> ApiResult<Json<Health>> {
     )
     .fetch_one(&st.db)
     .await?;
+    // Reports are to be handled within 24 hours (ADR-039).
+    let oldest_open_report_h: Option<f64> = sqlx::query_scalar(
+        "SELECT round((extract(epoch FROM now() - min(created_at)) / 3600)::numeric, 1)::float8
+         FROM reports WHERE status = 'open'",
+    )
+    .fetch_one(&st.db)
+    .await?;
     let backup_age_h = st.cfg.backup_stamp.as_ref().and_then(|p| {
         let modified = std::fs::metadata(p).ok()?.modified().ok()?;
         let age = SystemTime::now().duration_since(modified).ok()?;
@@ -68,5 +75,6 @@ pub async fn health(State(st): State<St>) -> ApiResult<Json<Health>> {
         backup_age_h,
         disk_free_pct: disk_free_pct(&st.cfg.data_dir),
         ack_p95_ms: p95.map(|v| v.round()),
+        oldest_open_report_h,
     }))
 }

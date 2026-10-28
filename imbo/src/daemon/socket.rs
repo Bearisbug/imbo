@@ -97,8 +97,21 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
         LocalRequest::Call {
             method,
             path,
+            actor,
+            picture: Some(picture),
+            ..
+        } => match read_picture(&picture) {
+            Ok((bytes, kind)) => {
+                call_with(d, &method, &path, Payload::Picture(bytes, kind), actor).await
+            }
+            Err(p) => LocalResponse::err(p),
+        },
+        LocalRequest::Call {
+            method,
+            path,
             body,
             actor,
+            picture: None,
         } => {
             // Files that went out with a message can't be reused for the next.
             let sent: Vec<uuid::Uuid> = if method == "POST" && path == "/v1/messages" {
@@ -205,11 +218,56 @@ fn ensure_session(d: &D, actor: &str) {
     }
 }
 
+/// Largest avatar picture the server takes (API-045, API-056).
+const PICTURE_MAX: u64 = 5 * 1024 * 1024;
+
+/// Read a picture for an avatar; its type comes from its first bytes, and
+/// anything not JPEG or PNG is sent as is for the server to refuse.
+fn read_picture(path: &str) -> Result<(Vec<u8>, &'static str), Problem> {
+    let unreadable =
+        |e: std::io::Error| Problem::new(ErrorCode::FileUnreadable, format!("{path}: {e}"));
+    let meta = std::fs::metadata(path).map_err(unreadable)?;
+    if !meta.is_file() {
+        return Err(Problem::new(
+            ErrorCode::FileUnreadable,
+            format!("{path} is not a file."),
+        ));
+    }
+    if meta.len() > PICTURE_MAX {
+        return Err(Problem::new(
+            ErrorCode::FileTooLarge,
+            "The picture can be at most 5 MB (5242880 bytes).",
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(unreadable)?;
+    let kind = match bytes.as_slice() {
+        [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        _ => "application/octet-stream",
+    };
+    Ok((bytes, kind))
+}
+
+enum Payload {
+    Json(Option<Value>),
+    Picture(Vec<u8>, &'static str),
+}
+
 pub(super) async fn call(
     d: &D,
     method: &str,
     path: &str,
     body: Option<Value>,
+    actor: Option<String>,
+) -> LocalResponse {
+    call_with(d, method, path, Payload::Json(body), actor).await
+}
+
+async fn call_with(
+    d: &D,
+    method: &str,
+    path: &str,
+    payload: Payload,
     actor: Option<String>,
 ) -> LocalResponse {
     if let Some(a) = &actor {
@@ -238,15 +296,31 @@ pub(super) async fn call(
     }
     let mut attempt = 0;
     loop {
-        let r = net::request(
-            &creds.server,
-            method,
-            path,
-            Some(&creds.token),
-            actor.as_deref(),
-            body.as_ref(),
-        )
-        .await;
+        let r = match &payload {
+            Payload::Json(body) => {
+                net::request(
+                    &creds.server,
+                    method,
+                    path,
+                    Some(&creds.token),
+                    actor.as_deref(),
+                    body.as_ref(),
+                )
+                .await
+            }
+            Payload::Picture(bytes, kind) => {
+                net::request_picture(
+                    &creds.server,
+                    method,
+                    path,
+                    &creds.token,
+                    actor.as_deref(),
+                    bytes.clone(),
+                    kind,
+                )
+                .await
+            }
+        };
         match r {
             Ok(r) => return LocalResponse::ok(r.status, r.body, r.unread),
             // The server hasn't seen this session's presence yet.

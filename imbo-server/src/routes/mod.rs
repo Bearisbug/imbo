@@ -1,5 +1,7 @@
+mod admin;
 mod app;
 mod auth;
+mod avatars;
 mod billing;
 mod contacts;
 mod conversations;
@@ -8,6 +10,7 @@ mod groups;
 mod health;
 mod me;
 mod messages;
+mod safety;
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
@@ -74,10 +77,39 @@ pub fn router(st: St) -> Router {
             put(app::register_push).delete(app::unregister_push),
         )
         .route("/v1/account", delete(app::delete_account))
+        .route(
+            "/v1/me/avatar",
+            put(avatars::set_mine).delete(avatars::delete_mine),
+        )
+        .route(
+            "/v1/groups/{id}/avatar",
+            put(avatars::set_group).delete(avatars::delete_group),
+        )
+        .route("/v1/blocks", post(safety::block).get(safety::list))
+        .route("/v1/blocks/{account_id}", delete(safety::unblock))
+        .route("/v1/reports", post(safety::report))
         .route_layer(middleware::from_fn_with_state(
             st.clone(),
             crate::auth::require,
         ));
+
+    // ROLE-Admin only; anyone else gets 404 (DESIGN §10).
+    let admin = Router::new()
+        .route("/v1/admin/reports", get(admin::list_reports))
+        .route("/v1/admin/reports/{id}", get(admin::get_report))
+        .route(
+            "/v1/admin/reports/{id}/resolve",
+            post(admin::resolve_report),
+        )
+        .route("/v1/admin/accounts", get(admin::list_accounts))
+        .route(
+            "/v1/admin/accounts/{id}/ban",
+            post(admin::ban).delete(admin::unban),
+        )
+        .route("/v1/admin/accounts/{id}", delete(admin::delete_account))
+        .route("/v1/admin/stats", get(admin::stats))
+        .route("/v1/admin/avatars/{id}", delete(admin::remove_avatar))
+        .route_layer(middleware::from_fn_with_state(st.clone(), admin::gate));
 
     let mut public = Router::new()
         .route("/v1/auth/code", post(auth::request_code))
@@ -85,7 +117,8 @@ pub fn router(st: St) -> Router {
         .route("/v1/health", get(health::health))
         .route("/v1/web/session", post(auth::web_login))
         .route("/v1/app/session", post(auth::app_login))
-        .route("/v1/billing/creem/webhook", post(billing::webhook));
+        .route("/v1/billing/creem/webhook", post(billing::webhook))
+        .route("/v1/avatars/{file}", get(avatars::get));
     if st.cfg.dev {
         public = public
             .route("/v1/dev/seed", post(dev::seed))
@@ -97,6 +130,7 @@ pub fn router(st: St) -> Router {
     Router::new()
         .merge(public)
         .merge(authed)
+        .merge(admin)
         .fallback(|| async { err(ErrorCode::NotFound, "No such endpoint.") })
         .layer(middleware::from_fn(crate::auth::common))
         .layer(middleware::from_fn_with_state(

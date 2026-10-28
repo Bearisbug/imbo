@@ -52,6 +52,19 @@ pub fn spawn_tasks(st: St) {
             if let Err(e) = file_cleanup(&st).await {
                 warn!(error = %e, "file.cleanup");
             }
+            // Reports closed a year ago go, with what was copied into them (ADR-039).
+            match sqlx::query(
+                "DELETE FROM reports WHERE status <> 'open' AND resolved_at < now() - interval '1 year'",
+            )
+            .execute(&st.db)
+            .await
+            {
+                Ok(r) if r.rows_affected() > 0 => {
+                    info!(deleted = r.rows_affected(), "report.cleanup")
+                }
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "report.cleanup"),
+            }
         }
     });
 }

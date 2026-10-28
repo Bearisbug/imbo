@@ -15,7 +15,7 @@ use super::groups::{cancel_group, lock_group, post_notice};
 use crate::auth::Caller;
 use crate::error::{ApiResult, err};
 use crate::state::St;
-use crate::{billing, delivery, push};
+use crate::{avatar, delivery, push, safety};
 
 const MAX_PUSH_TOKEN: usize = 200;
 
@@ -101,22 +101,16 @@ pub async fn delete_account(
     if req.confirm != "DELETE" {
         return Err(err(ErrorCode::InvalidRequest, "Type DELETE to confirm."));
     }
-    let me = c.account_id;
+    delete_now(&st, c.account_id, "its owner deleted their account").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The deletion API-052 and API-070 share: subscriptions canceled first,
+/// then everything in one transaction. Groups it owns are dissolved with a
+/// notice ending "because <why>."
+pub(crate) async fn delete_now(st: &St, me: i32, why: &str) -> ApiResult<()> {
     // Stop charging first; if Creem can't, nothing is deleted.
-    if let Some(creem) = &st.cfg.creem {
-        let live: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM subscriptions
-             WHERE account_id = $1 AND mode = $2 AND revoked_at IS NULL
-               AND status NOT IN ('canceled', 'scheduled_cancel', 'expired')",
-        )
-        .bind(me)
-        .bind(creem.mode())
-        .fetch_all(&st.db)
-        .await?;
-        for id in live {
-            billing::cancel_subscription(&st, creem, &id).await?;
-        }
-    }
+    safety::cancel_subscriptions(&st.db, &st.cfg, &st.http, me).await?;
 
     let mut tx = st.db.begin().await?;
     // Blocks this account's own sends, which take FOR SHARE (DESIGN §16).
@@ -134,6 +128,10 @@ pub async fn delete_account(
         .bind(me)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("DELETE FROM blocks WHERE account_id = $1 OR blocked_id = $1")
+        .bind(me)
+        .execute(&mut *tx)
+        .await?;
 
     // Groups, under each group's lock in ID order; owned ones are dissolved
     // as API-039 does.
@@ -146,6 +144,12 @@ pub async fn delete_account(
     .await?;
     let mut canceled = vec![];
     let mut dissolved = vec![];
+    let mut avatars: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT avatar_id FROM accounts WHERE id = $1 AND avatar_id IS NOT NULL",
+    )
+    .bind(me)
+    .fetch_all(&mut *tx)
+    .await?;
     for (gid, name, role) in &groups {
         lock_group(&mut tx, *gid).await?;
         if role != "owner" {
@@ -158,10 +162,13 @@ pub async fn delete_account(
         .bind(me)
         .fetch_all(&mut *tx)
         .await?;
-        sqlx::query("UPDATE chat_groups SET dissolved_at = now() WHERE id = $1")
-            .bind(gid)
-            .execute(&mut *tx)
-            .await?;
+        let picture: Option<Uuid> = sqlx::query_scalar(
+            "UPDATE chat_groups SET dissolved_at = now() WHERE id = $1 RETURNING avatar_id",
+        )
+        .bind(gid)
+        .fetch_one(&mut *tx)
+        .await?;
+        avatars.extend(picture);
         canceled.extend(cancel_group(&mut tx, *gid, None, "group_dissolved").await?);
         dissolved.push((*gid, name.clone(), members));
     }
@@ -252,18 +259,17 @@ pub async fn delete_account(
         .bind(me)
         .execute(&mut *tx)
         .await?;
+    avatar::delete(&mut tx, &avatars).await?;
 
-    // RULE-008: inactive members get no notice (INV-014).
+    // RULE-008, RULE-014: inactive members get no notice (INV-014).
     let mut notices = vec![];
     for (gid, name, members) in &dissolved {
-        let access = billing::access_many(&st.db, &st.cfg, members).await?;
+        let inactive = safety::inactive(&st.db, &st.cfg, members).await?;
         for to in members {
-            if access.get(to).is_some_and(|a| !a.active()) {
+            if inactive.contains(to) {
                 continue;
             }
-            let body = format!(
-                "Group {name} (#{gid}) was dissolved because its owner deleted their account."
-            );
+            let body = format!("Group {name} (#{gid}) was dissolved because {why}.");
             notices.push(post_notice(&mut tx, me, *to, body).await?);
         }
     }
@@ -272,10 +278,10 @@ pub async fn delete_account(
     for d in devices {
         st.hub.close(d, CLOSE_UNAUTHORIZED, "account deleted");
     }
-    delivery::notify_canceled(&st, canceled).await;
+    delivery::notify_canceled(st, canceled).await;
     let (inbox, messages): (Vec<Uuid>, Vec<i64>) = notices.into_iter().unzip();
-    delivery::kick(&st, inbox);
-    push::messages(&st, messages);
+    delivery::kick(st, inbox);
+    push::messages(st, messages);
     let dir = st.files_dir();
     for id in &files {
         let _ = tokio::fs::remove_file(dir.join(id.to_string())).await;
@@ -287,5 +293,5 @@ pub async fn delete_account(
         groups_dissolved = dissolved.len(),
         "account deleted"
     );
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }

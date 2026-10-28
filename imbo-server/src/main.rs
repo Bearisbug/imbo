@@ -1,6 +1,7 @@
 //! `imbo-server`: one binary for the central server and for self-hosting.
 
 mod auth;
+mod avatar;
 mod billing;
 mod config;
 mod db;
@@ -13,6 +14,7 @@ mod mail;
 mod notify;
 mod push;
 mod routes;
+mod safety;
 mod state;
 mod views;
 mod ws;
@@ -48,6 +50,22 @@ enum Cmd {
         #[command(subcommand)]
         cmd: BillingCmd,
     },
+    /// Ban or unban an account, as the web admin page does (API-066,
+    /// API-067). Uses the server's environment and its database.
+    Account {
+        #[command(subcommand)]
+        cmd: AccountCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountCmd {
+    /// Ban: end every sign-in, take back undelivered messages, close pending
+    /// requests and cancel the subscription without a refund. Run it again to
+    /// retry a cancellation that failed.
+    Ban { account_id: i32 },
+    /// Lift a ban. Ended sign-ins and canceled subscriptions stay that way.
+    Unban { account_id: i32 },
 }
 
 #[derive(Subcommand)]
@@ -78,6 +96,7 @@ fn main() -> anyhow::Result<()> {
             Cmd::Billing {
                 cmd: BillingCmd::Pull { subscription_id },
             } => billing_pull(&subscription_id).await,
+            Cmd::Account { cmd } => account_cmd(cmd).await,
         }
     })
 }
@@ -107,6 +126,7 @@ async fn serve() -> anyhow::Result<()> {
 
     let state = Arc::new(state::AppState::new(cfg.clone(), database.pool.clone())?);
     delivery::spawn_tasks(state.clone());
+    safety::spawn_ban_listener(state.clone());
     let app = routes::router(state.clone());
 
     let listen: SocketAddr = cfg.listen.parse().context("IMBO_LISTEN")?;
@@ -186,6 +206,63 @@ async fn billing_pull(id: &str) -> anyhow::Result<()> {
     );
     database.close().await;
     Ok(())
+}
+
+/// `imbo-server account ban|unban`. With the embedded database the server
+/// must be stopped first; with DATABASE_URL it may keep running, and closes
+/// the banned account's connections when told (safety::spawn_ban_listener).
+async fn account_cmd(cmd: AccountCmd) -> anyhow::Result<()> {
+    let cfg = config::Config::from_env()?;
+    let database = db::open(&cfg).await?;
+    let pool = &database.pool;
+    let result = async {
+        match cmd {
+            AccountCmd::Ban { account_id } => {
+                let row: Option<(String, String)> = sqlx::query_as(
+                    "SELECT name, email FROM accounts a WHERE id = $1
+                     AND NOT EXISTS (SELECT 1 FROM deleted_accounts d WHERE d.id = a.id)",
+                )
+                .bind(account_id)
+                .fetch_optional(pool)
+                .await?;
+                let (name, email) = row.with_context(|| format!("no account {account_id}"))?;
+                if cfg.is_admin_email(&email) {
+                    anyhow::bail!("{account_id} is an admin (IMBO_ADMIN_EMAILS); admins can't be banned");
+                }
+                let mut tx = pool.begin().await?;
+                let b = safety::ban_tx(&mut tx, account_id, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e.0.detail))?;
+                tx.commit().await?;
+                let canceled =
+                    safety::after_ban(pool, &cfg, &billing::http_client(), account_id, b.newly)
+                        .await;
+                if b.newly {
+                    println!(
+                        "Banned {name} ({account_id}): {} computer(s) signed out, {} undelivered message(s) taken back.",
+                        b.devices.len(),
+                        b.canceled.len()
+                    );
+                } else {
+                    println!("{name} ({account_id}) was already banned.");
+                }
+                println!(
+                    "Subscription canceled: {}",
+                    if canceled { "yes" } else { "no, run this again to retry" }
+                );
+            }
+            AccountCmd::Unban { account_id } => {
+                safety::unban(pool, account_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e.0.detail))?;
+                println!("Unbanned {account_id}. They sign in again; their subscription is not restored.");
+            }
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    database.close().await;
+    result
 }
 
 async fn wait_for_signal() {

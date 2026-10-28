@@ -96,6 +96,16 @@ impl Hub {
         }
     }
 
+    /// Close every connection of an account (a ban done by the server
+    /// command, API-066).
+    pub fn close_account(&self, account_id: i32, code: u16, reason: &'static str) {
+        for c in self.conns.lock().unwrap().values() {
+            if c.account_id == account_id {
+                let _ = c.tx.send(Outbound::Close(code, reason));
+            }
+        }
+    }
+
     pub fn count(&self) -> usize {
         self.conns.lock().unwrap().len()
     }

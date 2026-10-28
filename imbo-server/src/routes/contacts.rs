@@ -19,7 +19,7 @@ use super::Body;
 use crate::auth::Caller;
 use crate::error::{ApiResult, err};
 use crate::state::St;
-use crate::{delivery, notify, views};
+use crate::{delivery, notify, safety, views};
 
 #[derive(sqlx::FromRow)]
 struct RequestRow {
@@ -143,6 +143,18 @@ pub async fn request_contact(
 
     let mut tx = st.db.begin().await?;
     lock_pair(&mut tx, c.account_id, target).await?;
+    // A block of me or a ban of either of us in progress finishes first:
+    // both lock the rows shared here (DESIGN §16).
+    let banned: bool =
+        sqlx::query_scalar("SELECT banned_at IS NOT NULL FROM accounts WHERE id = $1 FOR SHARE")
+            .bind(c.account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if banned {
+        return Err(err(ErrorCode::Unauthorized, "This account was banned."));
+    }
+    safety::check_blocks(&mut tx, c.account_id, target, &peer.name).await?;
+    safety::check_not_banned(&mut tx, target, &peer.name).await?;
     let already: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM contacts WHERE account_id = $1 AND peer_id = $2)",
     )
@@ -564,6 +576,8 @@ pub async fn list_contacts(
                 name: r.peer_name.clone(),
                 sessions: vec![],
                 active: true,
+                avatar_url: None,
+                blocked: false,
             });
         }
         if let (Some(short_id), Some(title), Some(tool), Some(online)) =
@@ -579,9 +593,13 @@ pub async fn list_contacts(
         }
     }
     let ids: Vec<i32> = contacts.iter().map(|x| x.id).collect();
-    let access = crate::billing::access_many(&st.db, &st.cfg, &ids).await?;
+    let inactive = safety::inactive(&st.db, &st.cfg, &ids).await?;
+    let mut avatars = safety::avatars(&st.db, &st.cfg, &ids).await?;
+    let blocked = safety::blocked_by(&st.db, c.account_id, &ids).await?;
     for x in &mut contacts {
-        x.active = access.get(&x.id).is_none_or(|a| a.active());
+        x.active = !inactive.contains(&x.id);
+        x.avatar_url = avatars.remove(&x.id);
+        x.blocked = blocked.contains(&x.id);
     }
     Ok(Json(ContactsResponse { contacts }))
 }

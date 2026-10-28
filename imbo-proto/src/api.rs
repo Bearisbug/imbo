@@ -15,6 +15,22 @@ pub struct Account {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// Absent without an avatar (API-045).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    /// Only on an admin's own account (ROLE-Admin, API-004).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin: bool,
+}
+
+/// An account or group with its picture: `avatar_url` is absent without one
+/// or while the account is banned (DESIGN §8).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Profile {
+    pub id: i32,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -183,9 +199,15 @@ pub struct ContactItem {
     pub id: AccountId,
     pub name: String,
     pub sessions: Vec<SessionInfo>,
-    /// False when the contact's trial ended without a subscription (RULE-008).
+    /// False when the contact's trial ended without a subscription
+    /// (RULE-008), or the account is banned (RULE-014).
     #[serde(default = "yes")]
     pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    /// I blocked this contact (RULE-013).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blocked: bool,
 }
 
 fn yes() -> bool {
@@ -421,9 +443,9 @@ pub struct ConversationItem {
     /// `direct` or `group`.
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer: Option<AccountRef>,
+    pub peer: Option<Profile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<GroupRef>,
+    pub group: Option<Profile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<LastMessage>,
     /// Messages to me here not yet in a session or read in the terminal.
@@ -502,8 +524,22 @@ pub struct GroupView {
     /// Missing from servers before group owners (ADR-027).
     #[serde(default)]
     pub owner: Option<AccountRef>,
-    pub members: Vec<AccountRef>,
+    pub members: Vec<MemberRef>,
     pub my_sessions: Vec<AgentRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+}
+
+/// A group member as API-019 lists them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemberRef {
+    pub id: AccountId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    /// Same as [`ContactItem::active`].
+    #[serde(default = "yes")]
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,4 +586,201 @@ pub struct Health {
     pub ack_p95_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing_webhook_errors_24h: Option<i64>,
+    /// Hours the oldest open report has waited; absent when none is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_open_report_h: Option<f64>,
+}
+
+// ---- avatars, blocks and reports (API-045–061) ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvatarResponse {
+    pub avatar_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockRequest {
+    pub account_id: AccountId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockItem {
+    pub account: Profile,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockResponse {
+    pub block: BlockItem,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlocksResponse {
+    pub blocks: Vec<BlockItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportRequest {
+    pub account_id: AccountId,
+    /// `spam`, `harassment`, `inappropriate_avatar` or `other`.
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<GroupId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportCreated {
+    pub id: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportCreatedResponse {
+    pub report: ReportCreated,
+}
+
+// ---- admin (API-062–070) ----
+
+/// A reporter or reported account as the admin sees it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportParty {
+    pub id: AccountId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    pub banned: bool,
+    /// The reported account's email, in API-063 only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// API-063 only: the reported account changed its avatar after the report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_changed: Option<bool>,
+}
+
+/// A file as copied into a report: name and size only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReportFile {
+    pub name: String,
+    pub size: u64,
+}
+
+/// One message copied into a report when it was made (ADR-039).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportMessage {
+    /// `message` or `request_note`.
+    pub kind: String,
+    pub from: AccountRef,
+    pub body: String,
+    pub files: Vec<ReportFile>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportView {
+    pub id: i64,
+    pub reporter: ReportParty,
+    pub target: ReportParty,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<GroupRef>,
+    pub reason: String,
+    /// `open`, `actioned` or `dismissed`.
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    // API-063 only from here on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Vec<ReportMessage>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportsPage {
+    pub reports: Vec<ReportView>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportResponse {
+    pub report: ReportView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolveRequest {
+    /// `ban`, `remove_avatar` or `dismiss`.
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolveResponse {
+    pub report: ReportView,
+    /// Only for `ban`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_canceled: Option<bool>,
+}
+
+/// The latest subscription, as the admin sees it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminSubscription {
+    pub status: String,
+    pub paid_until: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAccount {
+    pub id: AccountId,
+    pub name: String,
+    pub email: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub access: AccessView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<AdminSubscription>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banned_at: Option<DateTime<Utc>>,
+    pub admin: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAccountsPage {
+    pub accounts: Vec<AdminAccount>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAccountResponse {
+    pub account: AdminAccount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BanResponse {
+    pub account: AdminAccount,
+    pub subscription_canceled: bool,
+}
+
+/// One Beijing-time day of API-068.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatsDay {
+    /// `2026-10-27`.
+    pub date: String,
+    pub accounts: i64,
+    pub active_7d: i64,
+    pub messages: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatsResponse {
+    pub accounts: i64,
+    pub active_7d: i64,
+    pub paid: i64,
+    pub messages_today: i64,
+    pub days: Vec<StatsDay>,
 }

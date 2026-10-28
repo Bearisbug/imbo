@@ -50,11 +50,13 @@ pub async fn get_me(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
 ) -> ApiResult<Json<MeResponse>> {
-    let (name, email): (String, String) =
-        sqlx::query_as("SELECT name, email FROM accounts WHERE id = $1")
+    let (name, email, avatar): (String, String, Option<Uuid>) =
+        sqlx::query_as("SELECT name, email, avatar_id FROM accounts WHERE id = $1")
             .bind(c.account_id)
             .fetch_one(&st.db)
             .await?;
+    // ROLE-Admin is a web sign-in with a listed email (ADR-040).
+    let admin = c.web.is_some() && super::admin::is_admin(&st, c.account_id).await?;
     let device = if c.web_person() {
         None
     } else {
@@ -73,6 +75,8 @@ pub async fn get_me(
             id: c.account_id,
             name,
             email: Some(email),
+            avatar_url: crate::avatar::url_of(&st.cfg, avatar),
+            admin,
         },
         device,
         access: Some(access.view()),
@@ -86,8 +90,8 @@ pub async fn rename(
 ) -> ApiResult<Json<AccountResponse>> {
     c.require_person()?;
     let name = validate_name(&req.name).map_err(|m| err(ErrorCode::InvalidName, m))?;
-    let email: String =
-        sqlx::query_scalar("UPDATE accounts SET name = $2 WHERE id = $1 RETURNING email")
+    let (email, avatar): (String, Option<Uuid>) =
+        sqlx::query_as("UPDATE accounts SET name = $2 WHERE id = $1 RETURNING email, avatar_id")
             .bind(c.account_id)
             .bind(&name)
             .fetch_one(&st.db)
@@ -97,6 +101,8 @@ pub async fn rename(
             id: c.account_id,
             name,
             email: Some(email),
+            avatar_url: crate::avatar::url_of(&st.cfg, avatar),
+            admin: false,
         },
     }))
 }

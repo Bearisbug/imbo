@@ -5,8 +5,7 @@ use axum::extract::{Path, Query, State};
 use axum::{Extension, Json};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    AccountRef, ConversationItem, ConversationsResponse, FileView, GroupRef, LastMessage,
-    MessagesPage,
+    ConversationItem, ConversationsResponse, FileView, LastMessage, MessagesPage, Profile,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -14,7 +13,7 @@ use uuid::Uuid;
 use crate::auth::Caller;
 use crate::error::{ApiResult, err};
 use crate::state::St;
-use crate::views;
+use crate::{avatar, safety, views};
 
 /// The first 100 characters of the body; the file names when a message
 /// carries only files.
@@ -37,6 +36,7 @@ struct ConvRow {
     kind: String,
     group_id: Option<i32>,
     group_name: Option<String>,
+    group_avatar: Option<Uuid>,
     peer_id: Option<i32>,
     peer_name: Option<String>,
     last_id: Option<i64>,
@@ -57,8 +57,11 @@ pub async fn list(
                   AND cv.account_lo <> cv.account_hi)
               OR cv.group_id IN (SELECT group_id FROM group_members WHERE account_id = $1)
          )
-         SELECT mine.id, mine.kind, mine.group_id, g.name AS group_name, mine.peer_id, p.name AS peer_name,
-                (SELECT max(m.id) FROM messages m WHERE m.conversation_id = mine.id) AS last_id,
+         SELECT mine.id, mine.kind, mine.group_id, g.name AS group_name, g.avatar_id AS group_avatar,
+                mine.peer_id, p.name AS peer_name,
+                (SELECT max(m.id) FROM messages m WHERE m.conversation_id = mine.id
+                   AND (mine.kind = 'direct' OR m.from_account NOT IN
+                        (SELECT blocked_id FROM blocks WHERE account_id = $1))) AS last_id,
                 (SELECT count(*) FROM deliveries d JOIN messages m ON m.id = d.message_id
                  WHERE m.conversation_id = mine.id AND d.account_id = $1
                    AND d.state IN ('pending', 'pushed')) AS pending
@@ -78,6 +81,8 @@ pub async fn list(
     rows.truncate(200);
     let last_ids: Vec<i64> = rows.iter().filter_map(|r| r.last_id).collect();
     let mut last = views::messages(&st.db, &last_ids, c.account_id).await?;
+    let peers: Vec<i32> = rows.iter().filter_map(|r| r.peer_id).collect();
+    let mut avatars = safety::avatars(&st.db, &st.cfg, &peers).await?;
     let conversations = rows
         .into_iter()
         .map(|r| {
@@ -94,11 +99,19 @@ pub async fn list(
             ConversationItem {
                 id: r.id,
                 peer: match (r.kind.as_str(), r.peer_id, r.peer_name) {
-                    ("direct", Some(id), Some(name)) => Some(AccountRef { id, name }),
+                    ("direct", Some(id), Some(name)) => Some(Profile {
+                        id,
+                        name,
+                        avatar_url: avatars.remove(&id),
+                    }),
                     _ => None,
                 },
                 group: match (r.group_id, r.group_name) {
-                    (Some(id), Some(name)) => Some(GroupRef { id, name }),
+                    (Some(id), Some(name)) => Some(Profile {
+                        id,
+                        name,
+                        avatar_url: avatar::url_of(&st.cfg, r.group_avatar),
+                    }),
                     _ => None,
                 },
                 kind: r.kind,
@@ -119,10 +132,13 @@ pub struct PageQuery {
 
 /// Message ids of one page, oldest first: of a conversation, or sent by or
 /// delivered to a session.
+/// `hide_blocked_by`: leave out messages from accounts this one blocks
+/// (RULE-013, group conversations).
 async fn page(
     st: &St,
     conv: Option<i64>,
     agent: Option<Uuid>,
+    hide_blocked_by: Option<i32>,
     q: &PageQuery,
 ) -> ApiResult<(Vec<i64>, bool)> {
     let limit = q.limit.unwrap_or(50);
@@ -142,6 +158,8 @@ async fn page(
            AND ($2::uuid IS NULL OR m.from_agent_id = $2
                 OR m.id IN (SELECT message_id FROM deliveries WHERE agent_id = $2))
            AND ($3::bigint IS NULL OR m.id < $3) AND ($4::bigint IS NULL OR m.id > $4)
+           AND ($6::integer IS NULL OR m.from_account NOT IN
+                (SELECT blocked_id FROM blocks WHERE account_id = $6))
          ORDER BY m.id {order} LIMIT $5"
     );
     let mut ids: Vec<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
@@ -150,6 +168,7 @@ async fn page(
         .bind(q.before)
         .bind(q.after)
         .bind(limit + 1)
+        .bind(hide_blocked_by)
         .fetch_all(&st.db)
         .await?;
     let has_more = ids.len() as i64 > limit;
@@ -165,19 +184,20 @@ pub async fn messages(
     Query(q): Query<PageQuery>,
 ) -> ApiResult<Json<MessagesPage>> {
     c.require_person()?;
-    let visible: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM conversations cv WHERE cv.id = $1 AND (
+    let kind: Option<String> = sqlx::query_scalar(
+        "SELECT cv.kind FROM conversations cv WHERE cv.id = $1 AND (
            $2 IN (cv.account_lo, cv.account_hi)
-           OR EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = cv.group_id AND gm.account_id = $2)))",
+           OR EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = cv.group_id AND gm.account_id = $2))",
     )
     .bind(id)
     .bind(c.account_id)
-    .fetch_one(&st.db)
+    .fetch_optional(&st.db)
     .await?;
-    if !visible {
+    let Some(kind) = kind else {
         return Err(err(ErrorCode::NotFound, format!("No conversation {id}.")));
-    }
-    let (ids, has_more) = page(&st, Some(id), None, &q).await?;
+    };
+    let hide = (kind == "group").then_some(c.account_id);
+    let (ids, has_more) = page(&st, Some(id), None, hide, &q).await?;
     let messages = views::messages(&st.db, &ids, c.account_id).await?;
     Ok(Json(MessagesPage { messages, has_more }))
 }
@@ -203,7 +223,7 @@ pub async fn agent_messages(
     if !listed {
         return Err(not_found());
     }
-    let (ids, has_more) = page(&st, None, Some(agent), &q).await?;
+    let (ids, has_more) = page(&st, None, Some(agent), None, &q).await?;
     let mut messages = views::messages(&st.db, &ids, c.account_id).await?;
     super::messages::with_states(&st.db, &mut messages, agent).await?;
     Ok(Json(MessagesPage { messages, has_more }))

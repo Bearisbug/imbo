@@ -32,6 +32,7 @@ uuid.workspace = true
 
 axum = { version = "0.8", features = ["ws", "macros"] }
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "pool", "tokio1", "tokio1-rustls", "ring", "webpki-roots"] }
 oliphaunt = { version = "0.3.2", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

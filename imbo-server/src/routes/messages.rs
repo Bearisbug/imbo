@@ -22,6 +22,7 @@ use crate::auth::Caller;
 use crate::billing;
 use crate::delivery;
 use crate::error::{ApiError, ApiResult, err};
+use crate::safety;
 use crate::state::St;
 use crate::views;
 
@@ -341,6 +342,15 @@ async fn existing_result(st: &St, me: i32, client_msg_id: &str) -> ApiResult<Opt
     }))
 }
 
+/// Share locks on these accounts' rows, in ID order.
+async fn lock_accounts(tx: &mut sqlx::PgConnection, ids: &[i32]) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT 1 FROM accounts WHERE id = ANY($1) ORDER BY id FOR SHARE")
+        .bind(ids)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
 async fn rate_check(
     tx: &mut sqlx::PgConnection,
     conversation: i64,
@@ -513,11 +523,13 @@ async fn store(
 
     let mut inactive_members = None;
     let mut tx = st.db.begin().await?;
-    // Waits out a deletion of the sender's account in progress (DESIGN §16).
-    sqlx::query("SELECT 1 FROM accounts WHERE id = $1 FOR SHARE")
-        .bind(c.account_id)
-        .execute(&mut *tx)
-        .await?;
+    // Waits out a deletion, ban or block of the sender's account in
+    // progress, then sees it (DESIGN §16).
+    let banned: bool =
+        sqlx::query_scalar("SELECT banned_at IS NOT NULL FROM accounts WHERE id = $1 FOR SHARE")
+            .bind(c.account_id)
+            .fetch_one(&mut *tx)
+            .await?;
     let deleted: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM deleted_accounts WHERE id = $1)")
             .bind(c.account_id)
@@ -526,8 +538,17 @@ async fn store(
     if deleted {
         return Err(err(ErrorCode::Unauthorized, "This account was deleted."));
     }
+    if banned {
+        return Err(err(ErrorCode::Unauthorized, "This account was banned."));
+    }
     let (conversation, recipients): (ConversationRef, Vec<(Uuid, i32)>) = match target {
         Target::Direct { peer, agent } => {
+            // The peer's row before the contact row: deleting an account
+            // locks its row, then deletes its contact rows (DESIGN §16).
+            sqlx::query("SELECT 1 FROM accounts WHERE id = $1 FOR SHARE")
+                .bind(peer.id)
+                .execute(&mut *tx)
+                .await?;
             let still: Option<i32> = sqlx::query_scalar(
                 "SELECT peer_id FROM contacts WHERE account_id = $1 AND peer_id = $2 FOR SHARE",
             )
@@ -541,6 +562,11 @@ async fn store(
                     ErrorCode::NotContact,
                     format!("{} is not your contact.", peer.name),
                 ));
+            }
+            // RULE-013, RULE-014: refused and not stored.
+            if peer.id != c.account_id {
+                safety::check_blocks(&mut tx, c.account_id, peer.id, &peer.name).await?;
+                safety::check_not_banned(&mut tx, peer.id, &peer.name).await?;
             }
             let (lo, hi) = if c.account_id < peer.id {
                 (c.account_id, peer.id)
@@ -577,6 +603,18 @@ async fn store(
                 .bind(g.id)
                 .fetch_one(&mut *tx)
                 .await?;
+            // RULE-014: a ban of a member in progress commits first and is
+            // seen below; none starts until this send commits. Taken before
+            // the group lock, because deleting an account locks its row and
+            // then its groups' locks (DESIGN §16).
+            let members: Vec<i32> = sqlx::query_scalar(
+                "SELECT account_id FROM group_members WHERE group_id = $1 AND account_id <> $2",
+            )
+            .bind(g.id)
+            .bind(c.account_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            lock_accounts(&mut tx, &members).await?;
             rate_check(&mut tx, id, c.account_id, true).await?;
             // Under the group lock: removed or dissolved in the meantime (DESIGN §16).
             let (dissolved, member): (bool, bool) = sqlx::query_as(
@@ -609,33 +647,41 @@ async fn store(
             .fetch_all(&mut *tx)
             .await?;
             crate::dev::fault_pause(st, "slow-group-send").await;
-            // RULE-008: inactive members are skipped; nobody else active means no send.
-            inactive_members = Some(0);
-            if st.cfg.billing_on() {
-                let others: Vec<i32> = sqlx::query_scalar(
-                    "SELECT account_id FROM group_members WHERE group_id = $1 AND account_id <> $2",
-                )
-                .bind(g.id)
-                .bind(c.account_id)
-                .fetch_all(&mut *tx)
-                .await?;
-                let access = billing::access_many(&st.db, &st.cfg, &others).await?;
-                let inactive = |a: &i32| access.get(a).is_some_and(|x| !x.active());
-                if !others.is_empty() && others.iter().all(inactive) {
-                    info!(
-                        event = "recipient_inactive",
-                        from_account = c.account_id,
-                        group_id = g.id,
-                        "send refused"
-                    );
-                    return Err(err(
-                        ErrorCode::RecipientInactive,
-                        "Everyone else in this group has an inactive account, so nobody can receive it.",
-                    ));
-                }
-                rows.retain(|(_, account)| !inactive(account));
-                inactive_members = Some(others.iter().filter(|a| inactive(a)).count() as u32);
+            // RULE-008, RULE-014: inactive and banned members are skipped;
+            // nobody else active means no send.
+            let others: Vec<i32> = sqlx::query_scalar(
+                "SELECT account_id FROM group_members WHERE group_id = $1 AND account_id <> $2",
+            )
+            .bind(g.id)
+            .bind(c.account_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            // Those who joined since.
+            lock_accounts(&mut tx, &others).await?;
+            let inactive = safety::inactive(&st.db, &st.cfg, &others).await?;
+            if !others.is_empty() && others.iter().all(|a| inactive.contains(a)) {
+                info!(
+                    event = "recipient_inactive",
+                    from_account = c.account_id,
+                    group_id = g.id,
+                    "send refused"
+                );
+                return Err(err(
+                    ErrorCode::RecipientInactive,
+                    "Everyone else in this group has an inactive account, so nobody can receive it.",
+                ));
             }
+            // RULE-013: members who block the sender don't get it, and
+            // aren't counted. Read under the group lock (DESIGN §16).
+            let blockers: Vec<i32> = sqlx::query_scalar(
+                "SELECT account_id FROM blocks WHERE blocked_id = $1 AND account_id = ANY($2)",
+            )
+            .bind(c.account_id)
+            .bind(&others)
+            .fetch_all(&mut *tx)
+            .await?;
+            rows.retain(|(_, account)| !inactive.contains(account) && !blockers.contains(account));
+            inactive_members = Some(others.iter().filter(|a| inactive.contains(a)).count() as u32);
             (
                 ConversationRef {
                     kind: "group".into(),

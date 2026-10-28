@@ -34,6 +34,25 @@ pub struct Config {
     pub expo_access_token: Option<String>,
     /// Log the notifications instead of calling Expo, for local tests.
     pub push_log_only: bool,
+    /// Lower-case emails whose web sign-in is ROLE-Admin (ADR-040).
+    pub admin_emails: Vec<String>,
+    /// Where new reports are announced; unset means only the log (API-061).
+    pub report_email: Option<String>,
+    /// The store reviewers' address and its fixed code (API-001).
+    pub review: Option<Review>,
+}
+
+/// Codes asked for `email` are `code` and no mail is sent (API-001).
+#[derive(Clone)]
+pub struct Review {
+    pub email: String,
+    pub code: String,
+}
+
+impl std::fmt::Debug for Review {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Review({})", self.email)
+    }
 }
 
 #[derive(Clone)]
@@ -103,6 +122,20 @@ fn creem_from_env() -> anyhow::Result<Option<Creem>> {
         webhook_secret: v.next().unwrap_or_default(),
         product_monthly: v.next().unwrap_or_default(),
         product_yearly: v.next().unwrap_or_default(),
+    }))
+}
+
+/// Both IMBO_REVIEW_EMAIL and IMBO_REVIEW_CODE, or no review sign-in.
+fn review_from_env() -> anyhow::Result<Option<Review>> {
+    let (Some(email), Some(code)) = (var("IMBO_REVIEW_EMAIL"), var("IMBO_REVIEW_CODE")) else {
+        return Ok(None);
+    };
+    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+        bail!("IMBO_REVIEW_CODE must be 6 digits");
+    }
+    Ok(Some(Review {
+        email: email.to_lowercase(),
+        code,
     }))
 }
 
@@ -184,7 +217,28 @@ impl Config {
             web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),
             expo_access_token: var("IMBO_EXPO_ACCESS_TOKEN"),
             push_log_only: flag("IMBO_PUSH_LOG_ONLY"),
+            admin_emails: var("IMBO_ADMIN_EMAILS")
+                .map(|v| {
+                    v.split(',')
+                        .map(|e| e.trim().to_lowercase())
+                        .filter(|e| !e.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            report_email: var("IMBO_REPORT_EMAIL"),
+            review: review_from_env()?,
         })
+    }
+
+    pub fn is_admin_email(&self, email: &str) -> bool {
+        let email = email.to_lowercase();
+        self.admin_emails.contains(&email)
+    }
+
+    /// API-001: the fixed code when `email` is the store reviewers' address.
+    pub fn review_code(&self, email: &str) -> Option<&str> {
+        let r = self.review.as_ref()?;
+        (r.email == email.to_lowercase()).then_some(r.code.as_str())
     }
 
     /// RULE-007: charging needs both Creem and a start day.

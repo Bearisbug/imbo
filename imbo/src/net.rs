@@ -51,11 +51,49 @@ pub async fn request(
     actor: Option<&str>,
     body: Option<&Value>,
 ) -> Result<ApiResponse, Problem> {
+    let body = body.map(|b| (Bytes::from(b.to_string()), "application/json"));
+    request_with(server, method, path, token, actor, body, TOTAL_TIMEOUT).await
+}
+
+/// Time for a picture of up to 5 MB to go up and be converted (API-056).
+pub const PICTURE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A REST call whose body is a picture, as `content_type`.
+pub async fn request_picture(
+    server: &str,
+    method: &str,
+    path: &str,
+    token: &str,
+    actor: Option<&str>,
+    picture: Vec<u8>,
+    content_type: &str,
+) -> Result<ApiResponse, Problem> {
+    let body = Some((Bytes::from(picture), content_type));
+    request_with(
+        server,
+        method,
+        path,
+        Some(token),
+        actor,
+        body,
+        PICTURE_TIMEOUT,
+    )
+    .await
+}
+
+async fn request_with(
+    server: &str,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    actor: Option<&str>,
+    body: Option<(Bytes, &str)>,
+    total: Duration,
+) -> Result<ApiResponse, Problem> {
     let method = hyper::Method::from_bytes(method.as_bytes())
         .map_err(|_| Problem::new(ErrorCode::InvalidRequest, "bad method"))?;
     let attempts = if method == hyper::Method::GET { 2 } else { 1 };
     let request_id = uuid::Uuid::now_v7().to_string();
-    let body = body.map(|b| b.to_string());
     let mut why = String::new();
     for attempt in 1..=attempts {
         let call = send_once(
@@ -65,16 +103,11 @@ pub async fn request(
             &request_id,
             token,
             actor,
-            body.as_deref(),
+            body.clone(),
         );
-        let got = tokio::time::timeout(TOTAL_TIMEOUT, call)
+        let got = tokio::time::timeout(total, call)
             .await
-            .unwrap_or_else(|_| {
-                Err(format!(
-                    "no answer within {} seconds",
-                    TOTAL_TIMEOUT.as_secs()
-                ))
-            });
+            .unwrap_or_else(|_| Err(format!("no answer within {} seconds", total.as_secs())));
         let (status, unread, bytes) = match got {
             Ok(r) => r,
             Err(e) => {
@@ -115,7 +148,7 @@ async fn send_once(
     request_id: &str,
     token: Option<&str>,
     actor: Option<&str>,
-    body: Option<&str>,
+    body: Option<(Bytes, &str)>,
 ) -> Result<(u16, Option<u32>, Bytes), String> {
     let (stream, hostport) = open(server, CONNECT_TIMEOUT).await?;
     let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
@@ -134,12 +167,14 @@ async fn send_once(
     if let Some(a) = actor {
         rb = rb.header(HEADER_ACTOR, a);
     }
-    if body.is_some() {
-        rb = rb.header("content-type", "application/json");
-    }
-    let req = rb
-        .body(Full::new(Bytes::from(body.unwrap_or("").to_owned())))
-        .map_err(|e| e.to_string())?;
+    let body = match body {
+        Some((bytes, kind)) => {
+            rb = rb.header("content-type", kind);
+            bytes
+        }
+        None => Bytes::new(),
+    };
+    let req = rb.body(Full::new(body)).map_err(|e| e.to_string())?;
     let res = tx.send_request(req).await.map_err(|e| e.to_string())?;
     let status = res.status().as_u16();
     let unread = res

@@ -123,6 +123,8 @@ async fn handle(st: &St, caller: &Caller, frame: ClientFrame) -> anyhow::Result<
                         id: caller.account_id,
                         name: caller.name.clone(),
                         email: Some(email),
+                        avatar_url: None,
+                        admin: false,
                     },
                     device_id: caller.device_id,
                     min_client_version: st.cfg.min_client_version.clone(),

@@ -27,6 +27,10 @@ pub enum LocalRequest {
         /// `<tool>:<session_id>`; absent means the person.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         actor: Option<String>,
+        /// Absolute path of a JPEG or PNG the daemon sends as the request
+        /// body instead of `body`, as `imbo group avatar` does (API-056).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picture: Option<String>,
     },
     /// API-LOCAL-003: a prompt or tool hook asks for messages sent back to
     /// the server.

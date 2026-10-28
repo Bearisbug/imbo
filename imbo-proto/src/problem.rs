@@ -49,10 +49,16 @@ pub enum ErrorCode {
     AlreadySubscribed,
     PaymentProviderFailed,
     ClientOutdated,
+    Blocked,
+    UnblockFirst,
+    AccountBanned,
+    AlreadyReported,
+    ReportClosed,
+    ImageInvalid,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 45] = [
+    pub const ALL: [ErrorCode; 51] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -98,6 +104,12 @@ impl ErrorCode {
         Self::AlreadySubscribed,
         Self::PaymentProviderFailed,
         Self::ClientOutdated,
+        Self::Blocked,
+        Self::UnblockFirst,
+        Self::AccountBanned,
+        Self::AlreadyReported,
+        Self::ReportClosed,
+        Self::ImageInvalid,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -147,6 +159,12 @@ impl ErrorCode {
             Self::AlreadySubscribed => "already-subscribed",
             Self::PaymentProviderFailed => "payment-provider-failed",
             Self::ClientOutdated => "client-outdated",
+            Self::Blocked => "blocked",
+            Self::UnblockFirst => "unblock-first",
+            Self::AccountBanned => "account-banned",
+            Self::AlreadyReported => "already-reported",
+            Self::ReportClosed => "report-closed",
+            Self::ImageInvalid => "image-invalid",
         }
     }
 
@@ -173,7 +191,10 @@ impl ErrorCode {
             | Self::NotMember
             | Self::NotOwner
             | Self::RemovedFromGroup
-            | Self::RecipientInactive => 403,
+            | Self::RecipientInactive
+            | Self::Blocked
+            | Self::UnblockFirst
+            | Self::AccountBanned => 403,
             Self::NotFound
             | Self::AccountNotFound
             | Self::RecipientNotFound
@@ -184,7 +205,9 @@ impl ErrorCode {
             | Self::AlreadyMember
             | Self::OwnerCannotLeave
             | Self::AmbiguousRecipient
-            | Self::AlreadySubscribed => 409,
+            | Self::AlreadySubscribed
+            | Self::AlreadyReported
+            | Self::ReportClosed => 409,
             Self::CodeExpired | Self::FileExpired => 410,
             Self::FileTooLarge => 413,
             Self::ClientOutdated => 426,
@@ -193,7 +216,8 @@ impl ErrorCode {
             | Self::CannotAddSelf
             | Self::UnknownSession
             | Self::BodyInvalid
-            | Self::FileHashMismatch => 422,
+            | Self::FileHashMismatch
+            | Self::ImageInvalid => 422,
             Self::RateLimited | Self::CodeLocked | Self::UploadQuotaExceeded => 429,
             Self::EmailSendFailed | Self::PaymentProviderFailed => 502,
             Self::Unavailable | Self::ServerUnreachable | Self::DaemonUnavailable => 503,
@@ -249,6 +273,12 @@ impl ErrorCode {
             Self::AlreadySubscribed => "Already subscribed",
             Self::PaymentProviderFailed => "Payment provider unavailable",
             Self::ClientOutdated => "Imbo needs an update",
+            Self::Blocked => "This person doesn't accept your messages",
+            Self::UnblockFirst => "You blocked this person",
+            Self::AccountBanned => "This account is banned",
+            Self::AlreadyReported => "Already reported",
+            Self::ReportClosed => "Report already handled",
+            Self::ImageInvalid => "Not a JPEG or PNG image",
         }
     }
 }

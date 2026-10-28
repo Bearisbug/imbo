@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use imbo_proto::api::{
     AccountRef, CreateGroupBody, GroupRef, GroupResponse, GroupView, GroupsResponse, InviteBody,
-    MySessionsResponse, RequestItem, RequestResponse, SessionsBody,
+    MemberRef, MySessionsResponse, RequestItem, RequestResponse, SessionsBody,
 };
 use imbo_proto::text::validate_group_name;
 use imbo_proto::{ErrorCode, TOOL_TERMINAL};
@@ -18,7 +18,7 @@ use super::Body;
 use crate::auth::Caller;
 use crate::error::{ApiError, ApiResult, err};
 use crate::state::St;
-use crate::{billing, delivery, notify, push, views};
+use crate::{avatar, delivery, notify, push, safety, views};
 
 async fn owned_sessions(st: &St, c: &Caller, ids: &[Uuid]) -> ApiResult<Vec<Uuid>> {
     let mut want = ids.to_vec();
@@ -68,7 +68,7 @@ fn parse_gid(raw: &str) -> ApiResult<i32> {
         .map_err(|_| err(ErrorCode::NotFound, "No such group."))
 }
 
-async fn require_member(st: &St, c: &Caller, raw: &str) -> ApiResult<GroupRef> {
+pub(super) async fn require_member(st: &St, c: &Caller, raw: &str) -> ApiResult<GroupRef> {
     let gid = parse_gid(raw)?;
     let Some(name) = group_name(st, gid).await? else {
         return Err(err(ErrorCode::NotFound, format!("No group #{gid}.")));
@@ -93,7 +93,11 @@ pub(super) async fn lock_group(tx: &mut PgConnection, gid: i32) -> Result<(), sq
 }
 
 /// Take the group lock, then the account's role in the group.
-async fn role_locked(tx: &mut PgConnection, g: &GroupRef, account: i32) -> ApiResult<String> {
+pub(super) async fn role_locked(
+    tx: &mut PgConnection,
+    g: &GroupRef,
+    account: i32,
+) -> ApiResult<String> {
     lock_group(tx, g.id).await?;
     let (dissolved, role): (bool, Option<String>) = sqlx::query_as(
         "SELECT g.dissolved_at IS NOT NULL,
@@ -116,7 +120,11 @@ async fn role_locked(tx: &mut PgConnection, g: &GroupRef, account: i32) -> ApiRe
 }
 
 /// RULE-010, naming the owner.
-async fn not_owner(tx: &mut PgConnection, g: &GroupRef, what: &str) -> ApiResult<ApiError> {
+pub(super) async fn not_owner(
+    tx: &mut PgConnection,
+    g: &GroupRef,
+    what: &str,
+) -> ApiResult<ApiError> {
     let owner: Option<(i32, String)> = sqlx::query_as(
         "SELECT a.id, a.name FROM group_members m JOIN accounts a ON a.id = m.account_id
          WHERE m.group_id = $1 AND m.role = 'owner'",
@@ -211,6 +219,11 @@ pub(super) async fn post_notice(
 }
 
 async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
+    let picture: Option<Uuid> =
+        sqlx::query_scalar("SELECT avatar_id FROM chat_groups WHERE id = $1")
+            .bind(g.id)
+            .fetch_one(&st.db)
+            .await?;
     let members: Vec<(i32, String, String)> = sqlx::query_as(
         "SELECT a.id, a.name, m.role FROM group_members m JOIN accounts a ON a.id = m.account_id
          WHERE m.group_id = $1 ORDER BY m.joined_at",
@@ -232,15 +245,24 @@ async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
             id: *id,
             name: name.clone(),
         });
+    let ids: Vec<i32> = members.iter().map(|m| m.0).collect();
+    let inactive = safety::inactive(&st.db, &st.cfg, &ids).await?;
+    let mut avatars = safety::avatars(&st.db, &st.cfg, &ids).await?;
     Ok(GroupView {
         id: g.id,
         name: g.name,
         owner,
         members: members
             .into_iter()
-            .map(|(id, name, _)| AccountRef { id, name })
+            .map(|(id, name, _)| MemberRef {
+                id,
+                name,
+                avatar_url: avatars.remove(&id),
+                active: !inactive.contains(&id),
+            })
             .collect(),
         my_sessions: views::agent_refs(&st.db, &mine).await?,
+        avatar_url: avatar::url_of(&st.cfg, picture),
     })
 }
 
@@ -365,12 +387,31 @@ pub async fn invite(
             ),
         ));
     }
+    let to = views::account_ref(&st.db, target)
+        .await?
+        .unwrap_or(AccountRef {
+            id: target,
+            name: String::new(),
+        });
+    let mut tx = st.db.begin().await?;
+    // RULE-013, RULE-014, behind a block of me or a ban of either of us in
+    // progress (DESIGN §16).
+    let banned: bool =
+        sqlx::query_scalar("SELECT banned_at IS NOT NULL FROM accounts WHERE id = $1 FOR SHARE")
+            .bind(c.account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if banned {
+        return Err(err(ErrorCode::Unauthorized, "This account was banned."));
+    }
+    safety::check_blocks(&mut tx, c.account_id, target, &to.name).await?;
+    safety::check_not_banned(&mut tx, target, &to.name).await?;
     let pending: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM requests WHERE kind = 'group' AND group_id = $1 AND to_account = $2 AND status = 'pending')",
     )
     .bind(g.id)
     .bind(target)
-    .fetch_one(&st.db)
+    .fetch_one(&mut *tx)
     .await?;
     if pending {
         return Err(err(
@@ -384,14 +425,9 @@ pub async fn invite(
     .bind(c.account_id)
     .bind(target)
     .bind(g.id)
-    .fetch_one(&st.db)
+    .fetch_one(&mut *tx)
     .await?;
-    let to = views::account_ref(&st.db, target)
-        .await?
-        .unwrap_or(AccountRef {
-            id: target,
-            name: String::new(),
-        });
+    tx.commit().await?;
     notify::send(
         &st,
         target,
@@ -519,8 +555,10 @@ pub async fn remove(
     if target == c.account_id {
         return leave_group(&st, &c, &g).await;
     }
-    // RULE-008: an inactive account gets no notice (INV-014).
-    let active = billing::access(&st.db, &st.cfg, target).await?.active();
+    // RULE-008, RULE-014: an inactive account gets no notice (INV-014).
+    let active = !safety::inactive(&st.db, &st.cfg, &[target])
+        .await?
+        .contains(&target);
     let mut tx = st.db.begin().await?;
     if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
         return Err(not_owner(&mut tx, &g, "remove members").await?);
@@ -624,17 +662,21 @@ pub async fn dissolve(
             .bind(g.id)
             .fetch_all(&mut *tx)
             .await?;
-    sqlx::query("UPDATE chat_groups SET dissolved_at = now() WHERE id = $1")
-        .bind(g.id)
-        .execute(&mut *tx)
-        .await?;
+    // The group's picture goes with it (API-039).
+    let picture: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE chat_groups SET dissolved_at = now() WHERE id = $1 RETURNING avatar_id",
+    )
+    .bind(g.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    avatar::delete(&mut tx, &picture.into_iter().collect::<Vec<_>>()).await?;
     let canceled = cancel_group(&mut tx, g.id, None, "group_dissolved").await?;
     let others: Vec<i32> = members.into_iter().filter(|a| *a != c.account_id).collect();
-    // RULE-008: inactive members get no notice (INV-014).
-    let access = billing::access_many(&st.db, &st.cfg, &others).await?;
+    // RULE-008, RULE-014: inactive members get no notice (INV-014).
+    let inactive = safety::inactive(&st.db, &st.cfg, &others).await?;
     let mut notices = vec![];
     for to in others {
-        if access.get(&to).is_some_and(|a| !a.active()) {
+        if inactive.contains(&to) {
             continue;
         }
         let body = format!("Group {} (#{}) was dissolved by {}.", g.name, g.id, c.name);

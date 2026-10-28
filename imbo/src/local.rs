@@ -202,6 +202,7 @@ impl Local {
             path: path.into(),
             body,
             actor,
+            picture: None,
         };
         let res = self.send(&req).await?;
         if res.ok {
@@ -211,6 +212,24 @@ impl Local {
                 Problem::new(ErrorCode::Unavailable, "Unknown error from the daemon.")
             }))
         }
+    }
+
+    /// API-LOCAL-002 with a picture file as the body (API-056).
+    pub async fn call_picture(
+        &self,
+        method: &str,
+        path: &str,
+        picture: String,
+        actor: Option<String>,
+    ) -> Result<Value, Problem> {
+        let req = LocalRequest::Call {
+            method: method.into(),
+            path: path.into(),
+            body: None,
+            actor,
+            picture: Some(picture),
+        };
+        self.files_op(&req).await
     }
 
     /// API-LOCAL-008 / 009 with the problem unwrapped.

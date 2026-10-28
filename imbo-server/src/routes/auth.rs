@@ -78,6 +78,16 @@ pub async fn request_code(
             ));
         }
     }
+    // RULE-014: a banned account gets no code.
+    let banned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM accounts WHERE lower(email) = $1 AND banned_at IS NOT NULL)",
+    )
+    .bind(&email)
+    .fetch_one(&st.db)
+    .await?;
+    if banned {
+        return Err(banned_error(&st));
+    }
     let ip = client_ip(&headers, peer);
     if let Err(wait) = st
         .limiter
@@ -105,7 +115,12 @@ pub async fn request_code(
         }
     }
 
-    let code = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
+    // The store reviewers' address gets the fixed code, and no mail.
+    let review = st.cfg.review_code(&email);
+    let code = match review {
+        Some(fixed) => fixed.to_string(),
+        None => format!("{:06}", rand::rng().random_range(0..1_000_000u32)),
+    };
     let salt: [u8; 16] = rand::random();
     let mut tx = st.db.begin().await?;
     // A new code replaces older active ones.
@@ -127,7 +142,9 @@ pub async fn request_code(
     .await?;
     tx.commit().await?;
 
-    if let Err(e) = st.mailer.send_code(&email, &code).await {
+    if review.is_none()
+        && let Err(e) = st.mailer.send_code(&email, &code).await
+    {
         warn!(error = %e, "send code failed");
         return Err(err(
             ErrorCode::EmailSendFailed,
@@ -138,6 +155,18 @@ pub async fn request_code(
         StatusCode::ACCEPTED,
         Json(CodeResponse { retry_after_s: 60 }),
     ))
+}
+
+/// `/errors/account-banned`, with whom to write to (DESIGN §14).
+fn banned_error(st: &St) -> crate::error::ApiError {
+    let contact = match &st.cfg.report_email {
+        Some(e) => format!("write to {e}"),
+        None => "contact the server's operator".to_string(),
+    };
+    err(
+        ErrorCode::AccountBanned,
+        format!("This account has been banned. If you think this is a mistake, {contact}."),
+    )
 }
 
 #[derive(sqlx::FromRow)]
@@ -210,8 +239,8 @@ async fn sign_in(
         .attempts_left(left));
     }
 
-    let existing: Option<(i32, String, String)> =
-        sqlx::query_as("SELECT id, name, email FROM accounts WHERE lower(email) = $1")
+    let existing: Option<(i32, String, String, Option<Uuid>)> =
+        sqlx::query_as("SELECT id, name, email, avatar_id FROM accounts WHERE lower(email) = $1")
             .bind(&email)
             .fetch_optional(&st.db)
             .await?;
@@ -245,12 +274,27 @@ async fn sign_in(
             "That code was already used. Request a new one.",
         ));
     }
+    if let Some((id, ..)) = &existing {
+        // A ban in progress finishes first; this sign-in then sees it, or
+        // commits first and is ended by the ban (DESIGN §16).
+        let banned: bool = sqlx::query_scalar(
+            "SELECT banned_at IS NOT NULL FROM accounts WHERE id = $1 FOR SHARE",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if banned {
+            return Err(banned_error(st));
+        }
+    }
     let (account, new_account) = match existing {
-        Some((id, name, email)) => (
+        Some((id, name, email, avatar)) => (
             Account {
                 id,
                 name,
                 email: Some(email),
+                avatar_url: crate::avatar::url_of(&st.cfg, avatar),
+                admin: false,
             },
             false,
         ),
@@ -283,6 +327,8 @@ async fn sign_in(
                     id,
                     name,
                     email: Some(email.clone()),
+                    avatar_url: None,
+                    admin: false,
                 },
                 true,
             )

@@ -42,6 +42,42 @@ impl Mailer {
         info!(email, "login code sent");
         Ok(())
     }
+
+    /// API-061: tell `IMBO_REPORT_EMAIL` a report is waiting, with only the
+    /// admin page link: no names, no messages (ADR-039).
+    pub async fn send_report(&self, cfg: &Config, report: i64) -> anyhow::Result<()> {
+        let addr = cfg
+            .report_email
+            .as_deref()
+            .context("IMBO_REPORT_EMAIL is not set")?;
+        let to: Mailbox = addr.parse().context("IMBO_REPORT_EMAIL")?;
+        let link = report_link(cfg, report);
+        let Some(smtp) = &self.smtp else {
+            info!("mail-log-only report={report} to={addr} link={link}");
+            return Ok(());
+        };
+        smtp.send(report_message(self.from.clone(), to, &link)?)
+            .await
+            .context("smtp send")?;
+        info!(report_id = report, "report mail sent");
+        Ok(())
+    }
+}
+
+/// The admin page in the web app, opened on this report (PAGE-WEB-ADMIN).
+fn report_link(cfg: &Config, report: i64) -> String {
+    let web = cfg.web_origin.as_deref().unwrap_or("https://app.imbo.dev");
+    format!("{web}/admin?report={report}")
+}
+
+fn report_message(from: Mailbox, to: Mailbox, link: &str) -> anyhow::Result<Message> {
+    Ok(Message::builder()
+        .from(from)
+        .to(to)
+        .subject("New Imbo report")
+        .singlepart(SinglePart::plain(format!(
+            "A new report is waiting. Handle it within 24 hours:\n\n{link}\n"
+        )))?)
 }
 
 const CODE_HTML: &str = include_str!("mail_code.html");
@@ -79,6 +115,23 @@ fn code_message(from: Mailbox, to: Mailbox, code: &str) -> anyhow::Result<Messag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_email_has_only_the_link() {
+        let cfg = Config {
+            web_origin: Some("https://app.imbo.dev".into()),
+            ..Config::default()
+        };
+        let msg = report_message(
+            "Imbo <login@imbo.dev>".parse().unwrap(),
+            "support@imbo.test".parse().unwrap(),
+            &report_link(&cfg, 42),
+        )
+        .unwrap();
+        let raw = String::from_utf8(msg.formatted()).unwrap();
+        assert!(raw.contains("Subject: New Imbo report"));
+        assert!(raw.contains("https://app.imbo.dev/admin?report=42"));
+    }
 
     #[test]
     fn code_email_has_text_html_and_logo() {

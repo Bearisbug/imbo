@@ -200,7 +200,7 @@ async fn resolve_app(st: &St, token: &str) -> ApiResult<Caller> {
     })
 }
 
-async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
+pub(crate) async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
     let Some(token) = bearer(headers) else {
         if let Some(t) = cookie(headers, WEB_COOKIE) {
             return resolve_web(st, t).await;
@@ -295,10 +295,24 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::PUT, "/v1/app/push"),
     (Method::DELETE, "/v1/app/push"),
     (Method::DELETE, "/v1/account"),
+    (Method::PUT, "/v1/me/avatar"),
+    (Method::DELETE, "/v1/me/avatar"),
+    (Method::PUT, "/v1/groups/{id}/avatar"),
+    (Method::DELETE, "/v1/groups/{id}/avatar"),
+    (Method::POST, "/v1/blocks"),
+    (Method::GET, "/v1/blocks"),
+    (Method::DELETE, "/v1/blocks/{account_id}"),
+    (Method::POST, "/v1/reports"),
 ];
 
 /// What only the web app and the App may call.
 const WEB_ONLY: &[(Method, &str)] = &[
+    (Method::PUT, "/v1/me/avatar"),
+    (Method::DELETE, "/v1/me/avatar"),
+    (Method::POST, "/v1/blocks"),
+    (Method::GET, "/v1/blocks"),
+    (Method::DELETE, "/v1/blocks/{account_id}"),
+    (Method::POST, "/v1/reports"),
     (Method::POST, "/v1/agents/{id}/messages"),
     (Method::POST, "/v1/agents/{id}/read"),
     (Method::POST, "/v1/billing/checkout"),
@@ -362,7 +376,8 @@ pub async fn unread_count(st: &St, agent: Uuid) -> Result<i64, sqlx::Error> {
     .await
 }
 
-/// Request id, no-store, and the problem `instance` for every route.
+/// Request id, no-store unless the route set its own caching (API-047),
+/// and the problem `instance` for every route.
 pub async fn common(req: Request, next: Next) -> Response {
     let id = req
         .headers()
@@ -373,7 +388,9 @@ pub async fn common(req: Request, next: Next) -> Response {
         .unwrap_or_else(|| Uuid::now_v7().to_string());
     let mut res = REQUEST_ID.scope(id.clone(), next.run(req)).await;
     let h = res.headers_mut();
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if !h.contains_key(header::CACHE_CONTROL) {
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     if let Ok(v) = HeaderValue::from_str(&id) {
         h.insert(HEADER_REQUEST_ID, v);
     }

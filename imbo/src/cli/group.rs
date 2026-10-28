@@ -2,14 +2,16 @@
 
 use clap::Subcommand;
 use imbo_proto::api::{
-    AcceptResponse, AgentRef, AgentsResponse, GroupResponse, GroupView, GroupsResponse,
-    MySessionsResponse, RequestResponse, RequestsResponse,
+    AcceptResponse, AgentRef, AgentsResponse, AvatarResponse, GroupResponse, GroupView,
+    GroupsResponse, MySessionsResponse, RequestResponse, RequestsResponse,
 };
 use imbo_proto::text::validate_group_name;
 use serde_json::json;
 use uuid::Uuid;
 
-use super::{Reported, api, api_as, group_id, pad, tool_name};
+use super::{Reported, api, api_as, group_id, pad, report, tool_name};
+use crate::local::{Local, env_actor};
+use crate::paths::Home;
 use crate::ui;
 
 #[derive(Subcommand)]
@@ -62,6 +64,15 @@ pub enum GroupCmd {
         group: String,
         #[arg(long, short)]
         yes: bool,
+    },
+    /// Change the picture of a group you own (JPEG or PNG, up to 5 MB).
+    Avatar {
+        group: String,
+        #[arg(required_unless_present = "remove", conflicts_with = "remove")]
+        picture: Option<std::path::PathBuf>,
+        /// Remove the picture instead.
+        #[arg(long)]
+        remove: bool,
     },
 }
 
@@ -178,7 +189,55 @@ pub async fn run(cmd: GroupCmd) -> anyhow::Result<()> {
             ui::ok_line(&format!("Dissolved {}", ui::heading(&group)));
             Ok(())
         }
+        GroupCmd::Avatar {
+            group,
+            picture,
+            remove,
+        } => avatar(group, picture, remove).await,
     }
+}
+
+/// API-056 and API-057.
+async fn avatar(
+    group: String,
+    picture: Option<std::path::PathBuf>,
+    remove: bool,
+) -> anyhow::Result<()> {
+    let gid = group_id(&group).await?;
+    let path = format!("/v1/groups/{gid}/avatar");
+    let Some(picture) = picture.filter(|_| !remove) else {
+        api("DELETE", &path, None).await?;
+        ui::ok_line(&format!("Removed the picture of {}", ui::heading(&group)));
+        return Ok(());
+    };
+    let file = std::path::absolute(&picture)?
+        .to_string_lossy()
+        .into_owned();
+    let actor = env_actor().map_err(|p| report(&p))?;
+    let v = Local::new()
+        .call_picture("PUT", &path, file, actor)
+        .await
+        .map_err(|p| report(&p))?;
+    let r: AvatarResponse = serde_json::from_value(v).map_err(|e| {
+        anyhow::anyhow!("unexpected reply from the server ({e}); try `imbo setup` to update")
+    })?;
+    // A server without a domain gives a path on itself (API-045).
+    let url = match r.avatar_url.strip_prefix('/') {
+        Some(path) => {
+            let server = Home::resolve()
+                .credentials()
+                .map(|c| c.server)
+                .unwrap_or_default();
+            format!("{}/{path}", server.trim_end_matches('/'))
+        }
+        None => r.avatar_url,
+    };
+    ui::ok_line(&format!(
+        "Changed the picture of {}  {}",
+        ui::heading(&group),
+        ui::dim(url)
+    ));
+    Ok(())
 }
 
 fn print_group(g: &GroupView) {
