@@ -45,7 +45,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: dev::DevCmd,
     },
-    /// Payment records (Creem).
+    /// Payment records (Waffo).
     Billing {
         #[command(subcommand)]
         cmd: BillingCmd,
@@ -70,9 +70,13 @@ enum AccountCmd {
 
 #[derive(Subcommand)]
 enum BillingCmd {
-    /// Fetch a subscription from Creem and record it, for a webhook that never
-    /// arrived (RB-005). Uses the server's environment and DATABASE_URL.
-    Pull { subscription_id: String },
+    /// Fetch a subscription order from Waffo and record it, for a webhook that
+    /// never arrived (RB-005). Uses the server's environment and DATABASE_URL.
+    Pull { order_id: String },
+    /// Revoke a subscription: no access from now on, and cancel it at Waffo
+    /// without a refund (chargebacks, RB-007). Run it again if the
+    /// cancellation fails.
+    Revoke { order_id: String },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -94,8 +98,11 @@ fn main() -> anyhow::Result<()> {
             Cmd::Serve => serve().await,
             Cmd::Dev { cmd } => dev::run_cli(cmd).await,
             Cmd::Billing {
-                cmd: BillingCmd::Pull { subscription_id },
-            } => billing_pull(&subscription_id).await,
+                cmd: BillingCmd::Pull { order_id },
+            } => billing_pull(&order_id).await,
+            Cmd::Billing {
+                cmd: BillingCmd::Revoke { order_id },
+            } => billing_revoke(&order_id).await,
             Cmd::Account { cmd } => account_cmd(cmd).await,
         }
     })
@@ -175,37 +182,103 @@ async fn serve() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn billing_pull(id: &str) -> anyhow::Result<()> {
+/// The Waffo settings and database the billing commands work on.
+async fn billing_setup() -> anyhow::Result<(config::Waffo, db::Database)> {
     let cfg = config::Config::from_env()?;
-    let creem = cfg
-        .creem
+    let waffo = cfg
+        .waffo
         .clone()
-        .context("Creem is not configured (IMBO_CREEM_API_KEY and the rest)")?;
+        .context("Waffo is not configured (IMBO_WAFFO_MERCHANT_ID and the rest)")?;
     if cfg.database_url.is_none() {
-        anyhow::bail!("billing pull needs DATABASE_URL");
+        anyhow::bail!("billing commands need DATABASE_URL");
     }
     let database = db::open(&cfg).await?;
-    let sub = billing::fetch_subscription(&billing::http_client(), &creem, id)
+    Ok((waffo, database))
+}
+
+/// API-035: also cancels an order that still renews when its account is
+/// deleted or banned; the record stands even when Waffo can't cancel.
+async fn billing_pull(id: &str) -> anyhow::Result<()> {
+    let (waffo, database) = billing_setup().await?;
+    let http = billing::http_client();
+    let order = billing::fetch_order(&http, &waffo, id)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e.0.detail))?;
     let mut tx = database.pool.begin().await?;
-    let outcome =
-        billing::upsert_subscription(&mut tx, &creem, &sub, false, chrono::Utc::now()).await?;
+    let outcome = billing::record_pulled(&mut tx, &waffo, &order).await?;
+    let renews = matches!(
+        order["status"].as_str(),
+        Some("active" | "trialing" | "past_due")
+    ) && matches!(
+        outcome,
+        Some(billing::Outcome::Applied | billing::Outcome::Stale)
+    );
+    let gone = if renews {
+        billing::gone_account(&mut tx, id).await?
+    } else {
+        None
+    };
     tx.commit().await?;
     println!(
-        "{id}: {} (status {}, paid until {})",
+        "{id}: {} (status {}, period ends {})",
         match outcome {
-            billing::Outcome::Applied => "recorded",
-            billing::Outcome::Stale => "already up to date",
-            billing::Outcome::UnknownAccount => "no account in its metadata, not recorded",
-            billing::Outcome::UnknownProduct => "not one of the two plans, not recorded",
-            _ => "not recorded",
+            Some(billing::Outcome::Applied) => "recorded",
+            Some(billing::Outcome::Stale) => "already up to date",
+            Some(billing::Outcome::UnknownAccount) => "no account in its metadata, not recorded",
+            Some(billing::Outcome::UnknownProduct) => "not one of the two plans, not recorded",
+            _ => "a status that is never recorded",
         },
-        sub["status"].as_str().unwrap_or("?"),
-        sub["current_period_end_date"].as_str().unwrap_or("?"),
+        order["status"].as_str().unwrap_or("?"),
+        order["currentPeriodEnd"].as_str().unwrap_or("?"),
     );
+    let result = match gone {
+        None => Ok(()),
+        Some(account) => billing::cancel_order(&http, &waffo, id)
+            .await
+            .map(|()| {
+                println!(
+                    "{id}: account {account} is deleted or banned; canceled at Waffo, it won't renew."
+                )
+            })
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "{id}: account {account} is deleted or banned but Waffo did not cancel it ({}); run this again",
+                    e.0.detail
+                )
+            }),
+    };
     database.close().await;
-    Ok(())
+    result
+}
+
+/// RB-007: the revocation stands even when Waffo can't cancel.
+async fn billing_revoke(id: &str) -> anyhow::Result<()> {
+    if !billing::order_id_ok(id) {
+        anyhow::bail!("An order ID looks like ORD_…");
+    }
+    let (waffo, database) = billing_setup().await?;
+    let mut tx = database.pool.begin().await?;
+    let account = billing::revoke(&mut tx, id).await?;
+    tx.commit().await?;
+    let result = match account {
+        None => Err(anyhow::anyhow!(
+            "no subscription {id} is recorded; run `imbo-server billing pull {id}` first"
+        )),
+        Some(account) => {
+            println!("{id}: revoked; account {account} has no access from it any more.");
+            billing::cancel_order(&billing::http_client(), &waffo, id)
+                .await
+                .map(|()| println!("{id}: canceled at Waffo, it won't renew."))
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "{id} is revoked but Waffo did not cancel it ({}); run this again",
+                        e.0.detail
+                    )
+                })
+        }
+    };
+    database.close().await;
+    result
 }
 
 /// `imbo-server account ban|unban`. With the embedded database the server

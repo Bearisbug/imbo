@@ -17,7 +17,7 @@ pub struct AppState {
     pub hub: Hub,
     pub mailer: Mailer,
     pub limiter: Limiter,
-    /// For Creem's API.
+    /// For Waffo's API.
     pub http: reqwest::Client,
     /// Payment webhooks that failed the signature or processing (API-025).
     webhook_errors: Mutex<VecDeque<Instant>>,

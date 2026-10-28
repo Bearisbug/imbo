@@ -12,7 +12,7 @@ cases build on each other and must run in this order. A code can be asked
 for once a minute per email, so the run waits where it has to (about 3
 minutes in all).
 
-TC-145 needs Creem: afterwards `. crates/scripts/billing-env.sh`,
+TC-145 needs Waffo: afterwards `. crates/scripts/billing-env.sh`,
 `crates/scripts/local-env.sh server`, then `python3 crates/scripts/app-tests.py 145`.
 """
 
@@ -360,20 +360,20 @@ def tc144():
 def tc145():
     here = os.path.dirname(os.path.abspath(__file__))
     out = subprocess.run(
-        ["python3", f"{here}/creem-event.py", "subscription.paid", "--sub", "sub_t145",
+        ["python3", f"{here}/waffo-event.py", "subscription.activated", "--order", "ORD_t145",
          "--account", str(B), "--period-end", "+30d"],
         env=os.environ, capture_output=True, text=True,
     ).stdout
-    check(145, 1, "\n200" in out, "a paid subscription sub_t145 recorded for bob", out[-200:])
+    check(145, 1, "\n200" in out, "an active subscription ORD_t145 recorded for bob", out[-200:])
     r = app_login("bob@imbo.test")
     tb = r[1].get("token") if isinstance(r[1], dict) else None
-    before = log().count("creem refused")
+    before = log().count("waffo refused")
     r = call("DELETE", "/v1/account", token=tb, body={"confirm": "DELETE"})
     check(145, 2, problem(r, 502, "payment-provider-failed"),
-          "bob deletes his account, Creem can't cancel sub_t145: 502 payment-provider-failed", r[:2])
+          "bob deletes his account, Waffo can't cancel ORD_t145: 502 payment-provider-failed", r[:2])
     me = call("GET", "/v1/me", token=tb)
     code, _ = imbo("bob", "inbox")
-    refused = [line for line in log().splitlines() if "creem refused" in line][before:]
+    refused = [line for line in log().splitlines() if "waffo refused" in line][before:]
     check(145, 3, me[0] == 200 and code == 0 and len(refused) == 1 and "cancel" in refused[0],
           "nothing deleted: App and computer still signed in; the log has one refused cancel",
           (me[:2], code, refused))

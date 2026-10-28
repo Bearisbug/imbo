@@ -1,26 +1,31 @@
-//! Charging: who may send (RULE-007, RULE-008), Creem calls and webhooks
-//! (API-033–035, ADR-019–021).
+//! Charging: who may send (RULE-007, RULE-008), Waffo calls and webhooks
+//! (API-033–035, ADR-019–021, ADR-042).
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{DateTime, TimeDelta, Utc};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{AccessView, SubscriptionView};
+use ring::rand::SystemRandom;
+use ring::signature::{RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_SHA256, UnparsedPublicKey};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
 use tracing::{info, warn};
 
-use crate::config::{Config, Creem};
+use crate::config::{Config, Waffo, rsa_key_pair};
 use crate::error::{ApiError, ApiResult, err};
 use crate::state::St;
 
 pub const TRIAL: TimeDelta = TimeDelta::days(30);
 /// Active and past-due subscriptions keep access this long after the
-/// paid-through date, while Creem retries the renewal.
+/// paid-through date, while Waffo retries the renewal.
 pub const PAST_DUE_GRACE: TimeDelta = TimeDelta::days(3);
-const CREEM_TIMEOUT: Duration = Duration::from_secs(10);
+const WAFFO_TIMEOUT: Duration = Duration::from_secs(10);
+const WAFFO_API: &str = "https://api.waffo.ai";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Access {
@@ -54,7 +59,6 @@ impl Access {
 #[derive(sqlx::FromRow, Clone, Debug)]
 pub struct SubRow {
     pub account_id: i32,
-    pub customer_id: String,
     pub plan: String,
     pub status: String,
     pub paid_until: DateTime<Utc>,
@@ -89,15 +93,15 @@ pub async fn subscriptions(
     cfg: &Config,
     accounts: &[i32],
 ) -> Result<Vec<SubRow>, sqlx::Error> {
-    let Some(creem) = &cfg.creem else {
+    let Some(waffo) = &cfg.waffo else {
         return Ok(vec![]);
     };
     sqlx::query_as(
-        "SELECT account_id, customer_id, plan, status, paid_until, revoked_at FROM subscriptions
-         WHERE account_id = ANY($1) AND mode = $2 ORDER BY creem_updated_at DESC",
+        "SELECT account_id, plan, status, paid_until, revoked_at FROM subscriptions
+         WHERE account_id = ANY($1) AND mode = $2 ORDER BY provider_updated_at DESC",
     )
     .bind(accounts)
-    .bind(creem.mode())
+    .bind(waffo.mode())
     .fetch_all(db)
     .await
 }
@@ -186,7 +190,7 @@ pub async fn require_active(st: &St, account: i32, endpoint: &str) -> ApiResult<
     ))
 }
 
-// ---- Creem API ----
+// ---- Waffo API ----
 
 fn provider_failed() -> ApiError {
     err(
@@ -197,139 +201,252 @@ fn provider_failed() -> ApiError {
 
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(CREEM_TIMEOUT)
+        .timeout(WAFFO_TIMEOUT)
         .build()
         .expect("build HTTP client")
 }
 
-async fn creem_call(creem: &Creem, req: reqwest::RequestBuilder, what: &str) -> ApiResult<Value> {
-    let res = req
-        .header("x-api-key", &creem.api_key)
+/// Why a Waffo call returned no data.
+#[derive(Debug)]
+enum Refusal {
+    /// Waffo answered with this error.
+    Said(String),
+    /// No answer, or an answer without data.
+    Silent,
+}
+
+impl From<Refusal> for ApiError {
+    fn from(_: Refusal) -> Self {
+        provider_failed()
+    }
+}
+
+/// `X-Signature`: RSA-SHA256 of `POST\n<path>\n<timestamp>\n<base64 SHA-256 of the body>`.
+fn request_signature(waffo: &Waffo, path: &str, timestamp: &str, body: &[u8]) -> Option<String> {
+    let canonical = format!(
+        "POST\n{path}\n{timestamp}\n{}",
+        STANDARD.encode(Sha256::digest(body))
+    );
+    let key = rsa_key_pair(&waffo.key)?;
+    let mut sig = vec![0; key.public().modulus_len()];
+    key.sign(
+        &RSA_PKCS1_SHA256,
+        &SystemRandom::new(),
+        canonical.as_bytes(),
+        &mut sig,
+    )
+    .ok()?;
+    Some(STANDARD.encode(sig))
+}
+
+/// A signed call to Waffo's API; the response envelope's `data`.
+async fn waffo_post(
+    http: &reqwest::Client,
+    waffo: &Waffo,
+    path: &str,
+    body: &Value,
+    what: &str,
+) -> Result<Value, Refusal> {
+    let body = body.to_string().into_bytes();
+    let timestamp = Utc::now().timestamp().to_string();
+    let signature = request_signature(waffo, path, &timestamp, &body).ok_or_else(|| {
+        warn!(what, "signing a waffo request failed");
+        Refusal::Silent
+    })?;
+    let res = http
+        .post(format!("{WAFFO_API}{path}"))
+        .header("content-type", "application/json")
+        .header("x-merchant-id", &waffo.merchant_id)
+        .header("x-timestamp", timestamp)
+        .header("x-signature", signature)
+        .body(body)
         .send()
         .await
         .map_err(|e| {
-            warn!(error = %e, what, "creem request failed");
-            provider_failed()
+            warn!(error = %e, what, "waffo request failed");
+            Refusal::Silent
         })?;
     let status = res.status();
-    let body: Value = res.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        warn!(%status, what, trace = %body["trace_id"], message = %body["message"], "creem refused");
-        return Err(provider_failed());
+    let mut envelope: Value = res.json().await.unwrap_or(Value::Null);
+    if let Some(message) = envelope["errors"][0]["message"].as_str() {
+        warn!(%status, what, message, "waffo refused");
+        return Err(Refusal::Said(message.to_string()));
     }
-    Ok(body)
+    if !status.is_success() || envelope["data"].is_null() {
+        warn!(%status, what, "waffo refused");
+        return Err(Refusal::Silent);
+    }
+    Ok(envelope["data"].take())
 }
 
 /// API-033: a hosted checkout for `plan`, paid by `email`, tied to `account`.
+/// `with_trial` puts the first charge 30 days out (ADR-019).
 pub async fn create_checkout(
     st: &St,
-    creem: &Creem,
+    waffo: &Waffo,
     account: i32,
     email: &str,
     plan: &str,
+    with_trial: bool,
 ) -> ApiResult<String> {
-    let product = if plan == "yearly" {
-        &creem.product_yearly
-    } else {
-        &creem.product_monthly
-    };
+    let product = waffo.product(plan);
+    let identity = account.to_string();
+    let mut session = json!({
+        "productId": product,
+        "currency": "USD",
+        "buyerEmail": email,
+        "expiresInSeconds": 3600,
+        "metadata": { "account_id": identity },
+        "withTrial": with_trial,
+    });
     let success = format!(
         "{}/account?checkout=done",
         st.cfg.web_origin.as_deref().unwrap_or("")
     );
-    let mut body = json!({
-        "product_id": product,
-        "customer": { "email": email },
-        "metadata": { "account_id": account.to_string() },
-    });
-    if success.starts_with("http") {
-        body["success_url"] = json!(success);
+    // The payment page refuses any other return address when the buyer pays.
+    if success.starts_with("https://") {
+        session["successUrl"] = json!(success);
     }
-    let req = st
-        .http
-        .post(format!("{}/v1/checkouts", creem.api_base()))
-        .json(&body);
-    let v = creem_call(creem, req, "checkout").await?;
-    v["checkout_url"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(provider_failed)
+    let token = json!({ "productId": product, "buyerIdentity": identity });
+    let (token, session) = tokio::try_join!(
+        waffo_post(
+            &st.http,
+            waffo,
+            "/v1/actions/auth/issue-session-token",
+            &token,
+            "session token"
+        ),
+        waffo_post(
+            &st.http,
+            waffo,
+            "/v1/actions/checkout/create-session",
+            &session,
+            "checkout"
+        ),
+    )?;
+    // The token signs in as the buyer: never log the URL.
+    match (session["checkoutUrl"].as_str(), token["token"].as_str()) {
+        (Some(url), Some(token)) => Ok(format!("{url}#token={token}")),
+        _ => {
+            warn!("waffo checkout without a URL or token");
+            Err(provider_failed())
+        }
+    }
 }
 
-/// API-034: Creem's customer page for `customer`.
-pub async fn portal_link(st: &St, creem: &Creem, customer: &str) -> ApiResult<String> {
-    let req = st
-        .http
-        .post(format!("{}/v1/customers/billing", creem.api_base()))
-        .json(&json!({ "customer_id": customer }));
-    let v = creem_call(creem, req, "portal").await?;
-    v["customer_portal_link"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(provider_failed)
+/// API-034: Waffo's customer page for `account`, signed in by the URL.
+pub async fn portal_link(st: &St, waffo: &Waffo, account: i32) -> ApiResult<String> {
+    let body = json!({
+        "storeId": waffo.store_id,
+        "buyerIdentity": account.to_string(),
+        "purpose": "portal",
+    });
+    let v = waffo_post(
+        &st.http,
+        waffo,
+        "/v1/actions/auth/issue-session-token",
+        &body,
+        "portal",
+    )
+    .await?;
+    match (v["portalUrl"].as_str(), v["token"].as_str()) {
+        (Some(url), Some(token)) => Ok(format!("{url}#token={token}")),
+        _ => {
+            warn!("waffo portal without a URL or token");
+            Err(provider_failed())
+        }
+    }
 }
 
-/// API-052, API-066, API-070: end a subscription now, without a refund.
-pub async fn cancel_subscription(http: &reqwest::Client, creem: &Creem, id: &str) -> ApiResult<()> {
-    let req = http
-        .post(format!("{}/v1/subscriptions/{id}/cancel", creem.api_base()))
-        .json(&json!({ "mode": "immediate" }));
-    creem_call(creem, req, "cancel").await?;
-    Ok(())
+/// API-052, API-066, API-070, RB-007: stop renewing, without a refund. An
+/// active order ends at its period end, a past-due one at once. Waffo
+/// refusing because the order is already canceled counts as canceled.
+pub async fn cancel_order(http: &reqwest::Client, waffo: &Waffo, id: &str) -> ApiResult<()> {
+    let body = json!({ "orderId": id });
+    match waffo_post(
+        http,
+        waffo,
+        "/v1/actions/subscription-order/cancel-order",
+        &body,
+        "cancel",
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(Refusal::Said(m)) if already_canceled(&m) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
-/// `imbo-server billing pull`: Creem's current record of a subscription.
-pub async fn fetch_subscription(
-    http: &reqwest::Client,
-    creem: &Creem,
-    id: &str,
-) -> ApiResult<Value> {
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+/// `Subscription cannot be canceled, current status: <status>` for an order
+/// that no longer renews.
+fn already_canceled(message: &str) -> bool {
+    message
+        .split_once("current status: ")
+        .is_some_and(|(_, s)| matches!(s.trim(), "canceling" | "canceled" | "expired" | "closed"))
+}
+
+/// An order ID as Waffo writes them, `ORD_…`.
+pub fn order_id_ok(id: &str) -> bool {
+    id.len() > 4
+        && id.starts_with("ORD_")
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `imbo-server billing pull`: Waffo's current record of a subscription order.
+pub async fn fetch_order(http: &reqwest::Client, waffo: &Waffo, id: &str) -> ApiResult<Value> {
+    if !order_id_ok(id) {
         return Err(err(
             ErrorCode::InvalidRequest,
-            "A subscription ID looks like sub_…",
+            "An order ID looks like ORD_…",
         ));
     }
-    let req = http.get(format!(
-        "{}/v1/subscriptions?subscription_id={id}",
-        creem.api_base()
-    ));
-    creem_call(creem, req, "subscription").await
+    let query = json!({
+        "query": "query($id: String!) { subscriptionOrder(id: $id) { id status billingPeriod \
+                  currentPeriodEnd updatedAt metadata merchantProvidedBuyerIdentity } }",
+        "variables": { "id": id },
+    });
+    let mut v = waffo_post(http, waffo, "/v1/graphql", &query, "subscription order").await?;
+    let order = v["subscriptionOrder"].take();
+    if order.is_null() {
+        return Err(err(
+            ErrorCode::NotFound,
+            format!("Waffo has no subscription order {id} in this environment."),
+        ));
+    }
+    Ok(order)
 }
 
 // ---- webhooks (API-035) ----
 
-fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut k = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        k[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        k[..key.len()].copy_from_slice(key);
+/// `X-Waffo-Signature: t=<ms>,v1=<base64>`: RSA-SHA256 of `<t>.<body>` under
+/// `key`, with `t` at most 45 minutes old and 1 minute ahead of `now`.
+pub fn signature_ok(key: &[u8], body: &[u8], header: &str, now: DateTime<Utc>) -> bool {
+    let (mut t, mut v1) = (None, None);
+    for pair in header.split(',') {
+        match pair.split_once('=') {
+            Some((k, v)) if k.trim() == "t" => t = Some(v.trim()),
+            Some((k, v)) if k.trim() == "v1" => v1 = Some(v.trim()),
+            _ => {}
+        }
     }
-    let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
-    let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
-    let inner = Sha256::new()
-        .chain_update(&ipad)
-        .chain_update(msg)
-        .finalize();
-    Sha256::new()
-        .chain_update(&opad)
-        .chain_update(inner)
-        .finalize()
-        .into()
-}
-
-/// `creem-signature` is the hex HMAC-SHA256 of the raw body.
-pub fn signature_ok(secret: &str, body: &[u8], signature: &str) -> bool {
-    let want = hex::encode(hmac_sha256(secret.as_bytes(), body));
-    let got = signature.trim().to_ascii_lowercase();
-    want.len() == got.len()
-        && want
-            .bytes()
-            .zip(got.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            == 0
+    let (Some(t), Some(v1)) = (t, v1) else {
+        return false;
+    };
+    let Ok(ms) = t.parse::<i64>() else {
+        return false;
+    };
+    let age = now.timestamp_millis() - ms;
+    if !(-60_000..=45 * 60_000).contains(&age) {
+        return false;
+    }
+    let Ok(sig) = STANDARD.decode(v1) else {
+        return false;
+    };
+    let signed = [t.as_bytes(), b".", body].concat();
+    UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, key)
+        .verify(&signed, &sig)
+        .is_ok()
 }
 
 /// What a webhook did, for the log.
@@ -341,7 +458,7 @@ pub enum Outcome {
     Stale,
     UnknownAccount,
     WrongMode,
-    /// A product other than the two plans.
+    /// A billing period other than the two plans.
     UnknownProduct,
     /// A type that doesn't change subscriptions.
     Stored,
@@ -360,60 +477,61 @@ impl Outcome {
     }
 }
 
-/// An id that Creem sends either as a string or as an expanded object.
-fn id_of(v: &Value) -> Option<String> {
-    v.as_str()
-        .map(str::to_string)
-        .or_else(|| v["id"].as_str().map(str::to_string))
-}
-
 fn time_of(v: &Value) -> Option<DateTime<Utc>> {
     v.as_str()
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|t| t.with_timezone(&Utc))
 }
 
-pub fn event_subscription(kind: &str, obj: &Value) -> Option<String> {
-    match kind {
-        "checkout.completed" => id_of(&obj["subscription"]),
-        k if k.starts_with("subscription.") => id_of(obj),
-        _ => id_of(&obj["subscription"]).or_else(|| id_of(&obj["transaction"]["subscription"])),
-    }
+/// `currentPeriodEnd` is a date in notices and a time in GraphQL; the period
+/// ends at the end of that UTC day either way.
+fn period_end(v: &Value) -> Option<DateTime<Utc>> {
+    let day = match time_of(v) {
+        Some(t) => t.date_naive(),
+        None => NaiveDate::parse_from_str(v.as_str()?, "%Y-%m-%d").ok()?,
+    };
+    Some(day.succ_opt()?.and_hms_opt(0, 0, 0)?.and_utc())
 }
 
-/// Record a subscription object as Creem describes it, with the account from
-/// its metadata. `keep_paid_until` leaves the paid-through date alone
-/// (past-due, expired, paused).
+/// The account in an order: our `account_id` metadata, else the buyer identity.
+fn account_of(data: &Value) -> Option<i32> {
+    let meta = &data["orderMetadata"]["account_id"];
+    meta.as_str()
+        .and_then(|s| s.parse().ok())
+        .or_else(|| meta.as_i64().and_then(|n| i32::try_from(n).ok()))
+        .or_else(|| {
+            data["merchantProvidedBuyerIdentity"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+        })
+}
+
+/// Record an order as `status`, from an event's `data` (or `billing pull`'s
+/// copy of one), if `updated` is newer than what is recorded, or equal to it
+/// and `apply_ties`. `keep_paid_until` leaves the paid-through date alone;
+/// otherwise it moves to `currentPeriodEnd` when the data has one.
 pub async fn upsert_subscription(
     tx: &mut PgConnection,
-    creem: &Creem,
-    sub: &Value,
+    waffo: &Waffo,
+    data: &Value,
+    status: &str,
     keep_paid_until: bool,
-    fallback_time: DateTime<Utc>,
+    updated: DateTime<Utc>,
+    apply_ties: bool,
 ) -> Result<Outcome, sqlx::Error> {
-    let Some(id) = id_of(sub) else {
+    let Some(id) = data["orderId"].as_str() else {
         return Ok(Outcome::Stored);
     };
-    let customer = id_of(&sub["customer"]).unwrap_or_default();
-    let product = id_of(&sub["product"]).unwrap_or_default();
-    let metadata = &sub["metadata"];
-    let Some(plan) = creem.plan_of(&product) else {
-        return Ok(Outcome::UnknownProduct);
+    let plan = match data["billingPeriod"].as_str() {
+        Some(p @ ("monthly" | "yearly")) => p,
+        _ => return Ok(Outcome::UnknownProduct),
     };
-    let status = sub["status"].as_str().unwrap_or("active").to_string();
-    let updated = time_of(&sub["updated_at"]).unwrap_or(fallback_time);
-    let period_end = time_of(&sub["current_period_end_date"]);
-
     let existing: Option<i32> =
         sqlx::query_scalar("SELECT account_id FROM subscriptions WHERE id = $1 FOR UPDATE")
-            .bind(&id)
+            .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
-    let from_metadata = metadata["account_id"]
-        .as_str()
-        .and_then(|s| s.parse::<i32>().ok())
-        .or_else(|| metadata["account_id"].as_i64().map(|n| n as i32));
-    let account = match (existing, from_metadata) {
+    let account = match (existing, account_of(data)) {
         (Some(a), _) => a,
         (None, Some(a)) => {
             let known: bool =
@@ -428,28 +546,28 @@ pub async fn upsert_subscription(
         }
         (None, None) => return Ok(Outcome::UnknownAccount),
     };
-    // A first record without a period end (checkout.completed) is paid through
-    // now; the renewal grace covers it until subscription.paid brings the end.
+    // A first record without a period end is paid through now; the renewal
+    // grace covers it until an event brings the end.
     let changed = sqlx::query(
-        "INSERT INTO subscriptions (id, mode, account_id, customer_id, plan, status, paid_until, creem_updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, coalesce($7, now()), $8)
+        "INSERT INTO subscriptions (id, mode, account_id, plan, status, paid_until, provider_updated_at)
+         VALUES ($1, $2, $3, $4, $5, coalesce($6, now()), $7)
          ON CONFLICT (id) DO UPDATE SET
-           customer_id = CASE WHEN EXCLUDED.customer_id = '' THEN subscriptions.customer_id ELSE EXCLUDED.customer_id END,
            plan = EXCLUDED.plan,
            status = EXCLUDED.status,
-           paid_until = CASE WHEN $9 THEN subscriptions.paid_until ELSE coalesce($7, subscriptions.paid_until) END,
-           creem_updated_at = EXCLUDED.creem_updated_at
-         WHERE subscriptions.creem_updated_at <= EXCLUDED.creem_updated_at",
+           paid_until = CASE WHEN $8 THEN subscriptions.paid_until ELSE coalesce($6, subscriptions.paid_until) END,
+           provider_updated_at = EXCLUDED.provider_updated_at
+         WHERE subscriptions.provider_updated_at < EXCLUDED.provider_updated_at
+            OR ($9 AND subscriptions.provider_updated_at = EXCLUDED.provider_updated_at)",
     )
-    .bind(&id)
-    .bind(creem.mode())
+    .bind(id)
+    .bind(waffo.mode())
     .bind(account)
-    .bind(&customer)
     .bind(plan)
-    .bind(&status)
-    .bind(period_end)
+    .bind(status)
+    .bind(period_end(&data["currentPeriodEnd"]))
     .bind(updated)
     .bind(keep_paid_until)
+    .bind(apply_ties)
     .execute(&mut *tx)
     .await?;
     Ok(if changed.rows_affected() == 0 {
@@ -459,82 +577,173 @@ pub async fn upsert_subscription(
     })
 }
 
+/// Record an order fetched by `billing pull` as API-035's table would.
+/// `None` for the states that are never recorded.
+pub async fn record_pulled(
+    tx: &mut PgConnection,
+    waffo: &Waffo,
+    order: &Value,
+) -> Result<Option<Outcome>, sqlx::Error> {
+    let (status, keep) = match order["status"].as_str() {
+        Some("active" | "trialing") => ("active", false),
+        Some("past_due") => ("past_due", true),
+        Some("canceling") => ("scheduled_cancel", false),
+        Some("canceled") => ("canceled", true),
+        _ => return Ok(None),
+    };
+    // Waffo returns the metadata as a JSON string.
+    let metadata = order["metadata"]
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| order["metadata"].clone());
+    let data = json!({
+        "orderId": order["id"],
+        "orderMetadata": metadata,
+        "merchantProvidedBuyerIdentity": order["merchantProvidedBuyerIdentity"],
+        "billingPeriod": order["billingPeriod"],
+        "currentPeriodEnd": order["currentPeriodEnd"],
+    });
+    let updated = time_of(&order["updatedAt"]).unwrap_or_else(Utc::now);
+    Ok(Some(
+        upsert_subscription(tx, waffo, &data, status, keep, updated, false).await?,
+    ))
+}
+
+/// RULE-007: the subscription stops granting access from now on. Its account,
+/// if it is recorded.
+pub async fn revoke(tx: &mut PgConnection, id: &str) -> Result<Option<i32>, sqlx::Error> {
+    sqlx::query_scalar(
+        "UPDATE subscriptions SET revoked_at = coalesce(revoked_at, now()) WHERE id = $1
+         RETURNING account_id",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+}
+
+/// The account of a recorded subscription, if it is deleted or banned.
+pub async fn gone_account(tx: &mut PgConnection, id: &str) -> Result<Option<i32>, sqlx::Error> {
+    let gone: Option<(i32, bool)> = sqlx::query_as(
+        "SELECT a.id, a.banned_at IS NOT NULL OR EXISTS (SELECT 1 FROM deleted_accounts d WHERE d.id = a.id)
+         FROM subscriptions s JOIN accounts a ON a.id = s.account_id WHERE s.id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    Ok(gone.and_then(|(account, gone)| gone.then_some(account)))
+}
+
+/// A deleted or banned account's order renews again: it withdrew its
+/// cancellation at Waffo's customer page, or paid a checkout opened before.
+/// Cancel it (API-035).
+async fn cancel_if_gone(
+    tx: &mut PgConnection,
+    st: &St,
+    waffo: &Waffo,
+    id: &str,
+    why: &str,
+) -> ApiResult<()> {
+    let Some(account) = gone_account(tx, id).await? else {
+        return Ok(());
+    };
+    cancel_order(&st.http, waffo, id).await.map_err(|_| {
+        err(
+            ErrorCode::Unavailable,
+            "Waffo did not take the cancellation; deliver this again later.",
+        )
+    })?;
+    info!(account_id = account, subscription_id = id, "{why}");
+    Ok(())
+}
+
 /// Store one verified webhook and apply it, in one transaction (INV-015).
-pub async fn handle_event(st: &St, creem: &Creem, event: &Value) -> ApiResult<Outcome> {
-    let (Some(id), Some(kind)) = (event["id"].as_str(), event["eventType"].as_str()) else {
+pub async fn handle_event(st: &St, waffo: &Waffo, event: &Value) -> ApiResult<Outcome> {
+    let (Some(kind), Some(event_id)) = (event["eventType"].as_str(), event["eventId"].as_str())
+    else {
         return Err(err(
             ErrorCode::InvalidRequest,
-            "Expected a Creem event with id and eventType.",
+            "Expected a Waffo event with eventType and eventId.",
         ));
     };
-    let obj = &event["object"];
-    let sub_id = event_subscription(kind, obj);
-    let received = event["created_at"]
-        .as_i64()
-        .and_then(DateTime::from_timestamp_millis)
-        .unwrap_or_else(Utc::now);
+    let data = &event["data"];
+    let order = data["orderId"].as_str();
+    let updated = time_of(&event["timestamp"]).unwrap_or_else(Utc::now);
 
     let mut tx = st.db.begin().await?;
+    // One order's events can share an event ID, so the type is part of the key.
     let inserted = sqlx::query(
         "INSERT INTO billing_events (id, type, subscription_id, payload) VALUES ($1, $2, $3, $4)
          ON CONFLICT (id) DO NOTHING",
     )
-    .bind(id)
+    .bind(format!("{kind}:{event_id}"))
     .bind(kind)
-    .bind(&sub_id)
+    .bind(order)
     .bind(sqlx::types::Json(event))
     .execute(&mut *tx)
     .await?;
     if inserted.rows_affected() == 0 {
         return Ok(Outcome::Duplicate);
     }
-    // Creem calls live mode `prod`; anything else is a test mode.
-    let live = obj["mode"].as_str() == Some("prod");
-    let outcome = if live != (creem.mode() == "live") {
+    let live = event["mode"].as_str() == Some("prod");
+    let outcome = if live != waffo.live {
         Outcome::WrongMode
     } else {
         match kind {
-            "checkout.completed" if obj["subscription"].is_object() => {
-                // The checkout carries the customer, product and our metadata.
-                let mut sub = obj["subscription"].clone();
-                for key in ["customer", "product", "metadata"] {
-                    if !obj[key].is_null() {
-                        sub[key] = obj[key].clone();
-                    }
+            "subscription.activated" => {
+                let o = upsert_subscription(&mut tx, waffo, data, "active", false, updated, true)
+                    .await?;
+                if o == Outcome::Applied
+                    && let Some(id) = order
+                {
+                    let why = "deleted or banned account paid; canceled";
+                    cancel_if_gone(&mut tx, st, waffo, id, why).await?;
                 }
-                upsert_subscription(&mut tx, creem, &sub, false, received).await?
+                o
             }
-            "subscription.active"
-            | "subscription.paid"
-            | "subscription.update"
-            | "subscription.scheduled_cancel"
-            | "subscription.canceled" => {
-                upsert_subscription(&mut tx, creem, obj, false, received).await?
+            "subscription.renewed" | "subscription.recovered" => {
+                upsert_subscription(&mut tx, waffo, data, "active", false, updated, true).await?
             }
-            "subscription.past_due" | "subscription.expired" | "subscription.paused" => {
-                upsert_subscription(&mut tx, creem, obj, true, received).await?
+            "subscription.past_due" => {
+                upsert_subscription(&mut tx, waffo, data, "past_due", true, updated, true).await?
             }
-            "refund.created" | "dispute.created" => {
-                let r = sqlx::query(
-                    "UPDATE subscriptions SET revoked_at = coalesce(revoked_at, now()) WHERE id = $1",
+            "subscription.canceling" => {
+                upsert_subscription(
+                    &mut tx,
+                    waffo,
+                    data,
+                    "scheduled_cancel",
+                    false,
+                    updated,
+                    true,
                 )
-                .bind(&sub_id)
-                .execute(&mut *tx)
-                .await?;
-                if r.rows_affected() == 0 {
-                    Outcome::UnknownAccount
-                } else {
-                    Outcome::Applied
-                }
+                .await?
             }
+            "subscription.uncanceled" => {
+                let o = upsert_subscription(&mut tx, waffo, data, "active", true, updated, true)
+                    .await?;
+                if matches!(o, Outcome::Applied | Outcome::Stale)
+                    && let Some(id) = order
+                {
+                    let why = "deleted or banned account withdrew its cancellation; canceled again";
+                    cancel_if_gone(&mut tx, st, waffo, id, why).await?;
+                }
+                o
+            }
+            "subscription.canceled" => {
+                upsert_subscription(&mut tx, waffo, data, "canceled", true, updated, true).await?
+            }
+            "refund.succeeded" => match order {
+                Some(id) if revoke(&mut tx, id).await?.is_some() => Outcome::Applied,
+                _ => Outcome::UnknownAccount,
+            },
             _ => Outcome::Stored,
         }
     };
     tx.commit().await?;
     if outcome == Outcome::Applied
-        && (kind.starts_with("subscription.") || kind.starts_with("checkout."))
-        && let Some(sub) = &sub_id
-        && let Err(e) = warn_if_duplicate(st, sub).await
+        && kind.starts_with("subscription.")
+        && let Some(id) = order
+        && let Err(e) = warn_if_duplicate(st, id).await
     {
         warn!(error = %e, "duplicate subscription check failed");
     }
@@ -574,44 +783,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hmac_matches_rfc4231_case_2() {
-        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+    fn period_end_is_the_next_utc_midnight() {
         assert_eq!(
-            hex::encode(mac),
-            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+            period_end(&json!("2026-04-10")),
+            Some(t("2026-04-11T00:00:00Z"))
+        );
+        assert_eq!(
+            period_end(&json!("2026-04-10T22:58:48.000Z")),
+            Some(t("2026-04-11T00:00:00Z"))
+        );
+        assert_eq!(period_end(&Value::Null), None);
+    }
+
+    #[test]
+    fn account_from_metadata_then_buyer_identity() {
+        assert_eq!(
+            account_of(&json!({"orderMetadata": {"account_id": "12345678"}})),
+            Some(12345678)
+        );
+        assert_eq!(
+            account_of(&json!({"orderMetadata": {"account_id": 7}})),
+            Some(7)
+        );
+        assert_eq!(
+            account_of(&json!({"orderMetadata": {}, "merchantProvidedBuyerIdentity": "42"})),
+            Some(42)
+        );
+        assert_eq!(
+            account_of(&json!({"orderMetadata": {"planId": "pro"}})),
+            None
         );
     }
 
     #[test]
-    fn long_keys_are_hashed_first() {
-        // RFC 4231 test case 6: a 131-byte key.
-        let key = [0xaau8; 131];
-        let mac = hmac_sha256(
-            &key,
-            b"Test Using Larger Than Block-Size Key - Hash Key First",
-        );
-        assert_eq!(
-            hex::encode(mac),
-            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
-        );
+    fn refusals_that_mean_canceled() {
+        let m = |s| format!("Subscription cannot be canceled, current status: {s}");
+        for s in ["canceling", "canceled", "expired", "closed"] {
+            assert!(already_canceled(&m(s)), "{s}");
+        }
+        for s in ["trialing", "active", "past_due", "pending"] {
+            assert!(!already_canceled(&m(s)), "{s}");
+        }
+        assert!(!already_canceled("Order not found"));
     }
 
     #[test]
-    fn signature_compares_hex() {
-        let sig = hex::encode(hmac_sha256(b"s", b"{}"));
-        assert!(signature_ok("s", b"{}", &sig));
-        assert!(signature_ok("s", b"{}", &sig.to_uppercase()));
-        assert!(!signature_ok("t", b"{}", &sig));
-        assert!(!signature_ok("s", b"{}", ""));
+    fn order_ids() {
+        assert!(order_id_ok("ORD_5dXBtmF2HLlHfbPNm0Wcnz"));
+        assert!(!order_id_ok("ORD_"));
+        assert!(!order_id_ok("sub_123"));
+        assert!(!order_id_ok("ORD_a/b"));
+    }
+
+    #[test]
+    fn signature_header_needs_t_and_v1_in_time() {
+        let now = t("2026-10-28T00:00:00Z");
+        let key = [0u8; 4];
+        assert!(!signature_ok(&key, b"{}", "", now));
+        assert!(!signature_ok(&key, b"{}", "v1=AAAA", now));
+        let old = now.timestamp_millis() - 46 * 60_000;
+        assert!(!signature_ok(&key, b"{}", &format!("t={old},v1=AAAA"), now));
     }
 
     fn cfg_on() -> Config {
         Config {
-            creem: Some(Creem {
-                api_key: "creem_test_x".into(),
-                webhook_secret: "s".into(),
-                product_monthly: "prod_m".into(),
-                product_yearly: "prod_y".into(),
+            waffo: Some(Waffo {
+                merchant_id: "MER_x".into(),
+                store_id: "STO_x".into(),
+                key: vec![],
+                live: false,
+                product_monthly: "PROD_m".into(),
+                product_yearly: "PROD_y".into(),
+                webhook_key: vec![],
             }),
             billing_start: Some("2026-11-01T00:00:00Z".parse().unwrap()),
             ..Config::default()
@@ -621,7 +864,6 @@ mod tests {
     fn sub(status: &str, paid_until: &str, revoked: bool) -> SubRow {
         SubRow {
             account_id: 1,
-            customer_id: "cust".into(),
             plan: "monthly".into(),
             status: status.into(),
             paid_until: paid_until.parse().unwrap(),
@@ -659,11 +901,11 @@ mod tests {
         // Cancelled: no grace.
         let s = sub("canceled", "2026-12-10T00:00:00Z", false);
         assert!(!decide(&cfg, t("2026-12-11T00:00:00Z"), early, &[&s]).active());
-        // Refunded or disputed: nothing, even inside the period.
+        // Refunded or revoked: nothing, even inside the period.
         let s = sub("active", "2026-12-10T00:00:00Z", true);
         assert!(!decide(&cfg, t("2026-12-05T00:00:00Z"), early, &[&s]).active());
-        // Paused or expired: nothing.
-        let s = sub("paused", "2026-12-10T00:00:00Z", false);
+        // Any other status: nothing.
+        let s = sub("expired", "2026-12-10T00:00:00Z", false);
         assert!(!decide(&cfg, t("2026-12-05T00:00:00Z"), early, &[&s]).active());
         // Billing off: free.
         let mut off = cfg_on();

@@ -12,7 +12,7 @@ with real HTTP requests.
 Prints PASS or FAIL for every step and writes each case's lines to
 docs/test-runs/<run>-tc-NNN.txt; exits 1 when any step failed. The cases
 build on each other and run in order; with TC numbers given, only those
-run (each still needs the ones before it). TC-189 needs Creem: run it last,
+run (each still needs the ones before it). TC-189 needs Waffo: run it last,
 alone, after `. crates/scripts/billing-env.sh` and `local-env.sh server`.
 
 Needs macOS `sips` to make and read the test pictures. Verification codes,
@@ -854,7 +854,7 @@ def tc181(g177):
     rep = r[1].get("report", {}) if isinstance(r[1], dict) else {}
     check(181, 1, r[0] == 200 and rep.get("status") == "actioned" and rep.get("action") == "ban"
           and rep.get("target", {}).get("banned") is True and r[1].get("subscription_canceled") is True,
-          "admin resolves alice's report on carol with ban: actioned, target banned, subscription_canceled true (no Creem)",
+          "admin resolves alice's report on carol with ban: actioned, target banned, subscription_canceled true (no Waffo)",
           brief(r))
     time.sleep(1.5)
     m1 = call("GET", "/v1/me", token=TC)
@@ -1231,17 +1231,17 @@ def tc190():
 
 def tc189():
     e = E[6]
-    out = subprocess.run(["python3", f"{HERE}/creem-event.py", "subscription.paid", "--sub", "sub_t189",
+    out = subprocess.run(["python3", f"{HERE}/waffo-event.py", "subscription.activated", "--order", "ORD_t189",
                           "--account", str(e), "--period-end", "+30d"],
                          env=os.environ, capture_output=True, text=True).stdout
-    check(189, 1, "\n200" in out, "a paid subscription sub_t189 recorded for e7", out[-200:])
-    before = log().count("creem refused")
+    check(189, 1, "\n200" in out, "an active subscription ORD_t189 recorded for e7", out[-200:])
+    before = log().count("waffo refused")
     r1 = call("POST", f"/v1/admin/accounts/{e}/ban", cookie=CK["admin"], origin=True)
     r2 = call("POST", f"/v1/admin/accounts/{e}/ban", cookie=CK["admin"], origin=True)
-    refused = log().count("creem refused") - before
+    refused = log().count("waffo refused") - before
     check(189, 2, r1[0] == 200 and r1[1]["subscription_canceled"] is False and r1[1]["account"].get("banned_at")
           and r2[0] == 200 and r2[1]["subscription_canceled"] is False and refused == 2,
-          "ban e7, Creem refuses the cancel: 200, banned, subscription_canceled false; again retries it: false; 2 refusals logged",
+          "ban e7, Waffo refuses the cancel: 200, banned, subscription_canceled false; again retries it: false; 2 refusals logged",
           (brief(r1), brief(r2), refused))
     t = E_APP[6]
     m = call("GET", "/v1/me", token=t)
@@ -1314,7 +1314,7 @@ if __name__ == "__main__":
         except Exception:  # report and go on with the next case
             check(n, "-", False, "crashed", traceback.format_exc()[-600:])
         write(run, n, header)
-    # TC-189 runs later, after the server restarts with Creem.
+    # TC-189 runs later, after the server restarts with Waffo.
     json.dump({"E": E, "E_APP": E_APP, "admin_cookie": CK["admin"]}, open(f"{L}/safety-state.json", "w"))
     shutil.rmtree(PIC, ignore_errors=True)
     print(f"{FAILS} failed")

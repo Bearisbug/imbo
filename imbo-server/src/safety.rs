@@ -232,28 +232,27 @@ pub async fn ban_tx(tx: &mut PgConnection, target: i32, by: Option<i32>) -> ApiR
     })
 }
 
-/// Cancel the account's subscriptions that still renew, at Creem, without
-/// a refund. Nothing to cancel, or no Creem configured, counts as done.
+/// Cancel the account's subscriptions that still renew, at Waffo, without
+/// a refund. Nothing to cancel, or no Waffo configured, counts as done.
 pub async fn cancel_subscriptions(
     db: &PgPool,
     cfg: &Config,
     http: &reqwest::Client,
     account: i32,
 ) -> ApiResult<()> {
-    let Some(creem) = &cfg.creem else {
+    let Some(waffo) = &cfg.waffo else {
         return Ok(());
     };
     let live: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM subscriptions
-         WHERE account_id = $1 AND mode = $2 AND revoked_at IS NULL
-           AND status NOT IN ('canceled', 'scheduled_cancel', 'expired')",
+         WHERE account_id = $1 AND mode = $2 AND status IN ('active', 'past_due')",
     )
     .bind(account)
-    .bind(creem.mode())
+    .bind(waffo.mode())
     .fetch_all(db)
     .await?;
     for id in live {
-        billing::cancel_subscription(http, creem, &id).await?;
+        billing::cancel_order(http, waffo, &id).await?;
     }
     Ok(())
 }

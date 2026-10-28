@@ -109,7 +109,7 @@ pub async fn delete_account(
 /// then everything in one transaction. Groups it owns are dissolved with a
 /// notice ending "because <why>."
 pub(crate) async fn delete_now(st: &St, me: i32, why: &str) -> ApiResult<()> {
-    // Stop charging first; if Creem can't, nothing is deleted.
+    // Stop charging first; if Waffo can't, nothing is deleted.
     safety::cancel_subscriptions(&st.db, &st.cfg, &st.http, me).await?;
 
     let mut tx = st.db.begin().await?;

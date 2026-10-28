@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, NaiveDate, Utc};
+use ring::signature::RsaKeyPair;
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -25,7 +28,7 @@ pub struct Config {
     pub backup_stamp: Option<PathBuf>,
     pub min_client_version: String,
     /// Payments; `None` means nobody is charged and the web app hides billing (ADR-021).
-    pub creem: Option<Creem>,
+    pub waffo: Option<Waffo>,
     /// First day of charging; unset means everyone is free (RULE-007).
     pub billing_start: Option<DateTime<Utc>>,
     /// The web app's origin, the only one allowed cross-origin with cookies (ADR-023).
@@ -55,55 +58,71 @@ impl std::fmt::Debug for Review {
     }
 }
 
+/// Waffo, the payment platform (ADR-042).
 #[derive(Clone)]
-pub struct Creem {
-    pub api_key: String,
-    pub webhook_secret: String,
+pub struct Waffo {
+    pub merchant_id: String,
+    pub store_id: String,
+    /// The API private key (PKCS#8 or PKCS#1 DER), checked at startup. A key
+    /// belongs to the environment it was made in.
+    pub key: Vec<u8>,
+    /// `IMBO_WAFFO_ENV=prod`: real cards. `test`: test cards only (ADR-021).
+    pub live: bool,
     pub product_monthly: String,
     pub product_yearly: String,
+    /// The RSAPublicKey (DER) that webhooks are verified with (API-035).
+    pub webhook_key: Vec<u8>,
 }
 
-impl std::fmt::Debug for Creem {
+impl std::fmt::Debug for Waffo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Creem({} mode)", self.mode())
+        write!(f, "Waffo({} mode)", self.mode())
     }
 }
 
-impl Creem {
-    /// `test` for `creem_test_` keys, otherwise `live` (ADR-021).
+impl Waffo {
+    /// `test` or `live`, as stored on subscriptions and shown by API-032.
     pub fn mode(&self) -> &'static str {
-        if self.api_key.starts_with("creem_test_") {
-            "test"
-        } else {
-            "live"
-        }
+        if self.live { "live" } else { "test" }
     }
 
-    pub fn api_base(&self) -> &'static str {
-        if self.mode() == "test" {
-            "https://test-api.creem.io"
+    pub fn product(&self, plan: &str) -> &str {
+        if plan == "yearly" {
+            &self.product_yearly
         } else {
-            "https://api.creem.io"
-        }
-    }
-
-    pub fn plan_of(&self, product: &str) -> Option<&'static str> {
-        if product == self.product_monthly {
-            Some("monthly")
-        } else if product == self.product_yearly {
-            Some("yearly")
-        } else {
-            None
+            &self.product_monthly
         }
     }
 }
 
-fn creem_from_env() -> anyhow::Result<Option<Creem>> {
+// Waffo's webhook signing keys, as published in @waffo/pancake-ts 0.26.0.
+const WAFFO_TEST_WEBHOOK_KEY: &str = "-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxnmRY6yMMA3lVqmAU6ZG
+b1sjL/+r/z6E+ZjkXaDAKiqOhk9rpazni0bNsGXwmftTPk9jy2wn+j6JHODD/WH/
+SCnSfvKkLIjy4Hk7BuCgB174C0ydan7J+KgXLkOwgCAxxB68t2tezldwo74ZpXgn
+F49opzMvQ9prEwIAWOE+kV9iK6gx/AckSMtHIHpUesoPDkldpmFHlB2qpf1vsFTZ
+5kD6DmGl+2GIVK01aChy2lk8pLv0yUMu18v44sLkO5M44TkGPJD9qG09wrvVG2wp
+OTVCn1n5pP8P+HRLcgzbUB3OlZVfdFurn6EZwtyL4ZD9kdkQ4EZE/9inKcp3c1h4
+xwIDAQAB
+-----END PUBLIC KEY-----";
+const WAFFO_PROD_WEBHOOK_KEY: &str = "-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz+xApdTIb4ua+DgZKQ54
+iBsD82ybyhGCLRETONW4Jgbb3A8DUM1LqBk6r/CmTOCHqLalTQHNigvP3R5zkDNX
+iRJz6gA4MJ/+8K0+mnEE2RISQzN+Qu65TNd6svb+INm/kMaftY4uIXr6y6kchtTJ
+dwnQhcKdAL2v7h7IFnkVelQsKxDdb2PqX8xX/qwd01iXvMcpCCaXovUwZsxH2QN5
+ZKBTseJivbhUeyJCco4fdUyxOMHe2ybCVhyvim2uxAl1nkvL5L8RCWMCAV55LLo0
+9OhmLahz/DYNu13YLVP6dvIT09ZFBYU6Owj1NxdinTynlJCFS9VYwBgmftosSE1U
+dwIDAQAB
+-----END PUBLIC KEY-----";
+
+fn waffo_from_env() -> anyhow::Result<Option<Waffo>> {
     let names = [
-        "IMBO_CREEM_API_KEY",
-        "IMBO_CREEM_WEBHOOK_SECRET",
-        "IMBO_CREEM_PRODUCT_MONTHLY",
-        "IMBO_CREEM_PRODUCT_YEARLY",
+        "IMBO_WAFFO_MERCHANT_ID",
+        "IMBO_WAFFO_STORE_ID",
+        "IMBO_WAFFO_PRIVATE_KEY",
+        "IMBO_WAFFO_ENV",
+        "IMBO_WAFFO_PRODUCT_MONTHLY",
+        "IMBO_WAFFO_PRODUCT_YEARLY",
     ];
     let vals: Vec<Option<String>> = names.iter().map(|n| var(n)).collect();
     if vals.iter().all(Option::is_none) {
@@ -117,12 +136,81 @@ fn creem_from_env() -> anyhow::Result<Option<Creem>> {
         );
     }
     let mut v = vals.into_iter().map(Option::unwrap_or_default);
-    Ok(Some(Creem {
-        api_key: v.next().unwrap_or_default(),
-        webhook_secret: v.next().unwrap_or_default(),
-        product_monthly: v.next().unwrap_or_default(),
-        product_yearly: v.next().unwrap_or_default(),
+    let mut next = || v.next().unwrap_or_default();
+    let (merchant_id, store_id, key, env) = (next(), next(), next(), next());
+    let live = match env.as_str() {
+        "prod" => true,
+        "test" => false,
+        _ => bail!("IMBO_WAFFO_ENV must be test or prod"),
+    };
+    let key = pem_der(&key)
+        .filter(|der| rsa_key_pair(der).is_some())
+        .context("IMBO_WAFFO_PRIVATE_KEY is not an RSA private key (PEM or base64)")?;
+    // Local tests sign their own webhooks; only the test environment allows that.
+    let webhook_pem = match var("IMBO_WAFFO_WEBHOOK_PUBLIC_KEY") {
+        Some(k) if !live => k,
+        _ if live => WAFFO_PROD_WEBHOOK_KEY.to_string(),
+        _ => WAFFO_TEST_WEBHOOK_KEY.to_string(),
+    };
+    let webhook_key = pem_der(&webhook_pem)
+        .and_then(|der| spki_rsa(&der))
+        .context("IMBO_WAFFO_WEBHOOK_PUBLIC_KEY is not an RSA public key (PEM)")?;
+    Ok(Some(Waffo {
+        merchant_id,
+        store_id,
+        key,
+        live,
+        product_monthly: next(),
+        product_yearly: next(),
+        webhook_key,
     }))
+}
+
+pub fn rsa_key_pair(der: &[u8]) -> Option<RsaKeyPair> {
+    RsaKeyPair::from_pkcs8(der)
+        .or_else(|_| RsaKeyPair::from_der(der))
+        .ok()
+}
+
+/// The DER inside a PEM block, or a bare base64 key; `\n` may stand for newlines.
+fn pem_der(raw: &str) -> Option<Vec<u8>> {
+    let b64: String = raw
+        .replace("\\n", "\n")
+        .split("-----")
+        .step_by(2)
+        .flat_map(str::chars)
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    STANDARD.decode(b64).ok()
+}
+
+/// The RSAPublicKey inside a SubjectPublicKeyInfo; ring verifies with the former.
+fn spki_rsa(der: &[u8]) -> Option<Vec<u8>> {
+    let (spki, _) = der_item(der, 0x30)?;
+    let (_algorithm, rest) = der_item(spki, 0x30)?;
+    let (bits, _) = der_item(rest, 0x03)?;
+    let (&unused, key) = bits.split_first()?;
+    (unused == 0).then(|| key.to_vec())
+}
+
+/// The contents of the DER item at the start of `der` if its tag is `tag`,
+/// and what follows it.
+fn der_item(der: &[u8], tag: u8) -> Option<(&[u8], &[u8])> {
+    let (&t, rest) = der.split_first()?;
+    let (&first, rest) = rest.split_first()?;
+    let (len, rest) = if first < 0x80 {
+        (first as usize, rest)
+    } else {
+        let n = (first & 0x7f) as usize;
+        if n == 0 || n > 4 || rest.len() < n {
+            return None;
+        }
+        let len = rest[..n]
+            .iter()
+            .fold(0usize, |acc, b| acc << 8 | *b as usize);
+        (len, &rest[n..])
+    };
+    (t == tag && rest.len() >= len).then(|| rest.split_at(len))
 }
 
 /// Both IMBO_REVIEW_EMAIL and IMBO_REVIEW_CODE, or no review sign-in.
@@ -212,7 +300,7 @@ impl Config {
             dev: flag("IMBO_DEV"),
             backup_stamp: var("IMBO_BACKUP_STAMP").map(PathBuf::from),
             min_client_version: var("IMBO_MIN_CLIENT_VERSION").unwrap_or_else(|| "0.1.0".into()),
-            creem: creem_from_env()?,
+            waffo: waffo_from_env()?,
             billing_start: billing_start_from_env()?,
             web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),
             expo_access_token: var("IMBO_EXPO_ACCESS_TOKEN"),
@@ -241,9 +329,9 @@ impl Config {
         (r.email == email.to_lowercase()).then_some(r.code.as_str())
     }
 
-    /// RULE-007: charging needs both Creem and a start day.
+    /// RULE-007: charging needs both Waffo and a start day.
     pub fn billing_on(&self) -> bool {
-        self.creem.is_some() && self.billing_start.is_some()
+        self.waffo.is_some() && self.billing_start.is_some()
     }
 
     pub fn signup_allowed(&self, email: &str) -> bool {
@@ -255,5 +343,41 @@ impl Config {
             .map(|(_, d)| d.to_lowercase())
             .unwrap_or_default();
         self.signup_domains.contains(&domain)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The modulus and exponent of an RSAPublicKey.
+    fn rsa_parts(der: &[u8]) -> Option<(&[u8], &[u8])> {
+        let (key, _) = der_item(der, 0x30)?;
+        let (n, rest) = der_item(key, 0x02)?;
+        let (e, _) = der_item(rest, 0x02)?;
+        Some((n, e))
+    }
+
+    #[test]
+    fn webhook_keys_are_rsa_2048() {
+        for pem in [WAFFO_TEST_WEBHOOK_KEY, WAFFO_PROD_WEBHOOK_KEY] {
+            let key = pem_der(pem).and_then(|der| spki_rsa(&der)).unwrap();
+            let (n, e) = rsa_parts(&key).unwrap();
+            // A leading zero, then 2048 bits.
+            assert_eq!(n.len(), 257);
+            assert_eq!(e, [1, 0, 1]);
+        }
+    }
+
+    #[test]
+    fn pem_bare_and_escaped_read_the_same() {
+        let der = pem_der(WAFFO_TEST_WEBHOOK_KEY).unwrap();
+        let bare: String = WAFFO_TEST_WEBHOOK_KEY
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        assert_eq!(pem_der(&bare), Some(der.clone()));
+        let escaped = WAFFO_TEST_WEBHOOK_KEY.replace('\n', "\\n");
+        assert_eq!(pem_der(&escaped), Some(der));
     }
 }

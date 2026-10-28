@@ -117,7 +117,7 @@ pub fn router(st: St) -> Router {
         .route("/v1/health", get(health::health))
         .route("/v1/web/session", post(auth::web_login))
         .route("/v1/app/session", post(auth::app_login))
-        .route("/v1/billing/creem/webhook", post(billing::webhook))
+        .route("/v1/billing/waffo/webhook", post(billing::webhook))
         .route("/v1/avatars/{file}", get(avatars::get));
     if st.cfg.dev {
         public = public

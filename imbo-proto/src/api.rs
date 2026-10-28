@@ -475,7 +475,7 @@ pub struct ReadResponse {
 pub struct SubscriptionView {
     /// `monthly` or `yearly`.
     pub plan: String,
-    /// Creem's status as received.
+    /// `active`, `past_due`, `scheduled_cancel` or `canceled` (API-035).
     pub status: String,
     pub paid_until: DateTime<Utc>,
 }
@@ -483,7 +483,7 @@ pub struct SubscriptionView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BillingResponse {
     pub enabled: bool,
-    /// `test` or `live`; absent when Creem is not configured.
+    /// `test` or `live`; absent when Waffo is not configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     pub access: AccessView,

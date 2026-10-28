@@ -40,6 +40,8 @@ rustls-acme = { version = "0.15", default-features = false, features = ["ring", 
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "macros"] }
 tokio-stream = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+# RSA signatures for Waffo's API and webhooks; already in the tree through rustls.
+ring = "0.17"
 
 [lints]
 workspace = true

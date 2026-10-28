@@ -20,7 +20,7 @@ start_daemon() {
   [ "$1" = bob ] && ch=$CODEX_HOME
   mkdir -p "$ch"
   # The payment keys are for the server only.
-  env -u IMBO_CREEM_API_KEY -u IMBO_CREEM_WEBHOOK_SECRET CODEX_HOME=$ch IMBO_HOME=$L/$1 \
+  env -u IMBO_WAFFO_PRIVATE_KEY CODEX_HOME=$ch IMBO_HOME=$L/$1 \
     nohup "$I" daemon >> "$L/$1/daemon.log" 2>&1 &
 }
 

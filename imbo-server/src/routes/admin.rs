@@ -642,13 +642,13 @@ pub async fn stats(State(st): State<St>) -> ApiResult<Json<StatsResponse>> {
             messages,
         })
         .collect();
-    let subs: Vec<billing::SubRow> = match &st.cfg.creem {
-        Some(creem) => {
+    let subs: Vec<billing::SubRow> = match &st.cfg.waffo {
+        Some(waffo) => {
             sqlx::query_as(
-                "SELECT account_id, customer_id, plan, status, paid_until, revoked_at FROM subscriptions
+                "SELECT account_id, plan, status, paid_until, revoked_at FROM subscriptions
                  WHERE mode = $1",
             )
-            .bind(creem.mode())
+            .bind(waffo.mode())
             .fetch_all(&st.db)
             .await?
         }

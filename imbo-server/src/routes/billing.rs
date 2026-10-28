@@ -1,5 +1,5 @@
 //! API-032 getBilling, API-033 createCheckout, API-034 openPortal,
-//! API-035 creemWebhook.
+//! API-035 waffoWebhook.
 
 use std::time::Duration;
 
@@ -14,13 +14,13 @@ use tracing::{info, warn};
 use super::Body;
 use crate::auth::Caller;
 use crate::billing;
-use crate::config::Creem;
+use crate::config::Waffo;
 use crate::error::{ApiResult, err};
 use crate::state::St;
 
-fn creem(st: &St) -> ApiResult<&Creem> {
+fn waffo(st: &St) -> ApiResult<&Waffo> {
     st.cfg
-        .creem
+        .waffo
         .as_ref()
         .ok_or_else(|| err(ErrorCode::NotFound, "This server does not take payments."))
 }
@@ -45,8 +45,8 @@ pub async fn get(
         .or(subs.first())
         .map(billing::SubRow::view);
     Ok(Json(BillingResponse {
-        enabled: st.cfg.creem.is_some(),
-        mode: st.cfg.creem.as_ref().map(|c| c.mode().to_string()),
+        enabled: st.cfg.waffo.is_some(),
+        mode: st.cfg.waffo.as_ref().map(|w| w.mode().to_string()),
         access: access.view(),
         trial_ends_at: st
             .cfg
@@ -62,7 +62,7 @@ pub async fn checkout(
     Extension(c): Extension<Caller>,
     Body(req): Body<CheckoutRequest>,
 ) -> ApiResult<Json<CheckoutResponse>> {
-    let creem = creem(&st)?;
+    let waffo = waffo(&st)?;
     if req.plan != "monthly" && req.plan != "yearly" {
         return Err(err(
             ErrorCode::InvalidRequest,
@@ -95,13 +95,18 @@ pub async fn checkout(
         .bind(c.account_id)
         .fetch_one(&st.db)
         .await?;
+    // ADR-019: still in the trial, the first charge comes 30 days later.
+    let with_trial = matches!(
+        billing::access(&st.db, &st.cfg, c.account_id).await?,
+        billing::Access::Trial(_)
+    );
     let checkout_url =
-        billing::create_checkout(&st, creem, c.account_id, &email, &req.plan).await?;
+        billing::create_checkout(&st, waffo, c.account_id, &email, &req.plan, with_trial).await?;
     info!(
         event = "checkout_created",
         account_id = c.account_id,
         plan = %req.plan,
-        mode = creem.mode(),
+        mode = waffo.mode(),
         "checkout created"
     );
     Ok(Json(CheckoutResponse { checkout_url }))
@@ -111,30 +116,31 @@ pub async fn portal(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
 ) -> ApiResult<Json<PortalResponse>> {
-    let creem = creem(&st)?;
+    let waffo = waffo(&st)?;
     let subs = billing::subscriptions(&st.db, &st.cfg, &[c.account_id]).await?;
-    let Some(sub) = subs.first() else {
+    if subs.is_empty() {
         return Err(err(
             ErrorCode::NotFound,
             "You have no subscription to manage yet.",
         ));
-    };
-    let portal_url = billing::portal_link(&st, creem, &sub.customer_id).await?;
+    }
+    // A bearer link to the customer page: never log or keep it.
+    let portal_url = billing::portal_link(&st, waffo, c.account_id).await?;
     Ok(Json(PortalResponse { portal_url }))
 }
 
-/// Only Creem calls this; the signature is the only credential (ROLE-Creem).
+/// Only Waffo calls this; the signature is the only credential (ROLE-Waffo).
 pub async fn webhook(
     State(st): State<St>,
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<StatusCode> {
-    let creem = creem(&st)?;
+    let waffo = waffo(&st)?;
     let signature = headers
-        .get("creem-signature")
+        .get("x-waffo-signature")
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    if !billing::signature_ok(&creem.webhook_secret, &body, signature) {
+    if !billing::signature_ok(&waffo.webhook_key, &body, signature, chrono::Utc::now()) {
         st.note_webhook_error();
         warn!("payment webhook with a bad signature");
         return Err(err(ErrorCode::Unauthorized, "Bad signature."));
@@ -143,12 +149,11 @@ pub async fn webhook(
         st.note_webhook_error();
         err(ErrorCode::InvalidRequest, "The body is not JSON.")
     })?;
-    match billing::handle_event(&st, creem, &event).await {
+    match billing::handle_event(&st, waffo, &event).await {
         Ok(outcome) => {
-            let event_id = event["id"].as_str().unwrap_or_default();
+            let event_id = event["eventId"].as_str().unwrap_or_default();
             let kind = event["eventType"].as_str().unwrap_or_default();
-            let subscription_id =
-                billing::event_subscription(kind, &event["object"]).unwrap_or_default();
+            let subscription_id = event["data"]["orderId"].as_str().unwrap_or_default();
             let outcome = outcome.as_str();
             info!(
                 event = "billing_event",
