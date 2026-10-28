@@ -5,7 +5,8 @@ usage: zcode-drive.py <ZCode.app> <workdir> '<prompt>' [--then '<prompt>']… [-
                       [--watch SECONDS] [--model PROVIDER/MODEL] [--reasoning LEVEL]
 
 Starts the app-server the desktop app talks to (NDJSON over stdio) in the
-current HOME, opens a session in <workdir> in yolo mode with <prompt>, and
+current HOME, from the copy of ZCode's entry script that tool-home.sh puts in
+HOME/zcode-glm, opens a session in <workdir> in yolo mode with <prompt>, and
 prints `session <id>`, then each finished turn: its texts and tool calls.
 Each --then prompt is sent after the turn before it ends; --image pictures
 are pasted into the first of them. After the last prompt's turn it keeps
@@ -35,7 +36,8 @@ def out(*a):
 class Server:
     def __init__(self, app, cwd):
         env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
-        cmd = [f"{app}/Contents/MacOS/ZCode", f"{app}/Contents/Resources/glm/zcode.cjs", "app-server", "--stdio"]
+        entry = os.path.expanduser("~/zcode-glm/zcode.cjs")
+        cmd = [f"{app}/Contents/MacOS/ZCode", entry, "app-server", "--stdio"]
         self.p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL)
         self.next_id = 1

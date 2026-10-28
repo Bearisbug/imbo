@@ -45,7 +45,15 @@ cfg = {"schemaVersion": 1, "config": {
 json.dump(cfg, open(sys.argv[1], "w"))
 EOF
 ln -sfn "$ZCODE_APP" "$TH/Applications/ZCode.app"
-[ -e "$ZCODE_APP/Contents/Resources/glm/provider" ] || ln -s ../config/provider "$ZCODE_APP/Contents/Resources/glm/provider"
+# ZCode's CLI looks for its built-in provider next to its entry script. Don't
+# add it inside the app bundle: that breaks the bundle's signature and macOS
+# then reports ZCode as damaged. zcode-drive.py runs this copy of the entry
+# script instead, whose provider/ and packages/ point back into the bundle.
+ZG="$TH/zcode-glm" ZR="$ZCODE_APP/Contents/Resources"
+mkdir -p "$ZG"
+cp "$ZR/glm/zcode.cjs" "$ZG/"
+ln -sfn "$ZR/glm/packages" "$ZG/packages"
+ln -sfn "$ZR/config/provider" "$ZG/provider"
 
 KC="$HOME/Library/Keychains/login.keychain-db"
 env -i HOME="$TH" /usr/bin/security list-keychains -d user -s "$KC"
