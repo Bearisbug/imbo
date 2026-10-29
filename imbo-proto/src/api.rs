@@ -57,6 +57,13 @@ pub struct CodeResponse {
     pub retry_after_s: u64,
 }
 
+/// API-076: the new email and the code API-075 sent to it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailChangeRequest {
+    pub email: String,
+    pub code: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyRequest {
     pub email: String,

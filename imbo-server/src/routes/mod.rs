@@ -28,6 +28,8 @@ pub fn router(st: St) -> Router {
     let authed = Router::new()
         .route("/v1/auth/logout", post(me::logout))
         .route("/v1/me", get(me::get_me).patch(me::rename))
+        .route("/v1/me/email/code", post(auth::request_email_change))
+        .route("/v1/me/email", post(auth::change_email))
         .route("/v1/devices", get(me::list_devices))
         .route("/v1/devices/{id}", delete(me::revoke_device))
         .route("/v1/contacts/requests", post(contacts::request_contact))

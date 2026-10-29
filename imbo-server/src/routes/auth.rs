@@ -1,5 +1,5 @@
 //! API-001 requestCode, API-002 verifyCode, API-028 webLogin, API-029 webLogout,
-//! API-048 appLogin.
+//! API-048 appLogin, API-075 requestEmailChange, API-076 confirmEmailChange.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -12,13 +12,13 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    Account, AppLoginRequest, AppLoginResponse, CodeRequest, CodeResponse, VerifyRequest,
-    VerifyResponse, WebLoginRequest, WebLoginResponse,
+    Account, AccountResponse, AppLoginRequest, AppLoginResponse, CodeRequest, CodeResponse,
+    EmailChangeRequest, VerifyRequest, VerifyResponse, WebLoginRequest, WebLoginResponse,
 };
 use imbo_proto::text::{strip_control, valid_email, validate_name};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, Transaction};
+use sqlx::{PgExecutor, Postgres, Transaction};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -88,20 +88,44 @@ pub async fn request_code(
     if banned {
         return Err(banned_error(&st));
     }
-    let ip = client_ip(&headers, peer);
-    if let Err(wait) = st
-        .limiter
-        .hit(&format!("ip:{ip}"), 20, Duration::from_secs(3600))
-    {
-        return Err(err(
-            ErrorCode::RateLimited,
-            "Too many code requests from this network. Try again later.",
-        )
-        .retry_after(wait));
+    limit_ip(&st, &headers, peer)?;
+    wait_for_email(&st, &email).await?;
+
+    // The store reviewers' address gets the fixed code, and no mail.
+    let review = st.cfg.review_code(&email);
+    let code = match review {
+        Some(fixed) => fixed.to_string(),
+        None => new_code(),
+    };
+    store_code(&st, &email, None, &code).await?;
+    if review.is_none() {
+        mail_code(&st, &email, &code).await?;
     }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CodeResponse { retry_after_s: 60 }),
+    ))
+}
+
+/// At most 20 code requests an hour from one network, sign-in and email change together.
+fn limit_ip(st: &St, headers: &HeaderMap, peer: SocketAddr) -> ApiResult<()> {
+    let ip = client_ip(headers, peer);
+    st.limiter
+        .hit(&format!("ip:{ip}"), 20, Duration::from_secs(3600))
+        .map_err(|wait| {
+            err(
+                ErrorCode::RateLimited,
+                "Too many code requests from this network. Try again later.",
+            )
+            .retry_after(wait)
+        })
+}
+
+/// One code a minute to an email, whoever asks.
+async fn wait_for_email(st: &St, email: &str) -> ApiResult<()> {
     let last: Option<DateTime<Utc>> =
         sqlx::query_scalar("SELECT max(created_at) FROM email_codes WHERE lower(email) = $1")
-            .bind(&email)
+            .bind(email)
             .fetch_one(&st.db)
             .await?;
     if let Some(last) = last {
@@ -114,47 +138,50 @@ pub async fn request_code(
             .retry_after((60 - age).max(1) as u64));
         }
     }
+    Ok(())
+}
 
-    // The store reviewers' address gets the fixed code, and no mail.
-    let review = st.cfg.review_code(&email);
-    let code = match review {
-        Some(fixed) => fixed.to_string(),
-        None => format!("{:06}", rand::rng().random_range(0..1_000_000u32)),
-    };
+fn new_code() -> String {
+    format!("{:06}", rand::rng().random_range(0..1_000_000u32))
+}
+
+/// Keep a new code for this email in place of the active ones of its kind: a
+/// sign-in code has no account, an email-change code has the account that
+/// asked, and neither kind replaces or passes for the other (ADR-047).
+async fn store_code(st: &St, email: &str, account: Option<i32>, code: &str) -> ApiResult<()> {
     let salt: [u8; 16] = rand::random();
     let mut tx = st.db.begin().await?;
-    // A new code replaces older active ones.
     sqlx::query(
-        "UPDATE email_codes SET status = 'consumed' WHERE lower(email) = $1 AND status = 'active'",
+        "UPDATE email_codes SET status = 'consumed'
+         WHERE lower(email) = $1 AND account_id IS NOT DISTINCT FROM $2 AND status = 'active'",
     )
-    .bind(&email)
+    .bind(email)
+    .bind(account)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO email_codes (email, code_salt, code_hash, expires_at)
-         VALUES ($1, $2, $3, now() + make_interval(mins => $4))",
+        "INSERT INTO email_codes (email, account_id, code_salt, code_hash, expires_at)
+         VALUES ($1, $2, $3, $4, now() + make_interval(mins => $5))",
     )
-    .bind(&email)
+    .bind(email)
+    .bind(account)
     .bind(salt.as_slice())
-    .bind(code_hash(&salt, &code))
+    .bind(code_hash(&salt, code))
     .bind(CODE_TTL_MIN as i32)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    Ok(())
+}
 
-    if review.is_none()
-        && let Err(e) = st.mailer.send_code(&email, &code).await
-    {
+async fn mail_code(st: &St, email: &str, code: &str) -> ApiResult<()> {
+    st.mailer.send_code(email, code).await.map_err(|e| {
         warn!(error = %e, "send code failed");
-        return Err(err(
+        err(
             ErrorCode::EmailSendFailed,
             "The code could not be emailed. Try again in a minute.",
-        ));
-    }
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(CodeResponse { retry_after_s: 60 }),
-    ))
+        )
+    })
 }
 
 /// `/errors/account-banned`, with whom to write to (DESIGN §14).
@@ -178,22 +205,18 @@ struct CodeRow {
     expires_at: DateTime<Utc>,
 }
 
-/// Check the code and find or create the account. The code is consumed and
-/// the account written in the returned transaction; the caller adds its
-/// sign-in and commits.
-async fn sign_in(
-    st: &St,
-    email: &str,
-    code: &str,
-    name: Option<&String>,
-) -> ApiResult<(Transaction<'static, Postgres>, Account, bool)> {
-    let email = email.trim().to_lowercase();
-    let code = code.trim();
+/// The latest code of its kind for this email, if it matches: `account` is
+/// `None` for a sign-in code, or the account an email-change code is for. A
+/// wrong code counts toward the lock.
+async fn check_code(st: &St, email: &str, account: Option<i32>, code: &str) -> ApiResult<CodeRow> {
     let row: Option<CodeRow> = sqlx::query_as(
         "SELECT id, code_salt, code_hash, status, expires_at FROM email_codes
-         WHERE lower(email) = $1 AND status IN ('active', 'locked') ORDER BY id DESC LIMIT 1",
+         WHERE lower(email) = $1 AND account_id IS NOT DISTINCT FROM $2
+           AND status IN ('active', 'locked')
+         ORDER BY id DESC LIMIT 1",
     )
-    .bind(&email)
+    .bind(email)
+    .bind(account)
     .fetch_optional(&st.db)
     .await?;
     let Some(row) = row else {
@@ -238,6 +261,20 @@ async fn sign_in(
         )
         .attempts_left(left));
     }
+    Ok(row)
+}
+
+/// Check the code and find or create the account. The code is consumed and
+/// the account written in the returned transaction; the caller adds its
+/// sign-in and commits.
+async fn sign_in(
+    st: &St,
+    email: &str,
+    code: &str,
+    name: Option<&String>,
+) -> ApiResult<(Transaction<'static, Postgres>, Account, bool)> {
+    let email = email.trim().to_lowercase();
+    let row = check_code(st, &email, None, code.trim()).await?;
 
     let existing: Option<(i32, String, String, Option<Uuid>)> =
         sqlx::query_as("SELECT id, name, email, avatar_id FROM accounts WHERE lower(email) = $1")
@@ -480,5 +517,137 @@ pub async fn app_login(
         account,
         token,
         new_account,
+    }))
+}
+
+/// `/errors/email-taken`, for API-075 and API-076.
+fn email_taken() -> crate::error::ApiError {
+    err(
+        ErrorCode::EmailTaken,
+        "That email is already used by another Imbo account.",
+    )
+}
+
+/// Whether another account signs in with this email. A deleted account's
+/// email was replaced, so it holds none.
+async fn taken<'e>(db: impl PgExecutor<'e>, email: &str, me: i32) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM accounts WHERE lower(email) = $1 AND id <> $2)",
+    )
+    .bind(email)
+    .bind(me)
+    .fetch_one(db)
+    .await
+}
+
+/// API-075: send a code to the email the caller wants to sign in with. Only
+/// the new email gets one (ADR-047).
+pub async fn request_email_change(
+    State(st): State<St>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Extension(c): Extension<Caller>,
+    headers: HeaderMap,
+    Body(req): Body<CodeRequest>,
+) -> ApiResult<(StatusCode, Json<CodeResponse>)> {
+    let email = req.email.trim().to_lowercase();
+    if !valid_email(&email) {
+        return Err(err(
+            ErrorCode::InvalidEmail,
+            "That email address doesn't look right.",
+        ));
+    }
+    let current: String = sqlx::query_scalar("SELECT lower(email) FROM accounts WHERE id = $1")
+        .bind(c.account_id)
+        .fetch_one(&st.db)
+        .await?;
+    if email == current {
+        return Err(err(ErrorCode::InvalidEmail, "That's already your email."));
+    }
+    // The reviewers' address signs in with a fixed code; moving an account
+    // onto it would let anyone sign in to that account.
+    if st.cfg.review_code(&email).is_some() {
+        return Err(err(
+            ErrorCode::InvalidEmail,
+            "That email can't be used. Choose another one.",
+        ));
+    }
+    // Counted before the check below: a signed-in person could otherwise test
+    // any number of emails for an Imbo account.
+    limit_ip(&st, &headers, peer)?;
+    if taken(&st.db, &email, c.account_id).await? {
+        return Err(email_taken());
+    }
+    wait_for_email(&st, &email).await?;
+
+    let code = new_code();
+    store_code(&st, &email, Some(c.account_id), &code).await?;
+    mail_code(&st, &email, &code).await?;
+    info!(
+        event = "email_change_code",
+        account_id = c.account_id,
+        "email change code sent"
+    );
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CodeResponse { retry_after_s: 60 }),
+    ))
+}
+
+/// API-076: switch the caller's sign-in email once the code API-075 sent to it
+/// matches. Every sign-in stays, and the old email hears nothing (ADR-047).
+pub async fn change_email(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Body(req): Body<EmailChangeRequest>,
+) -> ApiResult<Json<AccountResponse>> {
+    let email = req.email.trim().to_lowercase();
+    let row = check_code(&st, &email, Some(c.account_id), req.code.trim()).await?;
+
+    let mut tx = st.db.begin().await?;
+    let consumed = sqlx::query(
+        "UPDATE email_codes SET status = 'consumed' WHERE id = $1 AND status = 'active'",
+    )
+    .bind(row.id)
+    .execute(&mut *tx)
+    .await?;
+    if consumed.rows_affected() == 0 {
+        return Err(err(
+            ErrorCode::CodeInvalid,
+            "That code was already used. Request a new one.",
+        ));
+    }
+    // Someone signed up with it after the code went out: the code is spent all the same.
+    if taken(&mut *tx, &email, c.account_id).await? {
+        tx.commit().await?;
+        return Err(email_taken());
+    }
+    // Two changes or a sign-up racing to the same email meet at the unique
+    // index; the later one rolls back (DESIGN §16).
+    let (name, avatar): (String, Option<Uuid>) = match sqlx::query_as(
+        "UPDATE accounts SET email = $2 WHERE id = $1 RETURNING name, avatar_id",
+    )
+    .bind(c.account_id)
+    .bind(&email)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => return Err(email_taken()),
+        r => r?,
+    };
+    tx.commit().await?;
+    let admin = c.web.is_some() && super::admin::is_admin(&st, c.account_id).await?;
+    info!(
+        event = "email_changed",
+        account_id = c.account_id,
+        "email changed"
+    );
+    Ok(Json(AccountResponse {
+        account: Account {
+            id: c.account_id,
+            name,
+            email: Some(email),
+            avatar_url: crate::avatar::url_of(&st.cfg, avatar),
+            admin,
+        },
     }))
 }

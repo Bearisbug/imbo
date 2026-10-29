@@ -244,7 +244,8 @@ pub(crate) async fn delete_now(st: &St, me: i32, why: &str) -> ApiResult<()> {
         .execute(&mut *tx)
         .await?;
     sqlx::query(
-        "DELETE FROM email_codes WHERE lower(email) = (SELECT lower(email) FROM accounts WHERE id = $1)",
+        "DELETE FROM email_codes
+         WHERE account_id = $1 OR lower(email) = (SELECT lower(email) FROM accounts WHERE id = $1)",
     )
     .bind(me)
     .execute(&mut *tx)

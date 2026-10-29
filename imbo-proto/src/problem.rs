@@ -22,6 +22,7 @@ pub enum ErrorCode {
     AlreadyContacts,
     RequestPending,
     RequestClosed,
+    EmailTaken,
     AlreadyMember,
     OwnerCannotLeave,
     AmbiguousRecipient,
@@ -60,7 +61,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 53] = [
+    pub const ALL: [ErrorCode; 54] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -79,6 +80,7 @@ impl ErrorCode {
         Self::AlreadyContacts,
         Self::RequestPending,
         Self::RequestClosed,
+        Self::EmailTaken,
         Self::AlreadyMember,
         Self::OwnerCannotLeave,
         Self::AmbiguousRecipient,
@@ -136,6 +138,7 @@ impl ErrorCode {
             Self::AlreadyContacts => "already-contacts",
             Self::RequestPending => "request-pending",
             Self::RequestClosed => "request-closed",
+            Self::EmailTaken => "email-taken",
             Self::AlreadyMember => "already-member",
             Self::OwnerCannotLeave => "owner-cannot-leave",
             Self::AmbiguousRecipient => "ambiguous-recipient",
@@ -208,6 +211,7 @@ impl ErrorCode {
             Self::AlreadyContacts
             | Self::RequestPending
             | Self::RequestClosed
+            | Self::EmailTaken
             | Self::AlreadyMember
             | Self::OwnerCannotLeave
             | Self::AmbiguousRecipient
@@ -254,6 +258,7 @@ impl ErrorCode {
             Self::AlreadyContacts => "Already contacts",
             Self::RequestPending => "Request already pending",
             Self::RequestClosed => "Request already handled",
+            Self::EmailTaken => "Email already in use",
             Self::AlreadyMember => "Already a member",
             Self::OwnerCannotLeave => "The group owner can't leave",
             Self::AmbiguousRecipient => "Recipient is ambiguous",

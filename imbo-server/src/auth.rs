@@ -311,10 +311,14 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::GET, "/v1/blocks"),
     (Method::DELETE, "/v1/blocks/{account_id}"),
     (Method::POST, "/v1/reports"),
+    (Method::POST, "/v1/me/email/code"),
+    (Method::POST, "/v1/me/email"),
 ];
 
 /// What only the web app and the App may call.
 const WEB_ONLY: &[(Method, &str)] = &[
+    (Method::POST, "/v1/me/email/code"),
+    (Method::POST, "/v1/me/email"),
     (Method::PUT, "/v1/me/avatar"),
     (Method::DELETE, "/v1/me/avatar"),
     (Method::POST, "/v1/blocks"),
