@@ -64,6 +64,10 @@ case "${1:-}" in
     # The fake App Store of apple-env.sh.
     [ -s "$L/apple/serve.pid" ] && kill "$(cat "$L/apple/serve.pid")" 2>/dev/null
     pkill -f "$I daemon"; pkill -f "$I mcp"; pkill -f "$I hook"; pkill -f "$I wait"; pkill -f "^$S"
+    # The server drains connections for up to 5 s; deleting its database
+    # under it leaves it hung on the port.
+    i=0; while pgrep -f "^$S" >/dev/null && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
+    pkill -9 -f "^$S"
     # Tools started with HOME=$TH or $TP, such as opencode's background
     # service and Hermes Agent's gateway.
     ps -axE -o pid=,command= | grep -E "HOME=($TH|$TP) " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null
