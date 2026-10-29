@@ -122,8 +122,9 @@ pub fn init() {
     cliclack::set_theme(Brand);
 }
 
+/// cliclack draws every question on stderr, so a redirected stderr can't ask (§13).
 pub fn is_interactive() -> bool {
-    console::Term::stderr().is_term() || std::fs::File::open("/dev/tty").is_ok()
+    console::Term::stderr().is_term()
 }
 
 pub fn ok_line(msg: &str) {
