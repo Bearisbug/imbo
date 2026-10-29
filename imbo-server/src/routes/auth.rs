@@ -571,6 +571,14 @@ pub async fn request_email_change(
             "That email can't be used. Choose another one.",
         ));
     }
+    // A server that takes sign-ups only from some domains keeps its accounts
+    // there too.
+    if !st.cfg.signup_allowed(&email) {
+        return Err(err(
+            ErrorCode::SignupClosed,
+            "This server doesn't accept emails from that domain.",
+        ));
+    }
     // Counted before the check below: a signed-in person could otherwise test
     // any number of emails for an Imbo account.
     limit_ip(&st, &headers, peer)?;
