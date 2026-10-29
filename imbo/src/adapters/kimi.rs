@@ -67,6 +67,7 @@ impl Adapter for Kimi {
             messaging_socket: None,
             messaging_token: None,
             pid,
+            config_dir: None,
         })
     }
 

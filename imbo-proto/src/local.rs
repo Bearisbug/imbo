@@ -17,6 +17,10 @@ pub enum LocalRequest {
         messaging_socket: Option<String>,
         messaging_token: Option<String>,
         pid: u32,
+        /// Claude Code's config directory for the session; older tool
+        /// processes don't send it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_dir: Option<String>,
     },
     /// API-LOCAL-002: forward one REST call with the device token.
     Call {

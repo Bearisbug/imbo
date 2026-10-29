@@ -81,12 +81,14 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             messaging_socket,
             messaging_token,
             pid,
+            config_dir,
         } => {
             let r = Registration {
                 session_id,
                 messaging_socket,
                 messaging_token,
                 pid,
+                config_dir,
             };
             if !d.sessions.lock().unwrap().register(&tool, r) {
                 return unknown_tool(&tool);

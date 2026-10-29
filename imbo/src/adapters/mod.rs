@@ -104,6 +104,9 @@ pub struct Registration {
     pub messaging_socket: Option<String>,
     pub messaging_token: Option<String>,
     pub pid: u32,
+    /// Where the tool keeps this session's files, when it isn't the
+    /// daemon's own directory.
+    pub config_dir: Option<String>,
 }
 
 /// A session an adapter knows of.
@@ -412,6 +415,7 @@ async fn hook_register(tool: &str, session_id: &str, pid: u32) {
         messaging_socket: None,
         messaging_token: None,
         pid,
+        config_dir: None,
     };
     let _ = Local::new().send_with(&req, Duration::from_secs(1)).await;
 }

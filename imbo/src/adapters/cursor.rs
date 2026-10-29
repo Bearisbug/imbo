@@ -88,6 +88,7 @@ impl Adapter for Cursor {
             messaging_socket: None,
             messaging_token: None,
             pid: unsafe { libc::getppid() } as u32,
+            config_dir: None,
         })
     }
 

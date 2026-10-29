@@ -62,6 +62,7 @@ async fn heartbeat(local: Arc<Local>, tool: &str, r: Registration) {
         messaging_socket: r.messaging_socket,
         messaging_token: r.messaging_token,
         pid: r.pid,
+        config_dir: r.config_dir,
     };
     loop {
         let _ = local.send_with(&req, Duration::from_secs(2)).await;
@@ -921,6 +922,7 @@ impl ServerHandler for Imbo {
                 messaging_socket: r.messaging_socket,
                 messaging_token: r.messaging_token,
                 pid: r.pid,
+                config_dir: r.config_dir,
             };
             let _ = self.local.send_with(&req, Duration::from_secs(2)).await;
         }

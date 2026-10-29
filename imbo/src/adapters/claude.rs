@@ -39,20 +39,22 @@ pub struct Claude {
     sessions: Mutex<BTreeMap<String, Session>>,
 }
 
-/// What the session's tool process registered: its Claude Code process
-/// and the messaging socket to insert through.
+/// What the session's tool process registered: its Claude Code process,
+/// the config directory it keeps its files in, and the messaging socket to
+/// insert through.
 struct Session {
     pid: u32,
+    dir: PathBuf,
     socket: Option<String>,
     token: Option<String>,
     failures: u32,
 }
 
 /// Liveness and title of a session's Claude Code process.
-fn found(session_id: &str, pid: u32) -> Found {
+fn found(session_id: &str, pid: u32, dir: &Path) -> Found {
     let online = alive(pid);
     let title = if online {
-        title(pid, session_id).unwrap_or_default()
+        title(pid, dir).unwrap_or_default()
     } else {
         String::new()
     };
@@ -102,6 +104,7 @@ impl Adapter for Claude {
             messaging_socket: env("CLAUDE_CODE_MESSAGING_SOCKET"),
             messaging_token: env("CLAUDE_CODE_MESSAGING_TOKEN"),
             pid,
+            config_dir: Some(config_dir().to_string_lossy().into_owned()),
         })
     }
 
@@ -121,33 +124,32 @@ impl Adapter for Claude {
         };
         let session = Session {
             pid: r.pid,
+            dir: r.config_dir.map(PathBuf::from).unwrap_or_else(config_dir),
             socket: r.messaging_socket,
             token: r.messaging_token,
             failures,
         };
-        map.insert(r.session_id.clone(), session);
-        Some(found(&r.session_id, r.pid))
+        let f = found(&r.session_id, session.pid, &session.dir);
+        map.insert(r.session_id, session);
+        Some(f)
     }
 
     /// A terminal command inside a session that hasn't registered: found
     /// through `~/.claude/sessions`, with no socket to insert through.
     fn adopt(&self, session_id: &str) -> Option<Found> {
         let mut map = self.sessions.lock().unwrap();
-        let pid = match map.get(session_id) {
-            Some(s) => s.pid,
-            None => {
-                let pid = pid_for(session_id)?;
-                let session = Session {
-                    pid,
-                    socket: None,
-                    token: None,
-                    failures: 0,
-                };
-                map.insert(session_id.into(), session);
-                pid
-            }
-        };
-        Some(found(session_id, pid))
+        if !map.contains_key(session_id) {
+            let session = Session {
+                pid: pid_for(session_id)?,
+                dir: config_dir(),
+                socket: None,
+                token: None,
+                failures: 0,
+            };
+            map.insert(session_id.into(), session);
+        }
+        let s = &map[session_id];
+        Some(found(session_id, s.pid, &s.dir))
     }
 
     fn poll_every(&self) -> Duration {
@@ -159,7 +161,7 @@ impl Adapter for Claude {
     fn discover(&self) -> BoxFuture<'_, Result<Vec<Found>, String>> {
         let mut map = self.sessions.lock().unwrap();
         map.retain(|_, s| alive(s.pid));
-        let list = map.iter().map(|(id, s)| found(id, s.pid)).collect();
+        let list = map.iter().map(|(id, s)| found(id, s.pid, &s.dir)).collect();
         Box::pin(std::future::ready(Ok(list)))
     }
 
@@ -329,12 +331,11 @@ fn read(path: &std::path::Path) -> Option<SessionFile> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
-/// Session title for a running Claude Code process.
-fn title(pid: u32, session_id: &str) -> Option<String> {
-    let f = read(&sessions_dir().join(format!("{pid}.json")))?;
-    if f.session_id.as_deref() != Some(session_id) {
-        return None;
-    }
+/// Session title for a running Claude Code process, from its config
+/// directory `dir`. After /clear or /resume the process holds another
+/// session ID than the one registered; the title is still the window's.
+fn title(pid: u32, dir: &Path) -> Option<String> {
+    let f = read(&dir.join("sessions").join(format!("{pid}.json")))?;
     f.name.filter(|n| !n.trim().is_empty())
 }
 
@@ -660,6 +661,41 @@ mod tests {
 
     fn image(data: &[u8], media_type: &str) -> Value {
         json!({ "type": "image", "source": { "type": "base64", "media_type": media_type, "data": b64(data) } })
+    }
+
+    #[test]
+    fn title_is_read_from_the_sessions_own_dir_by_process() {
+        let dir = std::env::temp_dir().join(format!("imbo-title-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        let file = dir.join("sessions/4242.json");
+        // The process moved on to another session ID after /clear.
+        std::fs::write(
+            &file,
+            r#"{"pid":4242,"sessionId":"after-clear","name":"Dotra Akamai"}"#,
+        )
+        .unwrap();
+        assert_eq!(title(4242, &dir).as_deref(), Some("Dotra Akamai"));
+        assert_eq!(title(4242, &dir.join("other")), None);
+        std::fs::write(
+            &file,
+            r#"{"pid":4242,"sessionId":"after-clear","name":" "}"#,
+        )
+        .unwrap();
+        assert_eq!(title(4242, &dir), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn older_tool_processes_register_without_a_config_dir() {
+        let line = r#"{"op":"register","tool":"claude-code","session_id":"s","messaging_socket":null,"messaging_token":null,"pid":7}"#;
+        let req: LocalRequest = serde_json::from_str(line).unwrap();
+        assert!(matches!(
+            req,
+            LocalRequest::Register {
+                config_dir: None,
+                ..
+            }
+        ));
     }
 
     #[test]

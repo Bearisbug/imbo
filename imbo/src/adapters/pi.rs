@@ -73,6 +73,7 @@ impl Adapter for Pi {
             messaging_socket: env("IMBO_PI_SOCKET"),
             messaging_token: env("IMBO_PI_TOKEN"),
             pid: unsafe { libc::getppid() } as u32,
+            config_dir: None,
         })
     }
 
