@@ -478,6 +478,17 @@ pub struct SubscriptionView {
     /// `active`, `past_due`, `scheduled_cancel` or `canceled` (API-035).
     pub status: String,
     pub paid_until: DateTime<Utc>,
+    /// `waffo` or `apple`: where it is managed.
+    pub provider: String,
+}
+
+/// What the App needs to sell App Store subscriptions (API-032).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppStoreView {
+    pub product_monthly: String,
+    pub product_yearly: String,
+    /// The appAccountToken the App passes to Apple with a purchase.
+    pub account_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -491,6 +502,21 @@ pub struct BillingResponse {
     pub trial_ends_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription: Option<SubscriptionView>,
+    /// Only when the server sells App Store subscriptions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_store: Option<AppStoreView>,
+}
+
+/// API-071.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppStoreTransactionRequest {
+    /// The StoreKit 2 transaction JWS.
+    pub signed_transaction: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppStoreTransactionResponse {
+    pub subscription: SubscriptionView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -722,6 +748,9 @@ pub struct ResolveResponse {
     /// Only for `ban`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_canceled: Option<bool>,
+    /// Only for `ban`; as in [`BanResponse`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_store_subscription: Option<bool>,
 }
 
 /// The latest subscription, as the admin sees it.
@@ -729,6 +758,8 @@ pub struct ResolveResponse {
 pub struct AdminSubscription {
     pub status: String,
     pub paid_until: DateTime<Utc>,
+    /// `waffo` or `apple`.
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -764,6 +795,8 @@ pub struct AdminAccountResponse {
 pub struct BanResponse {
     pub account: AdminAccount,
     pub subscription_canceled: bool,
+    /// It has an App Store subscription that still renews; only it can cancel that.
+    pub app_store_subscription: bool,
 }
 
 /// One Beijing-time day of API-068.

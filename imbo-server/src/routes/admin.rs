@@ -348,13 +348,17 @@ pub async fn resolve_report(
         action,
         "report resolved"
     );
-    let subscription_canceled = match banned {
-        Some(b) => Some(finish_ban(&st, target, b).await),
-        None => None,
+    let (subscription_canceled, app_store_subscription) = match banned {
+        Some(b) => {
+            let (canceled, app_store) = finish_ban(&st, target, b).await;
+            (Some(canceled), Some(app_store))
+        }
+        None => (None, None),
     };
     Ok(Json(ResolveResponse {
         report: report_view(&st, id).await?,
         subscription_canceled,
+        app_store_subscription,
     }))
 }
 
@@ -392,12 +396,12 @@ async fn refuse_admin(st: &St, target: i32) -> ApiResult<()> {
 
 /// After the ban commits: close its connections, push the take-backs,
 /// cancel the subscriptions.
-async fn finish_ban(st: &St, target: i32, b: safety::Banned) -> bool {
+async fn finish_ban(st: &St, target: i32, b: safety::Banned) -> (bool, bool) {
     for d in &b.devices {
         st.hub.close(*d, CLOSE_UNAUTHORIZED, "account banned");
     }
     delivery::notify_canceled(st, b.canceled).await;
-    safety::after_ban(&st.db, &st.cfg, &st.http, target, b.newly).await
+    safety::after_ban(&st.db, &st.cfg, &st.http, &st.mailer, target, b.newly).await
 }
 
 // ---- accounts ----
@@ -443,6 +447,7 @@ async fn admin_accounts(st: &St, rows: Vec<AccountRow>) -> ApiResult<Vec<AdminAc
                 .map(|s| AdminSubscription {
                     status: s.status.clone(),
                     paid_until: s.paid_until,
+                    provider: s.provider.clone(),
                 }),
             avatar_url: if r.banned_at.is_some() {
                 None
@@ -522,10 +527,11 @@ pub async fn ban(
     let mut tx = st.db.begin().await?;
     let b = safety::ban_tx(&mut tx, target, Some(c.account_id)).await?;
     tx.commit().await?;
-    let subscription_canceled = finish_ban(&st, target, b).await;
+    let (subscription_canceled, app_store_subscription) = finish_ban(&st, target, b).await;
     Ok(Json(BanResponse {
         account: admin_account(&st, target).await?,
         subscription_canceled,
+        app_store_subscription,
     }))
 }
 
@@ -645,8 +651,8 @@ pub async fn stats(State(st): State<St>) -> ApiResult<Json<StatsResponse>> {
     let subs: Vec<billing::SubRow> = match &st.cfg.waffo {
         Some(waffo) => {
             sqlx::query_as(
-                "SELECT account_id, plan, status, paid_until, revoked_at FROM subscriptions
-                 WHERE mode = $1",
+                "SELECT id, account_id, provider, mode, plan, status, paid_until, revoked_at
+                 FROM subscriptions WHERE mode = $1",
             )
             .bind(waffo.mode())
             .fetch_all(&st.db)

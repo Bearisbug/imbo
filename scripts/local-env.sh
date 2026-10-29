@@ -58,6 +58,8 @@ case "${1:-}" in
     ;;
   down)
     tmux -L imbo-test kill-server 2>/dev/null
+    # The fake App Store of apple-env.sh.
+    [ -s "$L/apple/serve.pid" ] && kill "$(cat "$L/apple/serve.pid")" 2>/dev/null
     pkill -f "$I daemon"; pkill -f "$I mcp"; pkill -f "$I hook"; pkill -f "$I wait"; pkill -f "^$S"
     # Tools started with HOME=$TH or $TP, such as opencode's background
     # service and Hermes Agent's gateway.

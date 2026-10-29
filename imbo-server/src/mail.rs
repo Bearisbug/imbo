@@ -62,6 +62,44 @@ impl Mailer {
         info!(report_id = report, "report mail sent");
         Ok(())
     }
+
+    /// API-066: tell a banned account with an App Store subscription that
+    /// only it can stop the charges. The log line under IMBO_MAIL_LOG_ONLY
+    /// carries the subject and body as JSON strings.
+    pub async fn send_suspension(&self, email: &str, account: i32) -> anyhow::Result<()> {
+        let body = suspension_text(account);
+        let Some(smtp) = &self.smtp else {
+            info!(
+                "mail-log-only to={email} subject={} body={}",
+                serde_json::Value::from(SUSPENSION_SUBJECT),
+                serde_json::Value::from(body)
+            );
+            return Ok(());
+        };
+        let to: Mailbox = email.parse().context("recipient")?;
+        let msg = Message::builder()
+            .from(self.from.clone())
+            .to(to)
+            .subject(SUSPENSION_SUBJECT)
+            .singlepart(SinglePart::plain(body))?;
+        smtp.send(msg).await.context("smtp send")?;
+        info!(account_id = account, "suspension mail sent");
+        Ok(())
+    }
+}
+
+const SUSPENSION_SUBJECT: &str = "Your Imbo account has been suspended";
+
+/// The letter's text as signed off in DESIGN, after API-070.
+fn suspension_text(account: i32) -> String {
+    format!(
+        "Your Imbo account (ID {account}) has been suspended. You can no longer sign in or send messages.\n\n\
+         Your Imbo subscription is billed by Apple through the App Store, and we can't cancel it for you. \
+         To stop future charges, open Settings on your iPhone, tap your name, tap Subscriptions, choose Imbo, \
+         then tap Cancel Subscription.\n\n\
+         To ask Apple for a refund, go to https://reportaproblem.apple.com.\n\n\
+         If you think this is a mistake, write to support@imbo.dev."
+    )
 }
 
 /// The admin page in the web app, opened on this report (PAGE-WEB-ADMIN).

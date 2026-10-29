@@ -290,6 +290,7 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::GET, "/v1/billing"),
     (Method::POST, "/v1/billing/checkout"),
     (Method::POST, "/v1/billing/portal"),
+    (Method::POST, "/v1/billing/apple/transactions"),
     (Method::DELETE, "/v1/web/session"),
     (Method::DELETE, "/v1/app/session"),
     (Method::PUT, "/v1/app/push"),
@@ -318,9 +319,6 @@ const WEB_ONLY: &[(Method, &str)] = &[
     (Method::POST, "/v1/billing/checkout"),
     (Method::POST, "/v1/billing/portal"),
     (Method::DELETE, "/v1/web/session"),
-    (Method::DELETE, "/v1/app/session"),
-    (Method::PUT, "/v1/app/push"),
-    (Method::DELETE, "/v1/app/push"),
     (Method::DELETE, "/v1/account"),
 ];
 

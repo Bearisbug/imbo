@@ -71,6 +71,10 @@ pub fn router(st: St) -> Router {
         .route("/v1/billing", get(billing::get))
         .route("/v1/billing/checkout", post(billing::checkout))
         .route("/v1/billing/portal", post(billing::portal))
+        .route(
+            "/v1/billing/apple/transactions",
+            post(billing::app_store_transaction),
+        )
         .route("/v1/app/session", delete(app::logout))
         .route(
             "/v1/app/push",
@@ -118,6 +122,10 @@ pub fn router(st: St) -> Router {
         .route("/v1/web/session", post(auth::web_login))
         .route("/v1/app/session", post(auth::app_login))
         .route("/v1/billing/waffo/webhook", post(billing::webhook))
+        .route(
+            "/v1/billing/apple/notifications",
+            post(billing::app_store_notification),
+        )
         .route("/v1/avatars/{file}", get(avatars::get));
     if st.cfg.dev {
         public = public

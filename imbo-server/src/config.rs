@@ -6,7 +6,8 @@ use anyhow::{Context, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, NaiveDate, Utc};
-use ring::signature::RsaKeyPair;
+use ring::rand::SystemRandom;
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, RsaKeyPair};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -29,6 +30,8 @@ pub struct Config {
     pub min_client_version: String,
     /// Payments; `None` means nobody is charged and the web app hides billing (ADR-021).
     pub waffo: Option<Waffo>,
+    /// App Store subscriptions; only with Waffo, whose mode they follow (ADR-043).
+    pub apple: Option<Apple>,
     /// First day of charging; unset means everyone is free (RULE-007).
     pub billing_start: Option<DateTime<Utc>>,
     /// The web app's origin, the only one allowed cross-origin with cookies (ADR-023).
@@ -93,6 +96,105 @@ impl Waffo {
             &self.product_monthly
         }
     }
+}
+
+/// App Store in-app purchases (ADR-043).
+#[derive(Clone)]
+pub struct Apple {
+    pub bundle_id: String,
+    /// The App's numeric Apple ID; production notifications carry it.
+    pub app_id: i64,
+    pub product_monthly: String,
+    pub product_yearly: String,
+    /// The In-App Purchase key that signs App Store Server API requests.
+    pub key_id: String,
+    pub issuer_id: String,
+    /// Its PKCS#8 DER (P-256), checked at startup.
+    pub key: Vec<u8>,
+    /// The root (DER) that signed transactions and notifications chain to.
+    pub root_cert: Vec<u8>,
+    /// Status queries go to `<api_url>/production` and `/sandbox` instead of
+    /// Apple's hosts; local tests only.
+    pub api_url: Option<String>,
+}
+
+impl std::fmt::Debug for Apple {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Apple({})", self.bundle_id)
+    }
+}
+
+impl Apple {
+    /// The plan a product ID sells, if it is one of the two.
+    pub fn plan(&self, product: &str) -> Option<&'static str> {
+        if product == self.product_monthly {
+            Some("monthly")
+        } else if product == self.product_yearly {
+            Some("yearly")
+        } else {
+            None
+        }
+    }
+}
+
+const APPLE_ROOT_CA_G3: &[u8] = include_bytes!("../assets/AppleRootCA-G3.cer");
+
+/// All seven IMBO_APPLE_* or none. IMBO_APPLE_ROOT_CERT and IMBO_APPLE_API_URL
+/// count only with IMBO_DEV=1.
+fn apple_from_env(dev: bool) -> anyhow::Result<Option<Apple>> {
+    let names = [
+        "IMBO_APPLE_BUNDLE_ID",
+        "IMBO_APPLE_APP_ID",
+        "IMBO_APPLE_PRODUCT_MONTHLY",
+        "IMBO_APPLE_PRODUCT_YEARLY",
+        "IMBO_APPLE_KEY_ID",
+        "IMBO_APPLE_ISSUER_ID",
+        "IMBO_APPLE_PRIVATE_KEY",
+    ];
+    let vals: Vec<Option<String>> = names.iter().map(|n| var(n)).collect();
+    if vals.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    if let Some(i) = vals.iter().position(Option::is_none) {
+        bail!(
+            "{} is not set; set all of {} or none",
+            names[i],
+            names.join(", ")
+        );
+    }
+    let mut v = vals.into_iter().map(Option::unwrap_or_default);
+    let mut next = || v.next().unwrap_or_default();
+    let bundle_id = next();
+    let app_id = next()
+        .parse()
+        .context("IMBO_APPLE_APP_ID must be the App's numeric Apple ID")?;
+    let (product_monthly, product_yearly, key_id, issuer_id) = (next(), next(), next(), next());
+    let key = pem_der(&next())
+        .filter(|der| {
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, der, &SystemRandom::new())
+                .is_ok()
+        })
+        .context("IMBO_APPLE_PRIVATE_KEY is not an In-App Purchase key (the .p8 file's PEM)")?;
+    let root_cert = match var("IMBO_APPLE_ROOT_CERT").filter(|_| dev) {
+        Some(path) => std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|pem| pem_der(&pem))
+            .with_context(|| format!("IMBO_APPLE_ROOT_CERT={path} is not a PEM certificate"))?,
+        None => APPLE_ROOT_CA_G3.to_vec(),
+    };
+    Ok(Some(Apple {
+        bundle_id,
+        app_id,
+        product_monthly,
+        product_yearly,
+        key_id,
+        issuer_id,
+        key,
+        root_cert,
+        api_url: var("IMBO_APPLE_API_URL")
+            .filter(|_| dev)
+            .map(|u| u.trim_end_matches('/').to_string()),
+    }))
 }
 
 // Waffo's webhook signing keys, as published in @waffo/pancake-ts 0.26.0.
@@ -285,6 +387,9 @@ impl Config {
                     .collect()
             })
             .unwrap_or_default();
+        let dev = flag("IMBO_DEV");
+        let waffo = waffo_from_env()?;
+        let apple = apple_from_env(dev)?.filter(|_| waffo.is_some());
         Ok(Self {
             domain,
             tls,
@@ -297,10 +402,11 @@ impl Config {
             signup_domains,
             acme_email: var("IMBO_ACME_EMAIL"),
             acme_staging: flag("IMBO_ACME_STAGING"),
-            dev: flag("IMBO_DEV"),
+            dev,
             backup_stamp: var("IMBO_BACKUP_STAMP").map(PathBuf::from),
             min_client_version: var("IMBO_MIN_CLIENT_VERSION").unwrap_or_else(|| "0.1.0".into()),
-            waffo: waffo_from_env()?,
+            waffo,
+            apple,
             billing_start: billing_start_from_env()?,
             web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),
             expo_access_token: var("IMBO_EXPO_ACCESS_TOKEN"),
@@ -367,6 +473,15 @@ mod tests {
             assert_eq!(n.len(), 257);
             assert_eq!(e, [1, 0, 1]);
         }
+    }
+
+    #[test]
+    fn embedded_root_is_apple_root_ca_g3() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            hex::encode(Sha256::digest(APPLE_ROOT_CA_G3)),
+            "63343abfb89a6a03ebb57e9b3f5fa7be7c4f5c756f3017b3a8c488c3653e9179"
+        );
     }
 
     #[test]

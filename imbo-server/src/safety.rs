@@ -8,9 +8,10 @@ use sqlx::{PgConnection, PgPool};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::billing;
 use crate::config::Config;
 use crate::error::{ApiResult, err};
+use crate::mail::Mailer;
+use crate::{apple, billing};
 
 /// Postgres channel a ban done outside the server is announced on, so the
 /// server can close the banned account's connections (API-066).
@@ -232,8 +233,9 @@ pub async fn ban_tx(tx: &mut PgConnection, target: i32, by: Option<i32>) -> ApiR
     })
 }
 
-/// Cancel the account's subscriptions that still renew, at Waffo, without
-/// a refund. Nothing to cancel, or no Waffo configured, counts as done.
+/// Cancel the account's Waffo subscriptions that still renew, without a
+/// refund. Nothing to cancel, or no Waffo configured, counts as done; App
+/// Store subscriptions only their owner can cancel.
 pub async fn cancel_subscriptions(
     db: &PgPool,
     cfg: &Config,
@@ -245,7 +247,8 @@ pub async fn cancel_subscriptions(
     };
     let live: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM subscriptions
-         WHERE account_id = $1 AND mode = $2 AND status IN ('active', 'past_due')",
+         WHERE account_id = $1 AND mode = $2 AND provider = 'waffo'
+           AND status IN ('active', 'past_due')",
     )
     .bind(account)
     .bind(waffo.mode())
@@ -257,15 +260,19 @@ pub async fn cancel_subscriptions(
     Ok(())
 }
 
-/// After a ban commits: cancel the subscriptions, logging a failure; the
-/// ban stands either way (ADR-041). Returns whether they are canceled.
+/// After a ban commits: cancel the Waffo subscriptions, logging a failure;
+/// the ban stands either way (ADR-041). A first ban of an account with an
+/// App Store subscription that still renews mails it how to cancel that
+/// (API-066). Returns whether the Waffo subscriptions are canceled, and
+/// whether there is such an App Store subscription.
 pub async fn after_ban(
     db: &PgPool,
     cfg: &Config,
     http: &reqwest::Client,
+    mailer: &Mailer,
     account: i32,
     newly: bool,
-) -> bool {
+) -> (bool, bool) {
     let canceled = match cancel_subscriptions(db, cfg, http, account).await {
         Ok(()) => true,
         Err(e) => {
@@ -273,14 +280,36 @@ pub async fn after_ban(
             false
         }
     };
+    let app_store = match apple::renewing(db, cfg, account).await {
+        Ok(subs) => !subs.is_empty(),
+        Err(e) => {
+            warn!(account_id = account, error = %e, "ban: App Store subscriptions not checked");
+            false
+        }
+    };
+    if app_store && newly {
+        let email: Result<String, _> =
+            sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
+                .bind(account)
+                .fetch_one(db)
+                .await;
+        let sent = match email {
+            Ok(email) => mailer.send_suspension(&email, account).await,
+            Err(e) => Err(e.into()),
+        };
+        if let Err(e) = sent {
+            warn!(account_id = account, error = %e, "ban: App Store letter not sent");
+        }
+    }
     info!(
         event = "account_banned",
         account_id = account,
         newly,
         subscription_canceled = canceled,
+        app_store_subscription = app_store,
         "account banned"
     );
-    canceled
+    (canceled, app_store)
 }
 
 /// API-067's write: clear the ban. Sign-ins, subscriptions and messages

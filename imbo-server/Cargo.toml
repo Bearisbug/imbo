@@ -28,7 +28,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v5"] }
 
 axum = { version = "0.8", features = ["ws", "macros"] }
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
@@ -42,6 +42,8 @@ tokio-stream = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
 # RSA signatures for Waffo's API and webhooks; already in the tree through rustls.
 ring = "0.17"
+# Verifies App Store transactions and notifications against Apple's certificate chain (ADR-043).
+app-store-server-library = { version = "6.0.1", default-features = false, features = ["ring"] }
 
 [lints]
 workspace = true

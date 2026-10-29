@@ -1,5 +1,6 @@
 //! Charging: who may send (RULE-007, RULE-008), Waffo calls and webhooks
-//! (API-033–035, ADR-019–021, ADR-042).
+//! (API-033–035, ADR-019–021, ADR-042). App Store subscriptions are in
+//! `apple`.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -58,7 +59,11 @@ impl Access {
 
 #[derive(sqlx::FromRow, Clone, Debug)]
 pub struct SubRow {
+    pub id: String,
     pub account_id: i32,
+    /// `waffo` or `apple`.
+    pub provider: String,
+    pub mode: String,
     pub plan: String,
     pub status: String,
     pub paid_until: DateTime<Utc>,
@@ -83,11 +88,13 @@ impl SubRow {
             plan: self.plan.clone(),
             status: self.status.clone(),
             paid_until: self.paid_until,
+            provider: self.provider.clone(),
         }
     }
 }
 
 /// These accounts' subscriptions in the server's current mode, newest first.
+/// In live mode the review account's test subscriptions count too (RULE-007).
 pub async fn subscriptions(
     db: &PgPool,
     cfg: &Config,
@@ -96,12 +103,18 @@ pub async fn subscriptions(
     let Some(waffo) = &cfg.waffo else {
         return Ok(vec![]);
     };
+    let review = cfg.review.as_ref().filter(|_| waffo.live).map(|r| &r.email);
     sqlx::query_as(
-        "SELECT account_id, plan, status, paid_until, revoked_at FROM subscriptions
-         WHERE account_id = ANY($1) AND mode = $2 ORDER BY provider_updated_at DESC",
+        "SELECT id, account_id, provider, mode, plan, status, paid_until, revoked_at
+         FROM subscriptions
+         WHERE account_id = ANY($1)
+           AND (mode = $2 OR (mode = 'test' AND account_id IN
+                (SELECT id FROM accounts WHERE lower(email) = $3::text)))
+         ORDER BY provider_updated_at DESC",
     )
     .bind(accounts)
     .bind(waffo.mode())
+    .bind(review)
     .fetch_all(db)
     .await
 }
@@ -192,7 +205,7 @@ pub async fn require_active(st: &St, account: i32, endpoint: &str) -> ApiResult<
 
 // ---- Waffo API ----
 
-fn provider_failed() -> ApiError {
+pub fn provider_failed() -> ApiError {
     err(
         ErrorCode::PaymentProviderFailed,
         "The payment service is not answering. Try again shortly.",
@@ -752,7 +765,7 @@ pub async fn handle_event(st: &St, waffo: &Waffo, event: &Value) -> ApiResult<Ou
 
 /// Two subscriptions granting access to one account means one was paid twice
 /// (DESIGN §16); ops refunds one by RB-005.
-async fn warn_if_duplicate(st: &St, sub_id: &str) -> Result<(), sqlx::Error> {
+pub async fn warn_if_duplicate(st: &St, sub_id: &str) -> Result<(), sqlx::Error> {
     let account: Option<i32> =
         sqlx::query_scalar("SELECT account_id FROM subscriptions WHERE id = $1")
             .bind(sub_id)
@@ -863,7 +876,10 @@ mod tests {
 
     fn sub(status: &str, paid_until: &str, revoked: bool) -> SubRow {
         SubRow {
+            id: "ORD_x".into(),
             account_id: 1,
+            provider: "waffo".into(),
+            mode: "test".into(),
             plan: "monthly".into(),
             status: status.into(),
             paid_until: paid_until.parse().unwrap(),

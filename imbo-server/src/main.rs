@@ -1,5 +1,6 @@
 //! `imbo-server`: one binary for the central server and for self-hosting.
 
+mod apple;
 mod auth;
 mod avatar;
 mod billing;
@@ -45,7 +46,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: dev::DevCmd,
     },
-    /// Payment records (Waffo).
+    /// Payment records (Waffo and the App Store).
     Billing {
         #[command(subcommand)]
         cmd: BillingCmd,
@@ -70,8 +71,10 @@ enum AccountCmd {
 
 #[derive(Subcommand)]
 enum BillingCmd {
-    /// Fetch a subscription order from Waffo and record it, for a webhook that
-    /// never arrived (RB-005). Uses the server's environment and DATABASE_URL.
+    /// Fetch a subscription order from Waffo, or an App Store subscription by
+    /// its original transaction ID (all digits), and record it, for a
+    /// notification that never arrived (RB-005, RB-008). Uses the server's
+    /// environment and DATABASE_URL.
     Pull { order_id: String },
     /// Revoke a subscription: no access from now on, and cancel it at Waffo
     /// without a refund (chargebacks, RB-007). Run it again if the
@@ -182,8 +185,8 @@ async fn serve() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The Waffo settings and database the billing commands work on.
-async fn billing_setup() -> anyhow::Result<(config::Waffo, db::Database)> {
+/// The settings, Waffo and database the billing commands work on.
+async fn billing_setup() -> anyhow::Result<(config::Config, config::Waffo, db::Database)> {
     let cfg = config::Config::from_env()?;
     let waffo = cfg
         .waffo
@@ -193,13 +196,31 @@ async fn billing_setup() -> anyhow::Result<(config::Waffo, db::Database)> {
         anyhow::bail!("billing commands need DATABASE_URL");
     }
     let database = db::open(&cfg).await?;
-    Ok((waffo, database))
+    Ok((cfg, waffo, database))
+}
+
+/// RB-008: an App Store subscription, by its original transaction ID.
+async fn apple_pull(id: &str) -> anyhow::Result<()> {
+    let (cfg, _, database) = billing_setup().await?;
+    let result = match &cfg.apple {
+        Some(apple) => apple::pull(&database.pool, &cfg, apple, &billing::http_client(), id)
+            .await
+            .map(|line| println!("{line}")),
+        None => Err(anyhow::anyhow!(
+            "the App Store is not configured (IMBO_APPLE_BUNDLE_ID and the rest)"
+        )),
+    };
+    database.close().await;
+    result
 }
 
 /// API-035: also cancels an order that still renews when its account is
 /// deleted or banned; the record stands even when Waffo can't cancel.
 async fn billing_pull(id: &str) -> anyhow::Result<()> {
-    let (waffo, database) = billing_setup().await?;
+    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
+        return apple_pull(id).await;
+    }
+    let (_, waffo, database) = billing_setup().await?;
     let http = billing::http_client();
     let order = billing::fetch_order(&http, &waffo, id)
         .await
@@ -256,7 +277,7 @@ async fn billing_revoke(id: &str) -> anyhow::Result<()> {
     if !billing::order_id_ok(id) {
         anyhow::bail!("An order ID looks like ORD_…");
     }
-    let (waffo, database) = billing_setup().await?;
+    let (_, waffo, database) = billing_setup().await?;
     let mut tx = database.pool.begin().await?;
     let account = billing::revoke(&mut tx, id).await?;
     tx.commit().await?;
@@ -307,9 +328,16 @@ async fn account_cmd(cmd: AccountCmd) -> anyhow::Result<()> {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e.0.detail))?;
                 tx.commit().await?;
-                let canceled =
-                    safety::after_ban(pool, &cfg, &billing::http_client(), account_id, b.newly)
-                        .await;
+                let mailer = mail::Mailer::new(&cfg)?;
+                let (canceled, app_store) = safety::after_ban(
+                    pool,
+                    &cfg,
+                    &billing::http_client(),
+                    &mailer,
+                    account_id,
+                    b.newly,
+                )
+                .await;
                 if b.newly {
                     println!(
                         "Banned {name} ({account_id}): {} computer(s) signed out, {} undelivered message(s) taken back.",
@@ -323,6 +351,11 @@ async fn account_cmd(cmd: AccountCmd) -> anyhow::Result<()> {
                     "Subscription canceled: {}",
                     if canceled { "yes" } else { "no, run this again to retry" }
                 );
+                if app_store {
+                    println!(
+                        "They have an App Store subscription that still renews; only they can cancel it."
+                    );
+                }
             }
             AccountCmd::Unban { account_id } => {
                 safety::unban(pool, account_id)

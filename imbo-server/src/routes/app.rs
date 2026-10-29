@@ -15,7 +15,7 @@ use super::groups::{cancel_group, lock_group, post_notice};
 use crate::auth::Caller;
 use crate::error::{ApiResult, err};
 use crate::state::St;
-use crate::{avatar, delivery, push, safety};
+use crate::{apple, avatar, delivery, push, safety};
 
 const MAX_PUSH_TOKEN: usize = 200;
 
@@ -101,6 +101,7 @@ pub async fn delete_account(
     if req.confirm != "DELETE" {
         return Err(err(ErrorCode::InvalidRequest, "Type DELETE to confirm."));
     }
+    apple::check_before_delete(&st, c.account_id).await?;
     delete_now(&st, c.account_id, "its owner deleted their account").await?;
     Ok(StatusCode::NO_CONTENT)
 }

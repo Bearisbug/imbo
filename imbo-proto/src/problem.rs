@@ -55,10 +55,12 @@ pub enum ErrorCode {
     AlreadyReported,
     ReportClosed,
     ImageInvalid,
+    OtherAccount,
+    AppStoreRenewing,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 51] = [
+    pub const ALL: [ErrorCode; 53] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -110,6 +112,8 @@ impl ErrorCode {
         Self::AlreadyReported,
         Self::ReportClosed,
         Self::ImageInvalid,
+        Self::OtherAccount,
+        Self::AppStoreRenewing,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -165,6 +169,8 @@ impl ErrorCode {
             Self::AlreadyReported => "already-reported",
             Self::ReportClosed => "report-closed",
             Self::ImageInvalid => "image-invalid",
+            Self::OtherAccount => "other-account",
+            Self::AppStoreRenewing => "app-store-renewing",
         }
     }
 
@@ -207,7 +213,9 @@ impl ErrorCode {
             | Self::AmbiguousRecipient
             | Self::AlreadySubscribed
             | Self::AlreadyReported
-            | Self::ReportClosed => 409,
+            | Self::ReportClosed
+            | Self::OtherAccount
+            | Self::AppStoreRenewing => 409,
             Self::CodeExpired | Self::FileExpired => 410,
             Self::FileTooLarge => 413,
             Self::ClientOutdated => 426,
@@ -279,6 +287,8 @@ impl ErrorCode {
             Self::AlreadyReported => "Already reported",
             Self::ReportClosed => "Report already handled",
             Self::ImageInvalid => "Not a JPEG or PNG image",
+            Self::OtherAccount => "Subscription belongs to another account",
+            Self::AppStoreRenewing => "App Store subscription still renews",
         }
     }
 }

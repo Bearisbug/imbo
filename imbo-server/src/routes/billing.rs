@@ -1,5 +1,6 @@
 //! API-032 getBilling, API-033 createCheckout, API-034 openPortal,
-//! API-035 waffoWebhook.
+//! API-035 waffoWebhook, API-071 submitAppStoreTransaction,
+//! API-072 appStoreNotification.
 
 use std::time::Duration;
 
@@ -8,21 +9,33 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::{Extension, Json};
 use imbo_proto::ErrorCode;
-use imbo_proto::api::{BillingResponse, CheckoutRequest, CheckoutResponse, PortalResponse};
+use imbo_proto::api::{
+    AppStoreTransactionRequest, AppStoreTransactionResponse, AppStoreView, BillingResponse,
+    CheckoutRequest, CheckoutResponse, PortalResponse,
+};
 use tracing::{info, warn};
 
 use super::Body;
 use crate::auth::Caller;
-use crate::billing;
-use crate::config::Waffo;
+use crate::config::{Apple, Waffo};
 use crate::error::{ApiResult, err};
 use crate::state::St;
+use crate::{apple, billing};
 
 fn waffo(st: &St) -> ApiResult<&Waffo> {
     st.cfg
         .waffo
         .as_ref()
         .ok_or_else(|| err(ErrorCode::NotFound, "This server does not take payments."))
+}
+
+fn app_store(st: &St) -> ApiResult<&Apple> {
+    st.cfg.apple.as_ref().ok_or_else(|| {
+        err(
+            ErrorCode::NotFound,
+            "This server does not sell App Store subscriptions.",
+        )
+    })
 }
 
 pub async fn get(
@@ -54,6 +67,11 @@ pub async fn get(
             .then(|| billing::trial_end(&st.cfg, created_at))
             .flatten(),
         subscription,
+        app_store: st.cfg.apple.as_ref().map(|a| AppStoreView {
+            product_monthly: a.product_monthly.clone(),
+            product_yearly: a.product_yearly.clone(),
+            account_token: apple::account_token(c.account_id).to_string(),
+        }),
     }))
 }
 
@@ -118,15 +136,56 @@ pub async fn portal(
 ) -> ApiResult<Json<PortalResponse>> {
     let waffo = waffo(&st)?;
     let subs = billing::subscriptions(&st.db, &st.cfg, &[c.account_id]).await?;
-    if subs.is_empty() {
+    if !subs.iter().any(|s| s.provider == "waffo") {
         return Err(err(
             ErrorCode::NotFound,
-            "You have no subscription to manage yet.",
+            "You have no subscription to manage here. App Store subscriptions are managed in Settings on your iPhone.",
         ));
     }
     // A bearer link to the customer page: never log or keep it.
     let portal_url = billing::portal_link(&st, waffo, c.account_id).await?;
     Ok(Json(PortalResponse { portal_url }))
+}
+
+/// API-071: only the App hands in transactions.
+pub async fn app_store_transaction(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Body(req): Body<AppStoreTransactionRequest>,
+) -> ApiResult<Json<AppStoreTransactionResponse>> {
+    if c.app.is_none() {
+        return Err(err(ErrorCode::Forbidden, "Only the Imbo App can do this."));
+    }
+    let apple = app_store(&st)?;
+    let row = apple::submit(&st, apple, c.account_id, &req.signed_transaction).await?;
+    Ok(Json(AppStoreTransactionResponse {
+        subscription: row.view(),
+    }))
+}
+
+/// API-072: only Apple calls this; the signature is the only credential (ROLE-Apple).
+pub async fn app_store_notification(State(st): State<St>, body: Bytes) -> ApiResult<StatusCode> {
+    let apple = app_store(&st)?;
+    match apple::handle_notification(&st, apple, &body).await {
+        Ok(n) => {
+            info!(
+                event = "billing_event",
+                event_id = %n.uuid,
+                r#type = %n.kind,
+                subscription_id = %n.subscription_id,
+                outcome = n.outcome.as_str(),
+                "app store notification"
+            );
+            Ok(StatusCode::OK)
+        }
+        Err(e) => {
+            st.note_webhook_error();
+            if e.0.code() == Some(ErrorCode::Unauthorized) {
+                warn!("app store notification that does not verify");
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Only Waffo calls this; the signature is the only credential (ROLE-Waffo).
