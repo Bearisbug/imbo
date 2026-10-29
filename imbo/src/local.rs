@@ -62,6 +62,14 @@ impl Local {
         if let Some(s) = self.connect().await {
             return Ok(s);
         }
+        // Not signed in, as after `imbo uninstall`: the tool processes of
+        // sessions still open must not bring the daemon back.
+        if self.home.credentials().is_none() {
+            return Err(Problem::new(
+                ErrorCode::DaemonUnavailable,
+                "Imbo isn't set up on this computer. Run `imbo setup` in a terminal.",
+            ));
+        }
         crate::service::start_daemon(&self.home);
         let deadline = tokio::time::Instant::now() + wait;
         while tokio::time::Instant::now() < deadline {
