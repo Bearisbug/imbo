@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use super::health::disk_free_bytes;
 use crate::auth::Caller;
-use crate::error::{ApiResult, err};
+use crate::error::{ApiError, ApiResult, err};
 use crate::state::St;
 
 /// A transfer with no bytes for this long is dropped (DESIGN §8 传文件).
@@ -57,17 +57,22 @@ pub async fn upload(
     headers: HeaderMap,
     body: RawBody,
 ) -> ApiResult<(StatusCode, Json<UploadResponse>)> {
-    crate::billing::require_active(&st, c.account_id, "API-026").await?;
-    let size: u64 = headers
+    let declared: Option<u64> = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .ok_or_else(|| err(ErrorCode::InvalidRequest, "Content-Length is required."))?;
+        .and_then(|v| v.parse().ok());
+    if let Err(e) = crate::billing::require_active(&st, c.account_id, "API-026").await {
+        return Err(refuse(body, declared, e).await);
+    }
+    let size =
+        declared.ok_or_else(|| err(ErrorCode::InvalidRequest, "Content-Length is required."))?;
     if size > MAX_MESSAGE_FILE_BYTES {
-        return Err(err(
-            ErrorCode::FileTooLarge,
-            "A file can be at most 100 MB.",
-        ));
+        return Err(refuse(
+            body,
+            declared,
+            err(ErrorCode::FileTooLarge, "A file can be at most 100 MB."),
+        )
+        .await);
     }
     let name = headers
         .get(HEADER_FILE_NAME)
@@ -98,10 +103,15 @@ pub async fn upload(
         .await
         .map_err(anyhow::Error::from)?;
     if disk_free_bytes(&dir).is_some_and(|free| free < MIN_FREE_BYTES) {
-        return Err(err(
-            ErrorCode::StorageFull,
-            "The server is low on storage. Try again later.",
-        ));
+        return Err(refuse(
+            body,
+            declared,
+            err(
+                ErrorCode::StorageFull,
+                "The server is low on storage. Try again later.",
+            ),
+        )
+        .await);
     }
 
     // Reserve the declared size under the account's lock so parallel
@@ -122,8 +132,10 @@ pub async fn upload(
     .await?;
     let used = used.max(0) as u64;
     if used + size > DAILY_UPLOAD_BYTES {
+        // Not held while the body is read: the account's other uploads wait on it.
+        tx.rollback().await?;
         let left = (resets_at - Utc::now()).num_minutes().max(1);
-        return Err(err(
+        let e = err(
             ErrorCode::UploadQuotaExceeded,
             format!(
                 "You uploaded {} today and this file is {}; the limit is 1 GB a day. It resets at midnight Beijing time, in {} h {} min.",
@@ -132,7 +144,8 @@ pub async fn upload(
                 left / 60,
                 left % 60
             ),
-        ));
+        );
+        return Err(refuse(body, declared, e).await);
     }
     sqlx::query(
         "INSERT INTO files (id, account_id, name, size, sha256, expires_at)
@@ -196,6 +209,18 @@ pub async fn upload(
             },
         }),
     ))
+}
+
+/// Refuses an upload. A body declared at no more than 100 MB is read first:
+/// clients that send the whole body before reading (iOS, browsers) lose an
+/// answer that comes while they are still sending, as the connection closes
+/// under them. A larger one is refused unread.
+async fn refuse(body: RawBody, declared: Option<u64>, e: ApiError) -> ApiError {
+    if declared.is_some_and(|n| n <= MAX_MESSAGE_FILE_BYTES) {
+        let mut stream = body.into_data_stream();
+        while let Ok(Some(Ok(_))) = tokio::time::timeout(STALL, stream.next()).await {}
+    }
+    e
 }
 
 /// Stream the request body into `part`, checking length and hash.
