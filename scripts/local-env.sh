@@ -10,8 +10,11 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE:-$0}")/.." && pwd)
 export L=/tmp/imbo-t TH=/tmp/imbo-t/th TP=/tmp/imbo-t/tp
 export I="$ROOT/target/debug/imbo" S="$ROOT/target/debug/imbo-server" IMBO="$ROOT/target/debug/imbo"
 export M="$ROOT/scripts/mcp-call.py"
+# The caller's Claude profile stays out too: imbo setup writes into $CLAUDE_CONFIG_DIR,
+# and test sessions sign in with ~/.claude like a fresh terminal.
 unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDECODE \
-  CLAUDE_CODE_ENTRYPOINT CLAUDE_PID CLAUDE_CODE_CHILD_SESSION CODEX_THREAD_ID
+  CLAUDE_CODE_ENTRYPOINT CLAUDE_PID CLAUDE_CODE_CHILD_SESSION CODEX_THREAD_ID \
+  CLAUDE_CONFIG_DIR ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
 export CODEX_HOME=$L/codex-home
 
 # Only bob's daemon sees the test Codex home; the others get an empty one.
