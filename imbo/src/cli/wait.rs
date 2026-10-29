@@ -1,4 +1,4 @@
-//! `imbo wait` (FLOW-LISTEN): an agent in MiniMax Code or ZCode runs it in
+//! `imbo wait` (FLOW-LISTEN): an agent in MiniMax Code, ZCode or Kimi Code runs it in
 //! the background. It prints the session's next messages and ends; the
 //! tool then starts a turn with them.
 
@@ -9,7 +9,7 @@ use crate::adapters;
 use crate::local::{Heard, Local};
 use crate::ui;
 
-const UNKNOWN: &str = "Imbo can't tell which session this imbo wait belongs to, so it isn't listening. It's only needed in the main session of MiniMax Code or ZCode, not in subagents.";
+const UNKNOWN: &str = "Imbo can't tell which session this imbo wait belongs to, so it isn't listening. It's only needed in the main session of MiniMax Code, ZCode or Kimi Code, not in subagents.";
 const ALREADY: &str = "Imbo: an imbo wait is already waiting for messages in the background for this session, so this one exits. No need to run it again.";
 
 pub async fn wait() -> anyhow::Result<()> {

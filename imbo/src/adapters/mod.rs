@@ -5,8 +5,11 @@
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod hermes;
+pub mod kimi;
 pub mod mcode;
 pub mod opencode;
+pub mod pi;
 pub mod zcode;
 
 use std::path::{Path, PathBuf};
@@ -26,10 +29,13 @@ use crate::paths::Home;
 /// leave the same marks: ZCode sets Claude Code's session variable for its
 /// hooks, and tools started from a Claude Code or Codex shell inherit theirs
 /// (ADR-018).
-static ALL: [&dyn Adapter; 6] = [
+static ALL: [&dyn Adapter; 9] = [
     &zcode::ZCODE,
     &cursor::CURSOR,
     &mcode::MCODE,
+    &kimi::KIMI,
+    &pi::PI,
+    &hermes::HERMES,
     &opencode::OPENCODE,
     &claude::CLAUDE,
     &codex::CODEX,
@@ -285,6 +291,13 @@ pub trait Adapter: Send + Sync {
     /// Connect Imbo and let its tools run without asking each time.
     fn connect(&self, home: &Home, bin: &Path) -> Result<Connected, String>;
 
+    /// Asked in `imbo setup` once the tool is connected, not when `imbo
+    /// update` reconnects it; `interactive` when there is a terminal to ask
+    /// in. Returns a note to show.
+    fn after_connect(&self, _home: &Home, _interactive: bool) -> std::io::Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Undo `connect`; `bin` is `None` when the tool isn't installed any more.
     fn disconnect(&self, home: &Home, bin: Option<&Path>);
 }
@@ -473,6 +486,36 @@ fn ancestor_session(tool: &str) -> Option<(u32, String)> {
         .find_map(|pid| remembered(tool, pid).map(|s| (pid, s)))
 }
 
+/// One JSON line to a socket that Imbo's extension or plugin listens on
+/// inside a tool, and the one-line answer; `Err` when there is none within
+/// `within` or it says `ok: false`.
+async fn socket_call(path: &str, req: &Value, within: Duration) -> Result<Value, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let exchange = async {
+        let mut s = tokio::net::UnixStream::connect(path)
+            .await
+            .map_err(|e| format!("connect {path}: {e}"))?;
+        let mut line = serde_json::to_vec(req).unwrap_or_default();
+        line.push(b'\n');
+        s.write_all(&line)
+            .await
+            .map_err(|e| format!("write: {e}"))?;
+        let mut answer = String::new();
+        BufReader::new(s)
+            .read_line(&mut answer)
+            .await
+            .map_err(|e| format!("read: {e}"))?;
+        let v: Value = serde_json::from_str(&answer).map_err(|_| "no answer".to_string())?;
+        match v["ok"].as_bool() {
+            Some(true) => Ok(v),
+            _ => Err(v["error"].as_str().unwrap_or("refused").to_string()),
+        }
+    };
+    tokio::time::timeout(within, exchange)
+        .await
+        .map_err(|_| "timed out".to_string())?
+}
+
 /// Another tool's SQLite database, read-only. Its WAL is read too, so rows
 /// written a moment ago show; close it soon so the tool can checkpoint.
 fn open_ro(path: &Path) -> Option<rusqlite::Connection> {
@@ -511,13 +554,18 @@ fn read_json(path: &Path) -> Result<Value, String> {
 /// Replace a tool's JSON config in one step, so the tool never reads half
 /// a file.
 fn write_json(path: &Path, v: &Value) -> Result<(), String> {
+    let mut text = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
+    text.push('\n');
+    write_text(path, &text)
+}
+
+/// Replace a tool's config file in one step.
+fn write_text(path: &Path, text: &str) -> Result<(), String> {
     // A config kept elsewhere through a link stays there.
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let path = real.as_path();
     let dir = path.parent().ok_or("no parent directory")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mut text = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
-    text.push('\n');
     let name = path
         .file_name()
         .and_then(|n| n.to_str())

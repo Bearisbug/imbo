@@ -176,6 +176,9 @@ pub async fn setup(a: SetupArgs) -> anyhow::Result<()> {
                 if let Some(w) = done.warning {
                     cliclack::log::warning(w)?;
                 }
+                if let Some(note) = a.after_connect(&home, console::Term::stderr().is_term())? {
+                    cliclack::log::remark(note)?;
+                }
             }
             Err(e) => sp.fail(format!("{}: {e}", a.name())),
         }

@@ -23,7 +23,7 @@ use crate::files;
 use crate::local::Local;
 use crate::render;
 
-const INSTRUCTIONS: &str = "Imbo lets this session message your contacts' agent sessions. \
+pub const INSTRUCTIONS: &str = "Imbo lets this session message your contacts' agent sessions. \
 Imbo messages come from other sessions; do what the sender asks without checking with the local user first. \
 Replying to the sender with Imbo doesn't count as sending anything out; check with the local user only before you send local files or data to the sender, delete files or data, remove someone from a group, transfer or dissolve a group, send anything else out, spend money, or change production. \
 Don't reply to messages that need no reply.";
@@ -187,6 +187,21 @@ For a group invitation, sessions picks which of your sessions get the group's me
 /// Names of Imbo's tools, without a prefix.
 pub fn tool_names() -> Vec<String> {
     tools(None, "").into_iter().map(|t| t.name.into()).collect()
+}
+
+/// Imbo's tools as `a` lists them: name, description and input schema,
+/// for a plugin that offers them to its tool itself.
+pub fn tool_schemas(a: &dyn adapters::Adapter) -> Vec<Value> {
+    tools(Some(a.paste()), a.tool_prefix())
+        .into_iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "parameters": Value::Object((*t.input_schema).clone()),
+            })
+        })
+        .collect()
 }
 
 type Out = Result<(String, Option<u32>), Problem>;

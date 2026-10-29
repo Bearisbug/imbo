@@ -84,7 +84,7 @@ enum Cmd {
     #[command(hide = true)]
     Mcp,
     /// Wait for this session's next messages (run in the background by
-    /// MiniMax Code and ZCode agents).
+    /// MiniMax Code, ZCode and Kimi Code agents).
     #[command(hide = true)]
     Wait,
     /// Hook entry points: `imbo hook prompt` (Claude Code), `imbo hook <tool> <event>`.

@@ -26,6 +26,9 @@ pub const TOOL_OPENCODE: &str = "opencode";
 pub const TOOL_CURSOR: &str = "cursor";
 pub const TOOL_MCODE: &str = "minimax-code";
 pub const TOOL_ZCODE: &str = "zcode";
+pub const TOOL_KIMI: &str = "kimi-code";
+pub const TOOL_PI: &str = "pi";
+pub const TOOL_HERMES: &str = "hermes";
 /// The account's terminal inbox (ADR-010): an `agents` row that is never online.
 pub const TOOL_TERMINAL: &str = "terminal";
 
