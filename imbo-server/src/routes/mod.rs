@@ -120,6 +120,7 @@ pub fn router(st: St) -> Router {
         .route("/v1/auth/code", post(auth::request_code))
         .route("/v1/auth/verify", post(auth::verify))
         .route("/v1/health", get(health::health))
+        .route("/v1/stats", get(health::stats))
         .route("/v1/web/session", post(auth::web_login))
         .route("/v1/app/session", post(auth::app_login))
         .route("/v1/billing/waffo/webhook", post(billing::webhook))

@@ -23,6 +23,8 @@ pub struct AppState {
     webhook_errors: Mutex<VecDeque<Instant>>,
     /// Serialises pushes per receiving agent so frames leave in message order.
     push_locks: Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
+    /// The last API-074 count and when it was taken.
+    pub stats: Mutex<Option<(Instant, i64)>>,
 }
 
 pub type St = Arc<AppState>;
@@ -39,6 +41,7 @@ impl AppState {
             http: crate::billing::http_client(),
             webhook_errors: Mutex::new(VecDeque::new()),
             push_locks: Mutex::new(HashMap::new()),
+            stats: Mutex::new(None),
         })
     }
 

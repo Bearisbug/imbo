@@ -1,11 +1,13 @@
-//! API-025 health, with the operating fields of DESIGN §21.
+//! API-025 health, with the operating fields of DESIGN §21, and API-074 stats.
 
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::header;
+use axum::response::IntoResponse;
 use imbo_proto::ErrorCode;
-use imbo_proto::api::Health;
+use imbo_proto::api::{Health, Stats};
 
 use crate::error::{ApiResult, err};
 use crate::state::St;
@@ -77,4 +79,28 @@ pub async fn health(State(st): State<St>) -> ApiResult<Json<Health>> {
         ack_p95_ms: p95.map(|v| v.round()),
         oldest_open_report_h,
     }))
+}
+
+/// How long one count of API-074 is served.
+const STATS_TTL: Duration = Duration::from_secs(60);
+
+pub async fn stats(State(st): State<St>) -> ApiResult<impl IntoResponse> {
+    let cached = *st.stats.lock().unwrap();
+    let sessions_live = match cached {
+        Some((at, n)) if at.elapsed() < STATS_TTL => n,
+        _ => {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM agents WHERE online AND tool <> 'terminal'",
+            )
+            .fetch_one(&st.db)
+            .await
+            .map_err(|_| err(ErrorCode::Unavailable, "Database unavailable."))?;
+            *st.stats.lock().unwrap() = Some((Instant::now(), n));
+            n
+        }
+    };
+    Ok((
+        [(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+        Json(Stats { sessions_live }),
+    ))
 }

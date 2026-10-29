@@ -626,6 +626,13 @@ pub struct Health {
     pub oldest_open_report_h: Option<f64>,
 }
 
+/// API-074: what the website shows; no account or session details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Stats {
+    /// Tool sessions online right now; terminal inboxes don't count.
+    pub sessions_live: i64,
+}
+
 // ---- avatars, blocks and reports (API-045–061) ----
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
