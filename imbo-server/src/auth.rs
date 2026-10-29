@@ -353,10 +353,12 @@ fn permitted(st: &St, c: &Caller, req: &Request) -> ApiResult<()> {
     let method = req.method();
     if c.web_person() {
         if !listed(WEB_ALLOWED, method, path) {
-            return Err(err(
-                ErrorCode::Forbidden,
-                "The web app can't do this. Use imbo on your computer.",
-            ));
+            let detail = if c.app.is_some() {
+                "The Imbo app can't do this. Use imbo on your computer."
+            } else {
+                "The web app can't do this. Use imbo on your computer."
+            };
+            return Err(err(ErrorCode::Forbidden, detail));
         }
         // Only cookies ride along from other sites; the App's header can't (ADR-033).
         if c.web.is_some() && method != Method::GET {
