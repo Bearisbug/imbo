@@ -275,6 +275,8 @@ pub(crate) async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
 const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::GET, "/v1/me"),
     (Method::GET, "/v1/requests"),
+    (Method::POST, "/v1/requests/{id}/accept"),
+    (Method::POST, "/v1/requests/{id}/decline"),
     (Method::GET, "/v1/contacts"),
     (Method::DELETE, "/v1/contacts/{account_id}"),
     (Method::GET, "/v1/agents"),
