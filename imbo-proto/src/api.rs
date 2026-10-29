@@ -234,7 +234,11 @@ pub struct Agent {
     pub id: Uuid,
     pub short_id: String,
     pub session_id: String,
+    /// The name I gave the session, else the tool's title (ADR-045).
     pub title: String,
+    /// The tool's own title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_title: Option<String>,
     pub tool: String,
     pub online: bool,
     pub device_id: Option<Uuid>,
@@ -250,6 +254,11 @@ pub struct Agent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentsResponse {
     pub agents: Vec<Agent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentResponse {
+    pub agent: Agent,
 }
 
 // ---- messages ----

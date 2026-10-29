@@ -34,6 +34,7 @@ struct Recipient {
     session: Option<Uuid>,
     session_title: Option<String>,
     computer: Option<String>,
+    group_name: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -44,11 +45,13 @@ struct Note {
 }
 
 async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
-    // Only what lands in a terminal inbox, minus what the person sent
-    // themselves from a terminal, the web or the App.
+    // What lands in a terminal inbox, and a group's messages for each
+    // member (ADR-046), minus what the person sent themselves from a
+    // terminal, the web or the App and what someone they block sent.
     let recipients: Vec<Recipient> = sqlx::query_as(
         "SELECT d.account_id, m.from_account, fa.name AS from_name, m.body, m.conversation_id,
-                m.from_agent_id AS session, ag.title AS session_title, dv.name AS computer
+                m.from_agent_id AS session, coalesce(ag.custom_title, ag.title) AS session_title, dv.name AS computer,
+                NULL::text AS group_name
          FROM deliveries d
          JOIN agents t ON t.id = d.agent_id AND t.tool = 'terminal'
          JOIN messages m ON m.id = d.message_id
@@ -56,7 +59,20 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
          LEFT JOIN agents ag ON ag.id = m.from_agent_id
          LEFT JOIN devices dv ON dv.id = ag.device_id
          WHERE d.message_id = $1
-           AND NOT (m.from_account = d.account_id AND m.from_agent_id IS NULL)",
+           AND NOT (m.from_account = d.account_id AND m.from_agent_id IS NULL)
+         UNION ALL
+         SELECT gm.account_id, m.from_account, fa.name, m.body, m.conversation_id,
+                m.from_agent_id, coalesce(ag.custom_title, ag.title), dv.name, g.name
+         FROM messages m
+         JOIN conversations cv ON cv.id = m.conversation_id
+         JOIN chat_groups g ON g.id = cv.group_id
+         JOIN group_members gm ON gm.group_id = g.id
+         JOIN accounts fa ON fa.id = m.from_account
+         LEFT JOIN agents ag ON ag.id = m.from_agent_id
+         LEFT JOIN devices dv ON dv.id = ag.device_id
+         WHERE m.id = $1
+           AND NOT (m.from_account = gm.account_id AND m.from_agent_id IS NULL)
+           AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.account_id = gm.account_id AND b.blocked_id = m.from_account)",
     )
     .bind(id)
     .fetch_all(&st.db)
@@ -85,17 +101,29 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
 }
 
 fn note(r: &Recipient, files: &[String]) -> Note {
+    let body = if r.body.trim().is_empty() {
+        files.join(", ")
+    } else {
+        r.body.chars().take(PREVIEW_CHARS).collect()
+    };
+    // A group's message is titled by the group, the sender up front.
+    if let Some(group) = &r.group_name {
+        let from = match &r.session_title {
+            Some(t) => format!("{} · {t}", r.from_name),
+            None => r.from_name.clone(),
+        };
+        return Note {
+            title: group.clone(),
+            body: format!("{from}: {body}"),
+            data: json!({ "conversation_id": r.conversation_id }),
+        };
+    }
     // A reply from one of the person's own sessions is titled by the session.
     let own_session = r.from_account == r.account_id;
     let title = match (&r.session_title, &r.computer) {
         (Some(t), Some(c)) if own_session => format!("{t} · {c}"),
         (Some(t), None) if own_session => t.clone(),
         _ => r.from_name.clone(),
-    };
-    let body = if r.body.trim().is_empty() {
-        files.join(", ")
-    } else {
-        r.body.chars().take(PREVIEW_CHARS).collect()
     };
     let mut data = json!({ "conversation_id": r.conversation_id });
     if own_session && let Some(s) = r.session {
@@ -199,6 +227,7 @@ mod tests {
             session: Some(Uuid::nil()),
             session_title: Some("checkout".into()),
             computer: Some("MacBook".into()),
+            group_name: None,
         }
     }
 
@@ -215,6 +244,22 @@ mod tests {
         let n = note(&recipient(1, "412 tests pass"), &[]);
         assert_eq!(n.title, "checkout · MacBook");
         assert_eq!(n.data["agent_id"], json!(Uuid::nil()));
+    }
+
+    #[test]
+    fn group_message_is_titled_by_the_group_with_the_sender_up_front() {
+        let mut r = recipient(2, "build is green");
+        r.group_name = Some("release".into());
+        let n = note(&r, &[]);
+        assert_eq!(n.title, "release");
+        assert_eq!(n.body, "bob · checkout: build is green");
+        assert_eq!(n.data, json!({ "conversation_id": 7 }));
+        // The person's own session in the group, sent without a session title.
+        let mut r = recipient(1, "done");
+        r.group_name = Some("release".into());
+        r.session_title = None;
+        assert_eq!(note(&r, &[]).body, "bob: done");
+        assert_eq!(note(&r, &[]).data, json!({ "conversation_id": 7 }));
     }
 
     #[test]

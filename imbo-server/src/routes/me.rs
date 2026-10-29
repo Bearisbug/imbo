@@ -5,12 +5,13 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use imbo_proto::ErrorCode;
+use imbo_proto::MAX_TITLE_CHARS;
 use imbo_proto::api::{
-    Account, AccountResponse, Agent, AgentsResponse, Device, DeviceRef, DevicesResponse,
-    MeResponse, RenameRequest,
+    Account, AccountResponse, Agent, AgentResponse, AgentsResponse, Device, DeviceRef,
+    DevicesResponse, MeResponse, RenameRequest,
 };
 use imbo_proto::frames::CLOSE_UNAUTHORIZED;
-use imbo_proto::text::validate_name;
+use imbo_proto::text::{strip_control, validate_name};
 use uuid::Uuid;
 
 use super::Body;
@@ -150,8 +151,15 @@ pub async fn list_agents(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
 ) -> ApiResult<Json<AgentsResponse>> {
+    let agents = agents_of(&st, c.account_id, None).await?;
+    Ok(Json(AgentsResponse { agents }))
+}
+
+/// API-014's rows: my sessions seen in the last 7 days, or just `only`.
+async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>> {
     let rows: Vec<(
         Uuid,
+        String,
         String,
         String,
         String,
@@ -162,19 +170,21 @@ pub async fn list_agents(
         Option<DateTime<Utc>>,
         i64,
     )> = sqlx::query_as(
-        "SELECT ag.id, ag.short_id, ag.session_id, ag.title, ag.tool, ag.online, ag.device_id, d.name, ag.last_online_at,
+        "SELECT ag.id, ag.short_id, ag.session_id, coalesce(ag.custom_title, ag.title), ag.title, ag.tool, ag.online, ag.device_id, d.name, ag.last_online_at,
                 (SELECT count(*) FROM deliveries dl JOIN messages m ON m.id = dl.message_id
                  JOIN agents t ON t.id = dl.agent_id
                  WHERE m.from_agent_id = ag.id AND t.account_id = $1 AND t.tool = 'terminal'
                    AND dl.state IN ('pending', 'pushed')) AS unread
          FROM agents ag LEFT JOIN devices d ON d.id = ag.device_id
          WHERE ag.account_id = $1 AND ag.tool <> 'terminal' AND (ag.online OR ag.last_online_at > now() - interval '7 days')
+           AND ($2::uuid IS NULL OR ag.id = $2)
          ORDER BY ag.online DESC, ag.last_online_at DESC NULLS LAST",
     )
-    .bind(c.account_id)
+    .bind(me)
+    .bind(only)
     .fetch_all(&st.db)
     .await?;
-    let agents = rows
+    Ok(rows
         .into_iter()
         .map(
             |(
@@ -182,27 +192,67 @@ pub async fn list_agents(
                 short_id,
                 session_id,
                 title,
+                tool_title,
                 tool,
                 online,
                 device_id,
                 device_name,
                 last_online_at,
                 unread,
-            )| {
-                Agent {
-                    id,
-                    short_id,
-                    session_id,
-                    title,
-                    tool,
-                    online,
-                    device_id,
-                    device_name,
-                    last_online_at,
-                    unread,
-                }
+            )| Agent {
+                id,
+                short_id,
+                session_id,
+                title,
+                tool_title: Some(tool_title),
+                tool,
+                online,
+                device_id,
+                device_name,
+                last_online_at,
+                unread,
             },
         )
-        .collect();
-    Ok(Json(AgentsResponse { agents }))
+        .collect())
+}
+
+#[derive(serde::Deserialize)]
+pub struct TitleIn {
+    title: Option<String>,
+}
+
+/// API-073: the name I give one of my sessions shows everywhere in place of
+/// the tool's title; an empty one brings the tool's title back (ADR-045).
+pub async fn rename_agent(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<String>,
+    Body(req): Body<TitleIn>,
+) -> ApiResult<Json<AgentResponse>> {
+    let not_found = || err(ErrorCode::NotFound, "No such session.");
+    let id = Uuid::parse_str(&id).map_err(|_| not_found())?;
+    let title = strip_control(req.title.as_deref().unwrap_or_default(), false)
+        .trim()
+        .to_string();
+    if title.chars().count() > MAX_TITLE_CHARS {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "A session name can be at most 200 characters.",
+        ));
+    }
+    if agents_of(&st, c.account_id, Some(id)).await?.is_empty() {
+        return Err(not_found());
+    }
+    sqlx::query("UPDATE agents SET custom_title = $3 WHERE id = $1 AND account_id = $2")
+        .bind(id)
+        .bind(c.account_id)
+        .bind((!title.is_empty()).then_some(title))
+        .execute(&st.db)
+        .await?;
+    let agent = agents_of(&st, c.account_id, Some(id))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(not_found)?;
+    Ok(Json(AgentResponse { agent }))
 }

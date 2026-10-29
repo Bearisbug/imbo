@@ -45,9 +45,9 @@ pub async fn messages(
     let rows: Vec<MessageRow> = sqlx::query_as(
         "SELECT m.id, m.body, m.created_at, m.conversation_id, c.kind, c.group_id, g.name AS group_name,
                 m.from_account, fa.name AS from_name, m.from_agent_id,
-                ag.short_id AS agent_short_id, ag.title AS agent_title, ag.tool AS agent_tool,
+                ag.short_id AS agent_short_id, coalesce(ag.custom_title, ag.title) AS agent_title, ag.tool AS agent_tool,
                 c.account_lo, c.account_hi,
-                m.to_agent_id, ta.short_id AS to_short_id, ta.title AS to_title, ta.tool AS to_tool
+                m.to_agent_id, ta.short_id AS to_short_id, coalesce(ta.custom_title, ta.title) AS to_title, ta.tool AS to_tool
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
          LEFT JOIN chat_groups g ON g.id = c.group_id
@@ -173,7 +173,7 @@ pub async fn messages(
 
 pub async fn agent_refs(db: &PgPool, ids: &[Uuid]) -> Result<Vec<AgentRef>, sqlx::Error> {
     let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
-        "SELECT id, short_id, title, tool FROM agents WHERE id = ANY($1) ORDER BY title",
+        "SELECT id, short_id, coalesce(custom_title, title) AS title, tool FROM agents WHERE id = ANY($1) ORDER BY title",
     )
     .bind(ids)
     .fetch_all(db)

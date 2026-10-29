@@ -556,13 +556,13 @@ pub async fn list_contacts(
 ) -> ApiResult<Json<ContactsResponse>> {
     let offline = q.offline.unwrap_or(false);
     let rows: Vec<ContactSessionRow> = sqlx::query_as(
-        "SELECT a.id AS peer_id, a.name AS peer_name, ag.short_id, ag.title, ag.tool, ag.online, ag.last_online_at
+        "SELECT a.id AS peer_id, a.name AS peer_name, ag.short_id, coalesce(ag.custom_title, ag.title) AS title, ag.tool, ag.online, ag.last_online_at
          FROM contacts ct
          JOIN accounts a ON a.id = ct.peer_id
          LEFT JOIN agents ag ON ag.account_id = a.id AND ag.tool <> 'terminal'
               AND (ag.online OR ($2 AND ag.last_online_at > now() - interval '7 days'))
          WHERE ct.account_id = $1
-         ORDER BY a.name, a.id, ag.online DESC, ag.title",
+         ORDER BY a.name, a.id, ag.online DESC, coalesce(ag.custom_title, ag.title)",
     )
     .bind(c.account_id)
     .bind(offline)

@@ -68,6 +68,7 @@ pub fn router(st: St) -> Router {
             get(conversations::agent_messages).post(messages::send_to_agent),
         )
         .route("/v1/agents/{id}/read", post(messages::mark_read))
+        .route("/v1/agents/{id}/title", put(me::rename_agent))
         .route("/v1/billing", get(billing::get))
         .route("/v1/billing/checkout", post(billing::checkout))
         .route("/v1/billing/portal", post(billing::portal))

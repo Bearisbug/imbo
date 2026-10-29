@@ -241,7 +241,7 @@ pub(crate) async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
                 )
             })?;
             let row: Option<(Uuid, String, String)> = sqlx::query_as(
-                "SELECT id, short_id, title FROM agents WHERE account_id = $1 AND tool = $2 AND session_id = $3 AND tool <> 'terminal'",
+                "SELECT id, short_id, coalesce(custom_title, title) FROM agents WHERE account_id = $1 AND tool = $2 AND session_id = $3 AND tool <> 'terminal'",
             )
             .bind(account_id)
             .bind(tool)
@@ -281,7 +281,12 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::GET, "/v1/agents/{id}/messages"),
     (Method::POST, "/v1/agents/{id}/messages"),
     (Method::POST, "/v1/agents/{id}/read"),
+    (Method::PUT, "/v1/agents/{id}/title"),
     (Method::GET, "/v1/groups"),
+    (Method::POST, "/v1/groups"),
+    (Method::POST, "/v1/groups/{id}/invites"),
+    (Method::PUT, "/v1/groups/{id}/sessions"),
+    (Method::POST, "/v1/files"),
     (Method::POST, "/v1/messages"),
     (Method::GET, "/v1/messages/{id}"),
     (Method::GET, "/v1/files/{id}"),
@@ -316,6 +321,7 @@ const WEB_ONLY: &[(Method, &str)] = &[
     (Method::POST, "/v1/reports"),
     (Method::POST, "/v1/agents/{id}/messages"),
     (Method::POST, "/v1/agents/{id}/read"),
+    (Method::PUT, "/v1/agents/{id}/title"),
     (Method::POST, "/v1/billing/checkout"),
     (Method::POST, "/v1/billing/portal"),
     (Method::DELETE, "/v1/web/session"),
@@ -415,7 +421,9 @@ pub async fn cors(State(st): State<St>, req: Request, next: Next) -> Response {
         );
         h.insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("content-type, imbo-request-id"),
+            HeaderValue::from_static(
+                "content-type, imbo-request-id, imbo-file-name, imbo-file-sha256",
+            ),
         );
         h.insert(
             header::ACCESS_CONTROL_MAX_AGE,

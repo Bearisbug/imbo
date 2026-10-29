@@ -1,5 +1,6 @@
 //! `imbo status`.
 
+use imbo_proto::api::AgentsResponse;
 use imbo_proto::local::{DaemonStatus, LocalRequest};
 
 use super::{Reported, pad, tool_name};
@@ -13,7 +14,26 @@ pub async fn status() -> anyhow::Result<()> {
         Ok(r) => r,
         Err(p) => return Err(super::report(&p)),
     };
-    let st: DaemonStatus = serde_json::from_value(res.body)?;
+    let mut st: DaemonStatus = serde_json::from_value(res.body)?;
+    // A name the person gave a session on the web or the App (ADR-045);
+    // without the server, the tool's own title.
+    if st.connected
+        && let Some(r) = Local::new()
+            .call("GET", "/v1/agents", None, None)
+            .await
+            .ok()
+            .and_then(|(v, _)| serde_json::from_value::<AgentsResponse>(v).ok())
+    {
+        for s in &mut st.sessions {
+            if let Some(a) = r
+                .agents
+                .iter()
+                .find(|a| a.tool == s.tool && a.session_id == s.session_id)
+            {
+                s.title = a.title.clone();
+            }
+        }
+    }
     println!(
         "{}  {}",
         ui::heading("imbo"),

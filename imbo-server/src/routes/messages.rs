@@ -106,7 +106,7 @@ async fn my_groups(db: &PgPool, me: i32) -> Result<Vec<GroupRef>, sqlx::Error> {
 
 async fn agents_of(db: &PgPool, account: i32) -> Result<Vec<AgentRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, short_id, title, tool, online FROM agents WHERE account_id = $1 AND tool <> 'terminal'
+        "SELECT id, short_id, coalesce(custom_title, title) AS title, tool, online FROM agents WHERE account_id = $1 AND tool <> 'terminal'
          ORDER BY online DESC, last_online_at DESC NULLS LAST",
     )
     .bind(account)
@@ -760,7 +760,7 @@ async fn my_session(st: &St, me: i32, raw: &str) -> ApiResult<AgentRow> {
     let not_found = || err(ErrorCode::NotFound, "No such session.");
     let id = Uuid::parse_str(raw).map_err(|_| not_found())?;
     sqlx::query_as(
-        "SELECT id, short_id, title, tool, online FROM agents
+        "SELECT id, short_id, coalesce(custom_title, title) AS title, tool, online FROM agents
          WHERE id = $1 AND account_id = $2 AND tool <> 'terminal'
            AND (online OR last_online_at > now() - interval '7 days')",
     )
@@ -804,6 +804,7 @@ pub async fn with_states(
 pub struct AgentSendIn {
     body: Option<String>,
     client_msg_id: Option<String>,
+    files: Option<Vec<Uuid>>,
 }
 
 /// API-043: the web app writes to one of my sessions; the sender is my
@@ -816,7 +817,16 @@ pub async fn send_to_agent(
 ) -> ApiResult<(StatusCode, Json<MessageResponse>)> {
     let body = req.body.unwrap_or_default();
     let client_msg_id = req.client_msg_id.unwrap_or_default();
-    if body.trim().is_empty() || body.chars().count() > MAX_BODY_CHARS {
+    let mut files = req.files.unwrap_or_default();
+    files.sort_unstable();
+    files.dedup();
+    if files.len() > MAX_FILES {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "A message can carry at most 20 files.",
+        ));
+    }
+    if (files.is_empty() && body.trim().is_empty()) || body.chars().count() > MAX_BODY_CHARS {
         return Err(err(
             ErrorCode::BodyInvalid,
             "The message must be 1 to 32000 characters.",
@@ -840,7 +850,7 @@ pub async fn send_to_agent(
                 },
                 agent,
             };
-            store(&st, &c, &target, &body, &client_msg_id, &[])
+            store(&st, &c, &target, &body, &client_msg_id, &files)
                 .await?
                 .message_id
         }
@@ -913,7 +923,7 @@ pub async fn list_inbox(
 ) -> ApiResult<Json<InboxResponse>> {
     let agent = q.agent.or_else(|| c.actor.as_ref().map(|a| a.id));
     let rows: Vec<InboxRow> = sqlx::query_as(
-        "SELECT d.message_id, d.agent_id, a.short_id, a.title, a.tool, d.state FROM deliveries d
+        "SELECT d.message_id, d.agent_id, a.short_id, coalesce(a.custom_title, a.title) AS title, a.tool, d.state FROM deliveries d
          JOIN agents a ON a.id = d.agent_id
          WHERE d.account_id = $1 AND ($2::uuid IS NULL OR d.agent_id = $2)
            AND (d.state IN ('pending', 'pushed') OR ($3 AND d.state = 'delivered'))
