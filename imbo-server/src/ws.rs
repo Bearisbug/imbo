@@ -141,10 +141,12 @@ async fn handle(st: &St, caller: &Caller, frame: ClientFrame) -> anyhow::Result<
             .bind(&keep)
             .execute(&st.db)
             .await?;
+            st.wakes.online(&online);
             delivery::kick(st, online);
         }
         ClientFrame::Presence { sessions } => {
             let online = apply_presence(st, caller, &sessions).await?;
+            st.wakes.online(&online);
             delivery::kick(st, online);
         }
         ClientFrame::Ack {
@@ -162,6 +164,10 @@ async fn handle(st: &St, caller: &Caller, frame: ClientFrame) -> anyhow::Result<
         } => {
             info!(message_id, %agent_id, reason, "nack");
             delivery::nack(st, caller.account_id, message_id, agent_id).await?;
+        }
+        ClientFrame::Woken { agent_id, error } => {
+            info!(%agent_id, error = error.as_deref().unwrap_or(""), "woken");
+            st.wakes.answer(caller.account_id, agent_id, error);
         }
     }
     Ok(())

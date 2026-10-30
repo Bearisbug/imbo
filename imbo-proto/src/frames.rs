@@ -44,6 +44,12 @@ pub enum ClientFrame {
         agent_id: Uuid,
         reason: String,
     },
+    /// Answer to `wake`: the session came online, or `error` says why not.
+    Woken {
+        agent_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,4 +87,10 @@ pub enum ServerFrame {
         agent_id: Uuid,
     },
     Notice(Notice),
+    /// Open this closed session in the background (FLOW-WAKE).
+    Wake {
+        agent_id: Uuid,
+        tool: String,
+        session_id: String,
+    },
 }

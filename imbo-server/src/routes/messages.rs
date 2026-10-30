@@ -839,6 +839,7 @@ pub async fn send_to_agent(
         ));
     }
     let agent = my_session(&st, c.account_id, &raw).await?;
+    let agent_id = agent.id;
     let message_id = match existing_result(&st, c.account_id, &client_msg_id).await? {
         Some(done) => done.message_id,
         None => {
@@ -850,9 +851,13 @@ pub async fn send_to_agent(
                 },
                 agent,
             };
-            store(&st, &c, &target, &body, &client_msg_id, &files)
+            let id = store(&st, &c, &target, &body, &client_msg_id, &files)
                 .await?
-                .message_id
+                .message_id;
+            if c.web_person() {
+                crate::wake::request(&st, c.account_id, agent_id).await?;
+            }
+            id
         }
     };
     let mut messages = views::messages(&st.db, &[message_id], c.account_id).await?;

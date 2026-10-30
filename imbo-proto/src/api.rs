@@ -256,6 +256,24 @@ pub struct Agent {
     /// Messages this session sent the terminal inbox that are still unread.
     #[serde(default)]
     pub unread: i64,
+    /// A message from me in the App or on the web opens it on its computer
+    /// (FLOW-WAKE).
+    #[serde(default)]
+    pub wakeable: bool,
+    /// The last try to open it, while it is still offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<WakeView>,
+}
+
+/// How opening an offline session on its computer went (API-014).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WakeView {
+    /// `waking` or `failed`.
+    pub state: String,
+    /// Why it failed, for the person to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

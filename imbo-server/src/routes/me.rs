@@ -169,12 +169,14 @@ async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>
         Option<String>,
         Option<DateTime<Utc>>,
         i64,
+        Option<String>,
     )> = sqlx::query_as(
         "SELECT ag.id, ag.short_id, ag.session_id, coalesce(ag.custom_title, ag.title), ag.title, ag.tool, ag.online, ag.device_id, d.name, ag.last_online_at,
                 (SELECT count(*) FROM deliveries dl JOIN messages m ON m.id = dl.message_id
                  JOIN agents t ON t.id = dl.agent_id
                  WHERE m.from_agent_id = ag.id AND t.account_id = $1 AND t.tool = 'terminal'
-                   AND dl.state IN ('pending', 'pushed')) AS unread
+                   AND dl.state IN ('pending', 'pushed')) AS unread,
+                d.client_version
          FROM agents ag LEFT JOIN devices d ON d.id = ag.device_id
          WHERE ag.account_id = $1 AND ag.tool <> 'terminal' AND (ag.online OR ag.last_online_at > now() - interval '7 days')
            AND ($2::uuid IS NULL OR ag.id = $2)
@@ -199,7 +201,13 @@ async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>
                 device_name,
                 last_online_at,
                 unread,
+                client_version,
             )| Agent {
+                wakeable: !online
+                    && tool == imbo_proto::TOOL_CLAUDE
+                    && device_id.is_some_and(|d| st.hub.connected(d))
+                    && crate::wake::supports(client_version.as_deref()),
+                wake: if online { None } else { st.wakes.view(id) },
                 id,
                 short_id,
                 session_id,

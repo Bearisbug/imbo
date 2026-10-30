@@ -175,6 +175,14 @@ fn handle(d: &D, f: ServerFrame) -> bool {
             d.canceled.lock().unwrap().insert((message_id, agent_id));
         }
         ServerFrame::Notice(n) => d.push_notice(n),
+        ServerFrame::Wake {
+            agent_id,
+            tool,
+            session_id,
+        } => {
+            info!(%agent_id, %tool, session = %session_id, "wake");
+            d.wake(agent_id, tool, session_id);
+        }
     }
     true
 }

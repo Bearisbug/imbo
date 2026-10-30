@@ -25,6 +25,8 @@ pub struct AppState {
     push_locks: Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
     /// The last API-074 count and when it was taken.
     pub stats: Mutex<Option<(Instant, i64)>>,
+    /// Closed sessions being opened on their computers (FLOW-WAKE).
+    pub wakes: crate::wake::Wakes,
 }
 
 pub type St = Arc<AppState>;
@@ -42,6 +44,7 @@ impl AppState {
             webhook_errors: Mutex::new(VecDeque::new()),
             push_locks: Mutex::new(HashMap::new()),
             stats: Mutex::new(None),
+            wakes: Default::default(),
         })
     }
 

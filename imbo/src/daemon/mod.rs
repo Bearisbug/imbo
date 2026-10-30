@@ -45,6 +45,9 @@ pub struct Daemon {
     /// Sessions with a delivery sent back to the server: only these pull in
     /// the prompt hooks (API-LOCAL-003).
     pub nacked: Mutex<HashSet<Key>>,
+    /// Closed sessions being opened for a message from the App or the web
+    /// (FLOW-WAKE).
+    waking: Mutex<HashSet<Key>>,
     uploads: Mutex<files::Recent>,
     fetch_locks: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
     /// One upload at a time per file (SHA-256, name): a caller that gave up
@@ -96,6 +99,55 @@ impl Daemon {
             }
             self.send_frame(ClientFrame::Presence { sessions: changes });
         }
+    }
+
+    /// FLOW-WAKE: open a closed session in the background, wait for it to
+    /// come online and tell the server how it went. Once per session at a
+    /// time.
+    fn wake(self: &Arc<Self>, agent_id: Uuid, tool: String, session_id: String) {
+        let key = (tool, session_id);
+        if !self.waking.lock().unwrap().insert(key.clone()) {
+            info!(session = %key.1, "already opening this session");
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            let error = me.open(&key).await.err();
+            me.waking.lock().unwrap().remove(&key);
+            match &error {
+                Some(e) => warn!(session = %key.1, error = %e, "couldn't open the session"),
+                None => info!(session = %key.1, "session opened"),
+            }
+            me.send_frame(ClientFrame::Woken { agent_id, error });
+        });
+    }
+
+    async fn open(&self, key: &Key) -> Result<(), String> {
+        let online = || {
+            self.sessions
+                .lock()
+                .unwrap()
+                .get(key)
+                .is_some_and(|e| e.online)
+        };
+        if online() {
+            return Ok(());
+        }
+        if key.0 != imbo_proto::TOOL_CLAUDE {
+            return Err("Only Claude Code sessions can be opened from the App or the web.".into());
+        }
+        let id = key.1.clone();
+        tokio::task::spawn_blocking(move || adapters::claude::wake(&id))
+            .await
+            .map_err(|e| format!("Imbo couldn't open it: {e}"))??;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !online() {
+            if tokio::time::Instant::now() > deadline {
+                return Err("It didn't come online within 30 seconds.".into());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok(())
     }
 
     fn enqueue(self: &Arc<Self>, d: Delivery) {
@@ -273,6 +325,7 @@ pub async fn run() -> anyhow::Result<()> {
         queues: Mutex::new(HashMap::new()),
         canceled: Mutex::new(HashSet::new()),
         nacked: Mutex::new(HashSet::new()),
+        waking: Mutex::new(HashSet::new()),
         uploads: Mutex::new(HashMap::new()),
         fetch_locks: Mutex::new(HashMap::new()),
         upload_locks: Mutex::new(HashMap::new()),

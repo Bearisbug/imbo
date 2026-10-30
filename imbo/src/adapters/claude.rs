@@ -130,6 +130,7 @@ impl Adapter for Claude {
             failures,
         };
         let f = found(&r.session_id, session.pid, &session.dir);
+        remember_dir(&session.dir);
         map.insert(r.session_id, session);
         Some(f)
     }
@@ -348,6 +349,191 @@ fn pid_for(session_id: &str) -> Option<u32> {
         .find(|f| f.session_id.as_deref() == Some(session_id))
         .and_then(|f| f.pid)
         .filter(|pid| alive(*pid))
+}
+
+/// Config directories sessions registered from, so a closed session's
+/// record can be found again (FLOW-WAKE).
+fn dirs_file() -> PathBuf {
+    crate::paths::Home::resolve().state().join("claude-dirs")
+}
+
+fn remember_dir(dir: &Path) {
+    let path = dirs_file();
+    let known = std::fs::read_to_string(&path).unwrap_or_default();
+    let line = dir.to_string_lossy();
+    if !known.lines().any(|l| l == line) {
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+        let _ = std::fs::write(&path, format!("{known}{line}\n"));
+    }
+}
+
+/// `~/.claude`, where Claude Code keeps its files when `CLAUDE_CONFIG_DIR`
+/// isn't set.
+fn default_dir() -> PathBuf {
+    user_home().join(".claude")
+}
+
+/// The config directory and transcript of a session, closed or not.
+fn find_transcript(session_id: &str) -> Option<(PathBuf, PathBuf)> {
+    let mut dirs = vec![default_dir(), config_dir()];
+    let known = std::fs::read_to_string(dirs_file()).unwrap_or_default();
+    dirs.extend(known.lines().filter(|l| !l.is_empty()).map(PathBuf::from));
+    let name = format!("{session_id}.jsonl");
+    let mut seen = std::collections::HashSet::new();
+    for dir in dirs.into_iter().filter(|d| seen.insert(d.clone())) {
+        let Ok(projects) = std::fs::read_dir(dir.join("projects")) else {
+            continue;
+        };
+        for p in projects.filter_map(|e| e.ok()) {
+            let path = p.path().join(&name);
+            if path.is_file() {
+                return Some((dir, path));
+            }
+        }
+    }
+    None
+}
+
+/// The folder a session started in (the first `cwd` in its transcript) and
+/// its permission mode (the last `permissionMode`).
+fn transcript_start(path: &Path) -> Option<(String, Option<String>)> {
+    let file = std::fs::File::open(path).ok()?;
+    let (mut cwd, mut mode) = (None, None);
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        let wanted =
+            (cwd.is_none() && line.contains("\"cwd\"")) || line.contains("\"permissionMode\"");
+        if !wanted {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if cwd.is_none() {
+            cwd = v.get("cwd").and_then(Value::as_str).map(String::from);
+        }
+        if let Some(m) = v.get("permissionMode").and_then(Value::as_str) {
+            mode = Some(m.to_string());
+        }
+    }
+    Some((cwd?, mode))
+}
+
+/// Whether a running Claude Code process in `dir` has the session open.
+fn open_in(dir: &Path, session_id: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else {
+        return false;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| read(&e.path()))
+        .any(|f| f.session_id.as_deref() == Some(session_id) && f.pid.is_some_and(alive))
+}
+
+fn claude_bin() -> Option<PathBuf> {
+    crate::paths::which("claude").or_else(|| {
+        let home = user_home();
+        [
+            home.join(".local/bin/claude"),
+            PathBuf::from("/opt/homebrew/bin/claude"),
+            PathBuf::from("/usr/local/bin/claude"),
+            home.join(".claude/local/claude"),
+        ]
+        .into_iter()
+        .find(|p| p.is_file())
+    })
+}
+
+/// FLOW-WAKE: open a closed session in the background with `claude --bg
+/// --resume`, in the folder it started in, with its config directory and
+/// permission mode (ADR-049). Returns once `claude` has handed the session
+/// to Claude Code's background service; the error is the reason to show.
+pub fn wake(session_id: &str) -> Result<(), String> {
+    const NO_RECORD: &str = "No record of this session on this computer.";
+    let (dir, transcript) = find_transcript(session_id).ok_or(NO_RECORD)?;
+    let (cwd, mode) = transcript_start(&transcript).ok_or(NO_RECORD)?;
+    if !Path::new(&cwd).is_dir() {
+        return Err(format!("Its folder {cwd} is gone."));
+    }
+    if open_in(&dir, session_id) {
+        return Err("It's open in a window that isn't connected to Imbo.".into());
+    }
+    let claude = claude_bin().ok_or("Claude Code isn't installed where Imbo can find it.")?;
+    let log = crate::paths::Home::resolve()
+        .state()
+        .join(format!("wake-{session_id}.log"));
+    let out = std::fs::File::create(&log).map_err(|e| format!("Imbo couldn't open it: {e}"))?;
+    let err = out
+        .try_clone()
+        .map_err(|e| format!("Imbo couldn't open it: {e}"))?;
+    let mut cmd = std::process::Command::new(claude);
+    cmd.args(["--bg", "--resume", session_id])
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err);
+    if let Some(m) = &mode {
+        cmd.args(["--permission-mode", m]);
+    }
+    // Test sessions load the plugin from a folder rather than the installed one.
+    if let Some(p) = env("IMBO_WAKE_PLUGIN_DIR") {
+        cmd.arg("--plugin-dir").arg(p);
+    }
+    if dir == default_dir() {
+        cmd.env_remove("CLAUDE_CONFIG_DIR");
+    } else {
+        cmd.env("CLAUDE_CONFIG_DIR", &dir);
+    }
+    for k in [
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+    ] {
+        cmd.env_remove(k);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Claude Code couldn't open it: {e}"))?;
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if start.elapsed() < Duration::from_secs(20) => {
+                std::thread::sleep(Duration::from_millis(200))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = std::fs::remove_file(&log);
+                return Err(
+                    "Claude Code couldn't open it: claude didn't finish within 20 seconds.".into(),
+                );
+            }
+        }
+    };
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    info!(
+        session = session_id,
+        cwd,
+        mode = mode.as_deref().unwrap_or(""),
+        ok = status.success(),
+        "claude --bg --resume"
+    );
+    if status.success() {
+        return Ok(());
+    }
+    if text.to_lowercase().contains("not trusted") {
+        return Err(format!(
+            "Claude Code doesn't trust the folder {cwd} yet; open Claude Code there once."
+        ));
+    }
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("it exited with an error");
+    Err(format!("Claude Code couldn't open it: {first}"))
 }
 
 fn alive(pid: u32) -> bool {

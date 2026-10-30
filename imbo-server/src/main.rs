@@ -18,6 +18,7 @@ mod routes;
 mod safety;
 mod state;
 mod views;
+mod wake;
 mod ws;
 
 use std::net::SocketAddr;
