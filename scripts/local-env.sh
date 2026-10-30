@@ -7,7 +7,7 @@
 # $L must stay short: macOS limits Unix socket paths to 104 bytes, and
 # Codex's control socket lives three levels under $L/codex-home.
 ROOT=$(cd "$(dirname "${BASH_SOURCE:-$0}")/.." && pwd)
-export L=/tmp/imbo-t TH=/tmp/imbo-t/th TP=/tmp/imbo-t/tp
+export L=/tmp/imbo-t TH=/tmp/imbo-t/th TP=/tmp/imbo-t/tp TD=/tmp/imbo-t/td
 export I="$ROOT/target/debug/imbo" S="$ROOT/target/debug/imbo-server" IMBO="$ROOT/target/debug/imbo"
 export M="$ROOT/scripts/mcp-call.py"
 # The caller's Claude profile stays out too: imbo setup writes into $CLAUDE_CONFIG_DIR,
@@ -68,9 +68,9 @@ case "${1:-}" in
     # under it leaves it hung on the port.
     i=0; while pgrep -f "^$S" >/dev/null && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
     pkill -9 -f "^$S"
-    # Tools started with HOME=$TH or $TP, such as opencode's background
-    # service and Hermes Agent's gateway.
-    ps -axE -o pid=,command= | grep -E "HOME=($TH|$TP) " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null
+    # Tools started with HOME=$TH, $TP or $TD, such as opencode's background
+    # service, Hermes Agent's gateway and DeepSeek Harness.
+    ps -axE -o pid=,command= | grep -E "HOME=($TH|$TP|$TD) " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null
     ps -ax -o pid=,command= | grep "$L/codex-home" | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null
     sleep 1
     # MiniMax Code makes its plugin hook cache read-only.
