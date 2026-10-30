@@ -130,7 +130,9 @@ impl Adapter for Claude {
             failures,
         };
         let f = found(&r.session_id, session.pid, &session.dir);
-        remember_dir(&session.dir);
+        if map.get(&r.session_id).map(|s| &s.dir) != Some(&session.dir) {
+            remember_dir(&r.session_id, &session.dir);
+        }
         map.insert(r.session_id, session);
         Some(f)
     }
@@ -351,16 +353,17 @@ fn pid_for(session_id: &str) -> Option<u32> {
         .filter(|pid| alive(*pid))
 }
 
-/// Config directories sessions registered from, so a closed session's
-/// record can be found again (FLOW-WAKE).
+/// The config directory each session registered from, one `<session id>
+/// <dir>` line each, so a closed session's record can be found again
+/// (FLOW-WAKE).
 fn dirs_file() -> PathBuf {
     crate::paths::Home::resolve().state().join("claude-dirs")
 }
 
-fn remember_dir(dir: &Path) {
+fn remember_dir(session_id: &str, dir: &Path) {
     let path = dirs_file();
     let known = std::fs::read_to_string(&path).unwrap_or_default();
-    let line = dir.to_string_lossy();
+    let line = format!("{session_id} {}", dir.to_string_lossy());
     if !known.lines().any(|l| l == line) {
         let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
         let _ = std::fs::write(&path, format!("{known}{line}\n"));
@@ -373,11 +376,28 @@ fn default_dir() -> PathBuf {
     user_home().join(".claude")
 }
 
+/// Where to look for a session's record: the directory it registered from
+/// first, since several config directories can share one `projects` folder
+/// (profile switchers link theirs to `~/.claude`'s); then the default, the
+/// daemon's own, and the others sessions registered from.
+fn search_dirs(session_id: &str, known: &str, default: PathBuf, own: PathBuf) -> Vec<PathBuf> {
+    let known: Vec<_> = known.lines().filter_map(|l| l.split_once(' ')).collect();
+    let mut dirs: Vec<PathBuf> = known
+        .iter()
+        .rev()
+        .find(|(s, _)| *s == session_id)
+        .map(|(_, d)| PathBuf::from(d))
+        .into_iter()
+        .collect();
+    dirs.extend([default, own]);
+    dirs.extend(known.iter().map(|(_, d)| PathBuf::from(d)));
+    dirs
+}
+
 /// The config directory and transcript of a session, closed or not.
 fn find_transcript(session_id: &str) -> Option<(PathBuf, PathBuf)> {
-    let mut dirs = vec![default_dir(), config_dir()];
     let known = std::fs::read_to_string(dirs_file()).unwrap_or_default();
-    dirs.extend(known.lines().filter(|l| !l.is_empty()).map(PathBuf::from));
+    let dirs = search_dirs(session_id, &known, default_dir(), config_dir());
     let name = format!("{session_id}.jsonl");
     let mut seen = std::collections::HashSet::new();
     for dir in dirs.into_iter().filter(|d| seen.insert(d.clone())) {
@@ -869,6 +889,25 @@ mod tests {
         .unwrap();
         assert_eq!(title(4242, &dir), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_session_is_looked_for_first_where_it_registered() {
+        let known = "a /p/lai\nb /p/other dir\na /p/work\n";
+        let dirs = |s| search_dirs(s, known, "/h/.claude".into(), "/h/own".into());
+        let d: Vec<PathBuf> = [
+            "/p/work",
+            "/h/.claude",
+            "/h/own",
+            "/p/lai",
+            "/p/other dir",
+            "/p/work",
+        ]
+        .map(PathBuf::from)
+        .into();
+        assert_eq!(dirs("a"), d);
+        assert_eq!(dirs("c")[0], PathBuf::from("/h/.claude"));
+        assert_eq!(dirs("b")[0], PathBuf::from("/p/other dir"));
     }
 
     #[test]
