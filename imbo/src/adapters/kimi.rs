@@ -300,7 +300,7 @@ fn note() -> String {
 /// command is the same every time, so a session approves it once.
 fn rearm() -> String {
     format!(
-        "{}\n\nImbo's message listener isn't running. Use the Bash tool to run the command below in the background (run_in_background=true, disable_timeout=true, description \"{}\"); don't wait for it to finish. The description is for later: when the command finishes, messages have arrived, and only then call the inbox tool. No messages wait now, so don't call the inbox tool or any other tool; end this turn right after starting the command without saying anything else: {}",
+        "{}\n\nImbo's message listener isn't running. Use the Bash tool to start the command below in the background (run_in_background=true, disable_timeout=true, description \"{}\"), then end this turn at once, with no other tool call and no text: don't call the inbox tool and don't check that the command started. The command keeps running until a message comes; then Kimi Code starts a new turn showing that description, and that's when you call the inbox tool. Command: {}",
         note(),
         super::WAKE,
         hook_command(&Home::resolve(), "wait")
