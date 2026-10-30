@@ -843,10 +843,10 @@ def tc269():
     p, health = m9_start(ENV["S"])
     cols = columns()
     rows = sql("SELECT id, provider FROM subscriptions", M9)
-    ver = sql("SELECT max(version) FROM _sqlx_migrations", M9)
+    ver = sql("SELECT version, success FROM _sqlx_migrations WHERE version = 9", M9)
     want = run([ENV["S"], "--version"])[1].split()[-1]
     check(269, 2, health.get("version") == want and "provider" in cols and rows == [("ORD_t269", "waffo")]
-          and ver == [(9,)], "new build: version, provider column, old row is waffo, migration 9",
+          and ver == [(9, True)], "new build: version, provider column, old row is waffo, migration 9 ran",
           (health, cols, rows, ver))
     cred = open(f"{M9}/h/bob/credentials").read()
     token = re.search(r'^token = "(.*)"', cred, re.M).group(1)
