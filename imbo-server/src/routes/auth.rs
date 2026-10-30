@@ -431,7 +431,7 @@ pub async fn web_login(
     Body(req): Body<WebLoginRequest>,
 ) -> ApiResult<Response> {
     require_web_origin(&st, &headers)?;
-    let (mut tx, account, new_account) =
+    let (mut tx, mut account, new_account) =
         sign_in(&st, &req.email, &req.code, req.name.as_ref()).await?;
     let token = new_token();
     sqlx::query(
@@ -445,6 +445,8 @@ pub async fn web_login(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    // After the commit, so a new admin's account is there to look up.
+    account.admin = super::admin::is_admin(&st, account.id).await?;
     info!(
         event = "web_login",
         account_id = account.id,
