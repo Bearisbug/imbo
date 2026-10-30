@@ -5,6 +5,7 @@
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod dsh;
 pub mod hermes;
 pub mod kimi;
 pub mod mcode;
@@ -29,13 +30,14 @@ use crate::paths::Home;
 /// leave the same marks: ZCode sets Claude Code's session variable for its
 /// hooks, and tools started from a Claude Code or Codex shell inherit theirs
 /// (ADR-018).
-static ALL: [&dyn Adapter; 9] = [
+static ALL: [&dyn Adapter; 10] = [
     &zcode::ZCODE,
     &cursor::CURSOR,
     &mcode::MCODE,
     &kimi::KIMI,
     &pi::PI,
     &hermes::HERMES,
+    &dsh::DSH,
     &opencode::OPENCODE,
     &claude::CLAUDE,
     &codex::CODEX,

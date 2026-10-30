@@ -29,6 +29,7 @@ pub const TOOL_ZCODE: &str = "zcode";
 pub const TOOL_KIMI: &str = "kimi-code";
 pub const TOOL_PI: &str = "pi";
 pub const TOOL_HERMES: &str = "hermes";
+pub const TOOL_DSH: &str = "deepseek-harness";
 /// The account's terminal inbox (ADR-010): an `agents` row that is never online.
 pub const TOOL_TERMINAL: &str = "terminal";
 
