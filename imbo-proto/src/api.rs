@@ -324,6 +324,10 @@ pub struct SendResponse {
     /// inactive (RULE-008).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inactive_members: Option<u32>,
+    /// Group sends only: members an `@` in the body named, whose inbox got
+    /// it instead (RULE-015). Not counted in `recipients`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentioned: Vec<AccountRef>,
 }
 
 /// Who sent a message, as determined by the server.
@@ -331,17 +335,31 @@ pub struct SendResponse {
 pub struct Sender {
     pub account_id: AccountId,
     pub name: String,
-    /// The sending session; absent when the person sent from a terminal.
+    /// The sending session; absent when the person sent it themselves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentRef>,
+    /// Where the person wrote it when they sent it themselves: `terminal`,
+    /// `app` or `web` (ADR-056); absent on older messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 impl Sender {
-    /// "name · session title", or "name · terminal" for the person.
+    /// "name · session title", or "name · terminal", "name · App" or
+    /// "name · Web" for the person.
     pub fn display(&self) -> String {
         match &self.agent {
             Some(a) => format!("{} · {}", self.name, a.title),
-            None => format!("{} · terminal", self.name),
+            None => format!("{} · {}", self.name, self.source()),
+        }
+    }
+
+    /// Where the person wrote it, as shown; older messages read `terminal`.
+    pub fn source(&self) -> &'static str {
+        match self.via.as_deref() {
+            Some("app") => "App",
+            Some("web") => "Web",
+            _ => "terminal",
         }
     }
 }
@@ -360,12 +378,12 @@ pub struct MessageView {
     /// The receiving session of a direct message; `terminal` for the terminal inbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<AgentRef>,
-    /// The reader sent it in person, from a terminal or the web app, not
-    /// from a session (RULE-012).
+    /// The reader sent it themselves, not from a session (RULE-012).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_me: bool,
-    /// Delivery state to `to`, on what the person sent their own session
-    /// (API-036, API-043): `pending`, `pushed`, `delivered` or `canceled`.
+    /// Delivery state, on what the person sent their own session (API-036,
+    /// API-043) and on what reached the reader's sessions but not yet in
+    /// them (API-031): `pending`, `pushed`, `delivered` or `canceled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     /// On a group message: the reader's other sessions that got it too, to
@@ -469,6 +487,10 @@ pub struct AppLoginResponse {
 pub struct PushTokenRequest {
     /// An Expo push token, `ExponentPushToken[…]`.
     pub push_token: String,
+    /// The App's language, `en` or `zh-Hans`, for the words the server
+    /// writes into a notification (ADR-057).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -616,6 +638,9 @@ pub struct MemberRef {
     /// Same as [`ContactItem::active`].
     #[serde(default = "yes")]
     pub active: bool,
+    /// The sessions they picked for this group's messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<AgentRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

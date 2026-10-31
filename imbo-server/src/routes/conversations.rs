@@ -1,15 +1,20 @@
 //! API-030 listConversations, API-031 listConversationMessages,
-//! API-036 listAgentMessages: reading history, for the web app.
+//! API-036 listAgentMessages, API-078 markConversationRead: reading
+//! history, for the web app and the App.
 
 use axum::extract::{Path, Query, State};
 use axum::{Extension, Json};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    ConversationItem, ConversationsResponse, FileView, LastMessage, MessagesPage, Profile,
+    ConversationItem, ConversationsResponse, FileView, LastMessage, MessageView, MessagesPage,
+    Profile, ReadResponse,
 };
 use serde::Deserialize;
+use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::Body;
+use super::messages::ReadIn;
 use crate::auth::Caller;
 use crate::error::{ApiResult, err};
 use crate::state::St;
@@ -63,7 +68,8 @@ pub async fn list(
                    AND (mine.kind = 'direct' OR m.from_account NOT IN
                         (SELECT blocked_id FROM blocks WHERE account_id = $1))) AS last_id,
                 (SELECT count(*) FROM deliveries d JOIN messages m ON m.id = d.message_id
-                 WHERE m.conversation_id = mine.id AND d.account_id = $1
+                 JOIN agents t ON t.id = d.agent_id
+                 WHERE m.conversation_id = mine.id AND d.account_id = $1 AND t.tool = 'terminal'
                    AND d.state IN ('pending', 'pushed')) AS pending
          FROM mine
          LEFT JOIN chat_groups g ON g.id = mine.group_id
@@ -177,6 +183,48 @@ async fn page(
     Ok((ids, has_more))
 }
 
+/// The kind of conversation `id` when `me` may read it: one side of the
+/// direct conversation, or in the group now.
+async fn kind_of(st: &St, id: i64, me: i32) -> ApiResult<String> {
+    let kind: Option<String> = sqlx::query_scalar(
+        "SELECT cv.kind FROM conversations cv WHERE cv.id = $1 AND (
+           $2 IN (cv.account_lo, cv.account_hi)
+           OR EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = cv.group_id AND gm.account_id = $2))",
+    )
+    .bind(id)
+    .bind(me)
+    .fetch_optional(&st.db)
+    .await?;
+    kind.ok_or_else(|| err(ErrorCode::NotFound, format!("No conversation {id}.")))
+}
+
+/// On messages that reached `me`'s sessions but none of them has taken
+/// yet, the slowest delivery's state, for the "waiting for the session"
+/// mark (API-031).
+async fn with_waiting(
+    db: &PgPool,
+    messages: &mut [MessageView],
+    me: i32,
+) -> Result<(), sqlx::Error> {
+    let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+    let states: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT d.message_id, min(d.state) FROM deliveries d JOIN agents a ON a.id = d.agent_id
+         WHERE d.account_id = $1 AND a.tool <> 'terminal' AND d.message_id = ANY($2)
+           AND d.state <> 'canceled'
+         GROUP BY d.message_id HAVING bool_and(d.state IN ('pending', 'pushed'))",
+    )
+    .bind(me)
+    .bind(&ids)
+    .fetch_all(db)
+    .await?;
+    for (id, state) in states {
+        if let Some(m) = messages.iter_mut().find(|m| m.id == id) {
+            m.state = Some(state);
+        }
+    }
+    Ok(())
+}
+
 pub async fn messages(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -184,22 +232,42 @@ pub async fn messages(
     Query(q): Query<PageQuery>,
 ) -> ApiResult<Json<MessagesPage>> {
     c.require_person()?;
-    let kind: Option<String> = sqlx::query_scalar(
-        "SELECT cv.kind FROM conversations cv WHERE cv.id = $1 AND (
-           $2 IN (cv.account_lo, cv.account_hi)
-           OR EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = cv.group_id AND gm.account_id = $2))",
-    )
-    .bind(id)
-    .bind(c.account_id)
-    .fetch_optional(&st.db)
-    .await?;
-    let Some(kind) = kind else {
-        return Err(err(ErrorCode::NotFound, format!("No conversation {id}.")));
-    };
+    let kind = kind_of(&st, id, c.account_id).await?;
     let hide = (kind == "group").then_some(c.account_id);
     let (ids, has_more) = page(&st, Some(id), None, hide, &q).await?;
-    let messages = views::messages(&st.db, &ids, c.account_id).await?;
+    let mut messages = views::messages(&st.db, &ids, c.account_id).await?;
+    with_waiting(&st.db, &mut messages, c.account_id).await?;
     Ok(Json(MessagesPage { messages, has_more }))
+}
+
+/// API-078: what the web app or the App has shown of a conversation counts
+/// as read in my inbox, as `imbo inbox` would (REQ-104).
+pub async fn mark_read(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+    Body(req): Body<ReadIn>,
+) -> ApiResult<Json<ReadResponse>> {
+    let Some(up_to) = req.up_to else {
+        return Err(err(ErrorCode::InvalidRequest, "up_to is required."));
+    };
+    kind_of(&st, id, c.account_id).await?;
+    let marked = sqlx::query(
+        "UPDATE deliveries d SET state = 'delivered', delivered_at = now(), via = $3
+         FROM messages m, agents t
+         WHERE m.id = d.message_id AND t.id = d.agent_id
+           AND d.account_id = $1 AND t.tool = 'terminal'
+           AND m.conversation_id = $2 AND m.id <= $4
+           AND d.state IN ('pending', 'pushed')",
+    )
+    .bind(c.account_id)
+    .bind(id)
+    .bind(c.via())
+    .bind(up_to)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    Ok(Json(ReadResponse { marked }))
 }
 
 pub async fn agent_messages(

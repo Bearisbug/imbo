@@ -21,6 +21,7 @@ struct MessageRow {
     from_account: i32,
     from_name: String,
     from_agent_id: Option<Uuid>,
+    from_via: Option<String>,
     agent_short_id: Option<String>,
     agent_title: Option<String>,
     agent_tool: Option<String>,
@@ -44,7 +45,7 @@ pub async fn messages(
     }
     let rows: Vec<MessageRow> = sqlx::query_as(
         "SELECT m.id, m.body, m.created_at, m.conversation_id, c.kind, c.group_id, g.name AS group_name,
-                m.from_account, fa.name AS from_name, m.from_agent_id,
+                m.from_account, fa.name AS from_name, m.from_agent_id, m.from_via,
                 ag.short_id AS agent_short_id, coalesce(ag.custom_title, ag.title) AS agent_title, ag.tool AS agent_tool,
                 c.account_lo, c.account_hi,
                 m.to_agent_id, ta.short_id AS to_short_id, coalesce(ta.custom_title, ta.title) AS to_title, ta.tool AS to_tool
@@ -155,6 +156,7 @@ pub async fn messages(
                     account_id: r.from_account,
                     name: r.from_name,
                     agent,
+                    via: r.from_via,
                 },
                 conversation: ConversationRef {
                     kind: r.kind,

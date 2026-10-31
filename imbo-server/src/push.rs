@@ -35,6 +35,8 @@ struct Recipient {
     session_title: Option<String>,
     computer: Option<String>,
     group_name: Option<String>,
+    /// A group message whose `@` named this person (RULE-015).
+    mention: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -47,14 +49,18 @@ struct Note {
 async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
     // What lands in a terminal inbox, and a group's messages for each
     // member (ADR-046), minus what the person sent themselves from a
-    // terminal, the web or the App and what someone they block sent.
+    // terminal, the web or the App and what someone they block sent. A
+    // group message lands in an inbox when its `@` named that member, who
+    // gets that one notification instead of the group's (ADR-057).
     let recipients: Vec<Recipient> = sqlx::query_as(
         "SELECT d.account_id, m.from_account, fa.name AS from_name, m.body, m.conversation_id,
                 m.from_agent_id AS session, coalesce(ag.custom_title, ag.title) AS session_title, dv.name AS computer,
-                NULL::text AS group_name
+                g.name AS group_name, g.id IS NOT NULL AS mention
          FROM deliveries d
          JOIN agents t ON t.id = d.agent_id AND t.tool = 'terminal'
          JOIN messages m ON m.id = d.message_id
+         JOIN conversations cv ON cv.id = m.conversation_id
+         LEFT JOIN chat_groups g ON g.id = cv.group_id
          JOIN accounts fa ON fa.id = m.from_account
          LEFT JOIN agents ag ON ag.id = m.from_agent_id
          LEFT JOIN devices dv ON dv.id = ag.device_id
@@ -62,7 +68,7 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
            AND NOT (m.from_account = d.account_id AND m.from_agent_id IS NULL)
          UNION ALL
          SELECT gm.account_id, m.from_account, fa.name, m.body, m.conversation_id,
-                m.from_agent_id, coalesce(ag.custom_title, ag.title), dv.name, g.name
+                m.from_agent_id, coalesce(ag.custom_title, ag.title), dv.name, g.name, false
          FROM messages m
          JOIN conversations cv ON cv.id = m.conversation_id
          JOIN chat_groups g ON g.id = cv.group_id
@@ -72,7 +78,9 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
          LEFT JOIN devices dv ON dv.id = ag.device_id
          WHERE m.id = $1
            AND NOT (m.from_account = gm.account_id AND m.from_agent_id IS NULL)
-           AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.account_id = gm.account_id AND b.blocked_id = m.from_account)",
+           AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.account_id = gm.account_id AND b.blocked_id = m.from_account)
+           AND NOT EXISTS (SELECT 1 FROM deliveries d JOIN agents t ON t.id = d.agent_id AND t.tool = 'terminal'
+                           WHERE d.message_id = m.id AND d.account_id = gm.account_id)",
     )
     .bind(id)
     .fetch_all(&st.db)
@@ -86,21 +94,38 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
             .fetch_all(&st.db)
             .await?;
     for r in recipients {
-        let phones: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT id, push_token FROM app_sessions
+        let phones: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, push_token, locale FROM app_sessions
              WHERE account_id = $1 AND push_token IS NOT NULL AND revoked_at IS NULL AND expires_at > now()",
         )
         .bind(r.account_id)
         .fetch_all(&st.db)
         .await?;
-        if !phones.is_empty() {
-            send(st, id, r.account_id, &phones, &note(&r, &files)).await?;
+        // Only a mention adds words of our own, in each App's language.
+        let mut by_locale: Vec<(Option<String>, Vec<(Uuid, String)>)> = vec![];
+        for (app, token, locale) in phones {
+            let locale = locale.filter(|_| r.mention);
+            match by_locale.iter_mut().find(|(l, _)| *l == locale) {
+                Some((_, v)) => v.push((app, token)),
+                None => by_locale.push((locale, vec![(app, token)])),
+            }
+        }
+        for (locale, phones) in by_locale {
+            send(
+                st,
+                id,
+                r.account_id,
+                &phones,
+                &note(&r, &files, locale.as_deref()),
+            )
+            .await?;
         }
     }
     Ok(())
 }
 
-fn note(r: &Recipient, files: &[String]) -> Note {
+/// `locale` is the App's language (API-050), for a mention's words.
+fn note(r: &Recipient, files: &[String], locale: Option<&str>) -> Note {
     let body = if r.body.trim().is_empty() {
         files.join(", ")
     } else {
@@ -112,9 +137,14 @@ fn note(r: &Recipient, files: &[String]) -> Note {
             Some(t) => format!("{} · {t}", r.from_name),
             None => r.from_name.clone(),
         };
+        let body = match (r.mention, locale) {
+            (false, _) => format!("{from}: {body}"),
+            (true, Some("zh-Hans")) => format!("{from} @了你：{body}"),
+            (true, _) => format!("{from} mentioned you: {body}"),
+        };
         return Note {
             title: group.clone(),
-            body: format!("{from}: {body}"),
+            body,
             data: json!({ "conversation_id": r.conversation_id }),
         };
     }
@@ -228,12 +258,13 @@ mod tests {
             session_title: Some("checkout".into()),
             computer: Some("MacBook".into()),
             group_name: None,
+            mention: false,
         }
     }
 
     #[test]
     fn contact_message_is_titled_by_the_sender() {
-        let n = note(&recipient(2, "lunch?"), &[]);
+        let n = note(&recipient(2, "lunch?"), &[], None);
         assert_eq!(n.title, "bob");
         assert_eq!(n.body, "lunch?");
         assert_eq!(n.data, json!({ "conversation_id": 7 }));
@@ -241,7 +272,7 @@ mod tests {
 
     #[test]
     fn own_session_reply_is_titled_by_session_and_computer() {
-        let n = note(&recipient(1, "412 tests pass"), &[]);
+        let n = note(&recipient(1, "412 tests pass"), &[], None);
         assert_eq!(n.title, "checkout · MacBook");
         assert_eq!(n.data["agent_id"], json!(Uuid::nil()));
     }
@@ -250,7 +281,7 @@ mod tests {
     fn group_message_is_titled_by_the_group_with_the_sender_up_front() {
         let mut r = recipient(2, "build is green");
         r.group_name = Some("release".into());
-        let n = note(&r, &[]);
+        let n = note(&r, &[], None);
         assert_eq!(n.title, "release");
         assert_eq!(n.body, "bob · checkout: build is green");
         assert_eq!(n.data, json!({ "conversation_id": 7 }));
@@ -258,16 +289,37 @@ mod tests {
         let mut r = recipient(1, "done");
         r.group_name = Some("release".into());
         r.session_title = None;
-        assert_eq!(note(&r, &[]).body, "bob: done");
-        assert_eq!(note(&r, &[]).data, json!({ "conversation_id": 7 }));
+        assert_eq!(note(&r, &[], None).body, "bob: done");
+        assert_eq!(note(&r, &[], None).data, json!({ "conversation_id": 7 }));
+    }
+
+    #[test]
+    fn mention_says_so_in_the_apps_language() {
+        let mut r = recipient(2, "@alice 看下发布单");
+        r.group_name = Some("release".into());
+        r.mention = true;
+        let zh = note(&r, &[], Some("zh-Hans"));
+        assert_eq!(zh.title, "release");
+        assert_eq!(zh.body, "bob · checkout @了你：@alice 看下发布单");
+        assert_eq!(
+            note(&r, &[], Some("en")).body,
+            "bob · checkout mentioned you: @alice 看下发布单"
+        );
+        assert_eq!(
+            note(&r, &[], None).body,
+            "bob · checkout mentioned you: @alice 看下发布单"
+        );
     }
 
     #[test]
     fn body_is_cut_to_100_characters_or_names_the_files() {
         let long = "字".repeat(150);
-        assert_eq!(note(&recipient(2, &long), &[]).body.chars().count(), 100);
+        assert_eq!(
+            note(&recipient(2, &long), &[], None).body.chars().count(),
+            100
+        );
         let files = ["a.png".to_string(), "b.log".to_string()];
-        assert_eq!(note(&recipient(2, " "), &files).body, "a.png, b.log");
+        assert_eq!(note(&recipient(2, " "), &files, None).body, "a.png, b.log");
     }
 
     #[test]

@@ -4,8 +4,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use imbo_proto::api::{
-    AccountRef, CreateGroupBody, GroupRef, GroupResponse, GroupView, GroupsResponse, InviteBody,
-    MemberRef, MySessionsResponse, RequestItem, RequestResponse, SessionsBody,
+    AccountRef, AgentRef, CreateGroupBody, GroupRef, GroupResponse, GroupView, GroupsResponse,
+    InviteBody, MemberRef, MySessionsResponse, RequestItem, RequestResponse, SessionsBody,
 };
 use imbo_proto::text::validate_group_name;
 use imbo_proto::{ErrorCode, TOOL_TERMINAL};
@@ -162,12 +162,13 @@ pub(super) async fn cancel_group(
     .await
 }
 
-/// A notice from the owner's terminal into `to`'s terminal inbox, in the
-/// two accounts' direct conversation (ADR-028). Returns the inbox agent and
-/// the message.
+/// A notice from the owner into `to`'s inbox, in the two accounts' direct
+/// conversation (ADR-028); `via` is where the owner did it, if they did.
+/// Returns the inbox agent and the message.
 pub(super) async fn post_notice(
     tx: &mut PgConnection,
     from: i32,
+    via: Option<&str>,
     to: i32,
     body: String,
 ) -> ApiResult<(Uuid, i64)> {
@@ -199,11 +200,12 @@ pub(super) async fn post_notice(
     .fetch_one(&mut *tx)
     .await?;
     let message: i64 = sqlx::query_scalar(
-        "INSERT INTO messages (conversation_id, from_account, to_agent_id, body, client_msg_id)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        "INSERT INTO messages (conversation_id, from_account, from_via, to_agent_id, body, client_msg_id)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
     )
     .bind(conversation)
     .bind(from)
+    .bind(via)
     .bind(inbox)
     .bind(body)
     .bind(format!("group-notice-{}", Uuid::now_v7()))
@@ -231,13 +233,20 @@ async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
     .bind(g.id)
     .fetch_all(&st.db)
     .await?;
-    let mine: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT agent_id FROM member_sessions WHERE group_id = $1 AND account_id = $2",
-    )
-    .bind(g.id)
-    .bind(c.account_id)
-    .fetch_all(&st.db)
-    .await?;
+    // Everyone's picked sessions, listed to pick from when typing @ (API-019).
+    let picked: Vec<(i32, Uuid)> =
+        sqlx::query_as("SELECT account_id, agent_id FROM member_sessions WHERE group_id = $1")
+            .bind(g.id)
+            .fetch_all(&st.db)
+            .await?;
+    let all: Vec<Uuid> = picked.iter().map(|(_, a)| *a).collect();
+    let refs = views::agent_refs(&st.db, &all).await?;
+    let sessions_of = |account: i32| -> Vec<AgentRef> {
+        refs.iter()
+            .filter(|r| picked.contains(&(account, r.id)))
+            .cloned()
+            .collect()
+    };
     let owner = members
         .iter()
         .find(|(_, _, role)| role == "owner")
@@ -259,9 +268,10 @@ async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
                 name,
                 avatar_url: avatars.remove(&id),
                 active: !inactive.contains(&id),
+                sessions: sessions_of(id),
             })
             .collect(),
-        my_sessions: views::agent_refs(&st.db, &mine).await?,
+        my_sessions: sessions_of(c.account_id),
         avatar_url: avatar::url_of(&st.cfg, picture),
     })
 }
@@ -586,7 +596,7 @@ pub async fn remove(
             "You were removed from group {} (#{}) by {}.",
             g.name, g.id, c.name
         );
-        notices.push(post_notice(&mut tx, c.account_id, target, body).await?);
+        notices.push(post_notice(&mut tx, c.account_id, Some(c.via()), target, body).await?);
     }
     tx.commit().await?;
     delivery::notify_canceled(&st, canceled).await;
@@ -713,7 +723,7 @@ pub async fn dissolve(
             continue;
         }
         let body = format!("Group {} (#{}) was dissolved by {}.", g.name, g.id, c.name);
-        notices.push(post_notice(&mut tx, c.account_id, to, body).await?);
+        notices.push(post_notice(&mut tx, c.account_id, Some(c.via()), to, body).await?);
     }
     tx.commit().await?;
     delivery::notify_canceled(&st, canceled).await;

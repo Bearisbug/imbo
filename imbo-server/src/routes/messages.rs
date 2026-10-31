@@ -115,7 +115,7 @@ async fn agents_of(db: &PgPool, account: i32) -> Result<Vec<AgentRow>, sqlx::Err
 }
 
 /// The account's terminal inbox row (ADR-010), created on first use.
-async fn terminal_of(db: &PgPool, account: i32) -> Result<AgentRow, sqlx::Error> {
+async fn terminal_of(db: impl sqlx::PgExecutor<'_>, account: i32) -> Result<AgentRow, sqlx::Error> {
     sqlx::query_as(
         "INSERT INTO agents (id, account_id, tool, session_id, short_id, title)
          VALUES ($1, $2, $3, $3, $3, $3)
@@ -332,13 +332,32 @@ async fn existing_result(st: &St, me: i32, client_msg_id: &str) -> ApiResult<Opt
     .bind(id)
     .fetch_one(&st.db)
     .await?;
-    let view = views::messages(&st.db, &[id], me).await?.into_iter().next();
-    Ok(view.map(|v| SendResponse {
+    let Some(v) = views::messages(&st.db, &[id], me).await?.into_iter().next() else {
+        return Ok(None);
+    };
+    // In a group, an inbox that got it is a member the body named (RULE-015).
+    let mut mentioned = vec![];
+    if v.conversation.group.is_some() && terminal {
+        mentioned = sqlx::query_as::<_, (i32, String)>(
+            "SELECT ac.id, ac.name FROM deliveries d
+             JOIN agents a ON a.id = d.agent_id AND a.tool = 'terminal'
+             JOIN accounts ac ON ac.id = d.account_id
+             WHERE d.message_id = $1 ORDER BY ac.id",
+        )
+        .bind(id)
+        .fetch_all(&st.db)
+        .await?
+        .into_iter()
+        .map(|(id, name)| AccountRef { id, name })
+        .collect();
+    }
+    Ok(Some(SendResponse {
         message_id: id,
         conversation: v.conversation,
         recipients: recipients as u32,
-        terminal,
+        terminal: terminal && mentioned.is_empty(),
         inactive_members: None,
+        mentioned,
     }))
 }
 
@@ -399,27 +418,33 @@ async fn rate_check(
     Ok(())
 }
 
-/// RULE-015: which of `sessions` (id, short ID, name) the body names with
-/// `@`. Case doesn't matter and the longest name wins; a name ending in an
-/// ASCII letter or digit must not run on into another one, `-` or `_`.
-fn mentioned(body: &str, sessions: &[(Uuid, String, String)]) -> Vec<Uuid> {
+/// Who an `@` in a group message can name (RULE-015).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Named {
+    Session(Uuid),
+    Person(i32),
+}
+
+/// RULE-015: which of `names` (who, one of their names) the body names
+/// with `@`. Case doesn't matter, the longest name wins and names as long
+/// all count; a name ending in an ASCII letter or digit must not run on
+/// into another one, `-` or `_`.
+fn mentioned(body: &str, names: &[(Named, String)]) -> Vec<Named> {
     let mut hit = vec![];
     for (i, _) in body.match_indices('@') {
         let rest = &body[i + 1..];
         let mut best = 0;
         let mut who = vec![];
-        for (id, short_id, title) in sessions {
-            for name in [short_id, title] {
-                let Some(len) = names_at(rest, name) else {
-                    continue;
-                };
-                if len > best {
-                    best = len;
-                    who.clear();
-                }
-                if len == best && !who.contains(id) {
-                    who.push(*id);
-                }
+        for (named, name) in names {
+            let Some(len) = names_at(rest, name) else {
+                continue;
+            };
+            if len > best {
+                best = len;
+                who.clear();
+            }
+            if len == best && !who.contains(named) {
+                who.push(*named);
             }
         }
         hit.extend(who);
@@ -569,8 +594,10 @@ async fn store(
     files: &[Uuid],
 ) -> ApiResult<SendResponse> {
     let from_agent = c.actor.as_ref().map(|a| a.id);
+    let from_via = from_agent.is_none().then(|| c.via());
 
     let mut inactive_members = None;
+    let mut mentioned_members = vec![];
     let mut tx = st.db.begin().await?;
     // Waits out a deletion, ban or block of the sender's account in
     // progress, then sees it (DESIGN §16).
@@ -730,17 +757,50 @@ async fn store(
             .fetch_all(&mut *tx)
             .await?;
             rows.retain(|(_, account)| !inactive.contains(account) && !blockers.contains(account));
-            // RULE-015: naming sessions with @ sends it to them only.
+            // RULE-015: naming sessions or members with @ sends it to them
+            // only; a member named gets it in their inbox. Members it still
+            // reaches can be named, and the sender's own account when one of
+            // its sessions sends it.
             let ids: Vec<Uuid> = rows.iter().map(|(a, _)| *a).collect();
-            let names: Vec<(Uuid, String, String)> = sqlx::query_as(
+            let sessions: Vec<(Uuid, String, String)> = sqlx::query_as(
                 "SELECT id, short_id, coalesce(custom_title, title) FROM agents WHERE id = ANY($1)",
             )
             .bind(&ids)
             .fetch_all(&mut *tx)
             .await?;
+            let mut nameable: Vec<i32> = others
+                .iter()
+                .copied()
+                .filter(|a| !inactive.contains(a) && !blockers.contains(a))
+                .collect();
+            if from_agent.is_some() {
+                nameable.push(c.account_id);
+            }
+            // In ID order: each named member's inbox row is locked below.
+            let people: Vec<(i32, String)> =
+                sqlx::query_as("SELECT id, name FROM accounts WHERE id = ANY($1) ORDER BY id")
+                    .bind(&nameable)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            let mut names = vec![];
+            for (id, short_id, title) in sessions {
+                names.push((Named::Session(id), short_id));
+                names.push((Named::Session(id), title));
+            }
+            for (id, name) in &people {
+                names.push((Named::Person(*id), name.clone()));
+                names.push((Named::Person(*id), id.to_string()));
+            }
             let picked = mentioned(body, &names);
             if !picked.is_empty() {
-                rows.retain(|(a, _)| picked.contains(a));
+                rows.retain(|(a, _)| picked.contains(&Named::Session(*a)));
+            }
+            for (id, name) in people {
+                if picked.contains(&Named::Person(id)) {
+                    let inbox = terminal_of(&mut *tx, id).await?;
+                    rows.push((inbox.id, id));
+                    mentioned_members.push(AccountRef { id, name });
+                }
             }
             inactive_members = Some(others.iter().filter(|a| inactive.contains(a)).count() as u32);
             (
@@ -763,13 +823,14 @@ async fn store(
         check_files(&mut tx, c.account_id, files).await?;
     }
     let message_id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO messages (conversation_id, from_account, from_agent_id, to_agent_id, body, client_msg_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO messages (conversation_id, from_account, from_agent_id, from_via, to_agent_id, body, client_msg_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (from_account, client_msg_id) DO NOTHING RETURNING id",
     )
     .bind(conversation.id)
     .bind(c.account_id)
     .bind(from_agent)
+    .bind(from_via)
     .bind(to_agent)
     .bind(body)
     .bind(client_msg_id)
@@ -809,9 +870,14 @@ async fn store(
     Ok(SendResponse {
         message_id,
         conversation,
-        recipients: if terminal { 0 } else { recipients.len() as u32 },
+        recipients: if terminal {
+            0
+        } else {
+            (recipients.len() - mentioned_members.len()) as u32
+        },
         terminal,
         inactive_members,
+        mentioned: mentioned_members,
     })
 }
 
@@ -868,8 +934,8 @@ pub struct AgentSendIn {
     files: Option<Vec<Uuid>>,
 }
 
-/// API-043: the web app writes to one of my sessions; the sender is my
-/// terminal inbox, as with `imbo send` (ADR-030).
+/// API-043: the web app or the App writes to one of my sessions; the
+/// sender is my inbox, as with `imbo send` (ADR-030).
 pub async fn send_to_agent(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -934,11 +1000,11 @@ pub async fn send_to_agent(
 
 #[derive(Deserialize)]
 pub struct ReadIn {
-    up_to: Option<i64>,
+    pub(super) up_to: Option<i64>,
 }
 
 /// API-044: what the web app has shown of a session's replies to my
-/// terminal inbox counts as read, as `imbo inbox` would (ADR-030).
+/// inbox counts as read, as `imbo inbox` would (ADR-030).
 pub async fn mark_read(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -1096,24 +1162,30 @@ pub async fn get_message(
 mod tests {
     use super::*;
 
-    fn sessions() -> Vec<(Uuid, String, String)> {
-        ["前端", "api", "api-v2", "Docs"]
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                (
-                    Uuid::from_u128(i as u128 + 1),
-                    format!("37100{}", i + 1),
-                    t.to_string(),
-                )
-            })
-            .collect()
+    fn names() -> Vec<(Named, String)> {
+        let mut names = vec![];
+        for (i, t) in ["前端", "api", "api-v2", "Docs"].iter().enumerate() {
+            let id = Named::Session(Uuid::from_u128(i as u128 + 1));
+            names.push((id, format!("37100{}", i + 1)));
+            names.push((id, t.to_string()));
+        }
+        names.push((Named::Person(12345678), "bob".into()));
+        names.push((Named::Person(12345678), "12345678".into()));
+        names
     }
 
+    /// Sessions as their number, members as their account ID.
     fn ids(body: &str) -> Vec<u128> {
-        mentioned(body, &sessions())
+        ids_in(body, &names())
+    }
+
+    fn ids_in(body: &str, names: &[(Named, String)]) -> Vec<u128> {
+        mentioned(body, names)
             .iter()
-            .map(|u| u.as_u128())
+            .map(|n| match n {
+                Named::Session(u) => u.as_u128(),
+                Named::Person(a) => *a as u128,
+            })
             .collect()
     }
 
@@ -1128,5 +1200,17 @@ mod tests {
         assert_eq!(ids("@api_x 和 @3710011"), Vec::<u128>::new());
         assert_eq!(ids("@前端 @docs"), [1, 4]);
         assert_eq!(ids("没有点名 a@b.c"), Vec::<u128>::new());
+    }
+
+    #[test]
+    fn mentions_people() {
+        assert_eq!(ids("@Bob 看一下"), [12345678]);
+        assert_eq!(ids("@12345678 看一下"), [12345678]);
+        assert_eq!(ids("@bob @api"), [2, 12345678]);
+        assert_eq!(ids("@bobby"), Vec::<u128>::new());
+        // A session and a member named alike both count.
+        let mut alike = names();
+        alike.push((Named::Person(23456789), "Docs".into()));
+        assert_eq!(ids_in("@docs 看一下", &alike), [4, 23456789]);
     }
 }

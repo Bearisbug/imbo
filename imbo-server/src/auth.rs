@@ -81,6 +81,18 @@ impl Caller {
         self.web.is_some() || self.app.is_some()
     }
 
+    /// Where the person is writing from (ADR-056); the way a read is
+    /// recorded too (API-078).
+    pub fn via(&self) -> &'static str {
+        if self.app.is_some() {
+            "app"
+        } else if self.web.is_some() {
+            "web"
+        } else {
+            "terminal"
+        }
+    }
+
     pub fn decided_by(&self) -> &'static str {
         if self.actor.is_some() {
             "agent"
@@ -303,6 +315,7 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::GET, "/v1/files/{id}"),
     (Method::GET, "/v1/conversations"),
     (Method::GET, "/v1/conversations/{id}/messages"),
+    (Method::POST, "/v1/conversations/{id}/read"),
     (Method::GET, "/v1/billing"),
     (Method::POST, "/v1/billing/checkout"),
     (Method::POST, "/v1/billing/portal"),
@@ -337,6 +350,7 @@ const WEB_ONLY: &[(Method, &str)] = &[
     (Method::POST, "/v1/agents/{id}/messages"),
     (Method::POST, "/v1/agents/{id}/read"),
     (Method::PUT, "/v1/agents/{id}/title"),
+    (Method::POST, "/v1/conversations/{id}/read"),
     (Method::POST, "/v1/billing/checkout"),
     (Method::POST, "/v1/billing/portal"),
     (Method::DELETE, "/v1/web/session"),

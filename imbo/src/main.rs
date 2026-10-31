@@ -56,7 +56,7 @@ enum Cmd {
     Group(cli::group::GroupCmd),
     /// Send a message: imbo send <to> <message> [--file <path>]...
     Send {
-        /// name/session, account-ID/session, a group name or #group-ID; a name or account ID alone goes to their terminal inbox.
+        /// name/session, account-ID/session, a group name or #group-ID; a name or account ID alone goes to their inbox.
         to: String,
         /// The message; may be left out when sending files.
         body: Vec<String>,
@@ -66,7 +66,7 @@ enum Cmd {
     },
     /// Download a message's files to ~/.imbo/files/<message-ID>/.
     Get { message_id: i64 },
-    /// New terminal-inbox messages (shown once), then messages not yet delivered to your sessions; give an ID to read one.
+    /// New inbox messages (shown once), then messages not yet delivered to your sessions; give an ID to read one.
     Inbox {
         message_id: Option<i64>,
         /// Include delivered messages.

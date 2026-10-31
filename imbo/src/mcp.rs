@@ -84,7 +84,7 @@ fn tools(paste: Option<Paste>, prefix: &str) -> Vec<Tool> {
     let mut send = json!({
         "type": "object",
         "properties": {
-            "to": { "type": "string", "description": "Recipient: alice/f1809d, 51730462/f1809d, kando-dev, #5520183, or just alice (their terminal inbox)" },
+            "to": { "type": "string", "description": "Recipient: alice/f1809d, 51730462/f1809d, kando-dev, #5520183, or just alice (their inbox)" },
             "body": { "type": "string", "description": "Message text, up to 32000 characters; may be empty when files are attached" },
             "files": {
                 "type": "array", "items": { "type": "string" },
@@ -110,8 +110,9 @@ fn tools(paste: Option<Paste>, prefix: &str) -> Vec<Tool> {
             format!(
                 "Send an Imbo message to another session or a group. \
 Write to as name/session or account-ID/session (session = short ID or title), or a group name or #group-ID. \
-A name or account ID alone goes to that person's terminal inbox, which they read with imbo inbox in a terminal; \
+A name or account ID alone goes to that person's inbox, which they read in the Imbo app, the web app or with imbo inbox in a terminal; \
 to reach their agent, write the session, and look it up with the contacts tool if you don't know it. \
+In a group, @ a member's name or a receiving session's name to send it to them only; a member named this way gets it in their inbox. \
 files attaches local files (absolute paths); the other computer downloads them automatically.{pasted}"
             ),
             schema(send),
@@ -256,13 +257,14 @@ fn problem_text(p: &Problem) -> String {
 fn message_text(m: &MessageView, files: &[LocalFile]) -> String {
     let reply = if m.from_me && m.conversation.group.is_none() {
         format!(
-            "{} (from your own user in person; the reply goes to their terminal inbox)",
+            "{} (from your own user in person; the reply goes to their inbox)",
             m.reply_to
         )
     } else if m.from.agent.is_none() && m.conversation.group.is_none() {
         format!(
-            "{} (sent from a terminal; the reply goes to their terminal inbox)",
-            m.reply_to
+            "{} (written {}; the reply goes to their inbox)",
+            m.reply_to,
+            render::written_in(&m.from)
         )
     } else {
         m.reply_to.clone()
@@ -500,10 +502,19 @@ impl Imbo {
                     format!(" with {} file(s)", ids.len())
                 };
                 let text = match &r.conversation.group {
-                    Some(g) => format!(
-                        "Sent to group {} (#{}): message #{}{with}, {} receiving session(s).",
-                        g.name, g.id, r.message_id, r.recipients
-                    ),
+                    Some(g) => {
+                        let inboxes = if r.mentioned.is_empty() {
+                            String::new()
+                        } else {
+                            let names: Vec<&str> =
+                                r.mentioned.iter().map(|m| m.name.as_str()).collect();
+                            format!(", and to the inbox of {}", names.join(", "))
+                        };
+                        format!(
+                            "Sent to group {} (#{}): message #{}{with}, {} receiving session(s){inboxes}.",
+                            g.name, g.id, r.message_id, r.recipients
+                        )
+                    }
                     None => {
                         let mut peer = r
                             .conversation
@@ -511,14 +522,14 @@ impl Imbo {
                             .as_ref()
                             .map(|p| p.name.clone())
                             .unwrap_or_else(|| to.clone());
-                        // The account name alone reads like their terminal
-                        // inbox when the message went to a session.
+                        // The account name alone reads like their inbox when
+                        // the message went to a session.
                         if to.contains('/') && peer != *to {
                             peer = format!("{peer} ({to})");
                         }
                         if r.terminal {
                             format!(
-                                "Sent: message #{}{with} went to {}'s terminal inbox; they read it in a terminal with imbo inbox. To reach their agent, write the recipient as account/session (look it up with the contacts tool).",
+                                "Sent: message #{}{with} went to {}'s inbox; they read it in the Imbo app, the web app or with imbo inbox in a terminal. To reach their agent, write the recipient as account/session (look it up with the contacts tool).",
                                 r.message_id, peer
                             )
                         } else {

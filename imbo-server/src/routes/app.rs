@@ -58,6 +58,16 @@ pub async fn register_push(
             "push_token must be an Expo push token, ExponentPushToken[…].",
         ));
     }
+    if req
+        .locale
+        .as_deref()
+        .is_some_and(|l| !matches!(l, "en" | "zh-Hans"))
+    {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "locale must be en or zh-Hans.",
+        ));
+    }
     let mut tx = st.db.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(6, hashtext($1))")
         .bind(token)
@@ -68,9 +78,10 @@ pub async fn register_push(
         .bind(app)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE app_sessions SET push_token = $1 WHERE id = $2")
+    sqlx::query("UPDATE app_sessions SET push_token = $1, locale = $3 WHERE id = $2")
         .bind(token)
         .bind(app)
+        .bind(&req.locale)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -272,7 +283,7 @@ pub(crate) async fn delete_now(st: &St, me: i32, why: &str) -> ApiResult<()> {
                 continue;
             }
             let body = format!("Group {name} (#{gid}) was dissolved because {why}.");
-            notices.push(post_notice(&mut tx, me, *to, body).await?);
+            notices.push(post_notice(&mut tx, me, None, *to, body).await?);
         }
     }
     tx.commit().await?;

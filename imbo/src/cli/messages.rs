@@ -106,13 +106,20 @@ pub async fn send(to: String, body: String, paths: Vec<PathBuf>) -> anyhow::Resu
         n => format!(" with {n} files"),
     };
     match &r.conversation.group {
-        Some(g) => ui::ok_line(&format!(
-            "Sent #{}{with} to {} {}  {}",
-            r.message_id,
-            ui::heading(&g.name),
-            ui::dim(format!("#{}", g.id)),
-            ui::dim(sessions(r.recipients))
-        )),
+        Some(g) => {
+            let mut to = sessions(r.recipients);
+            if !r.mentioned.is_empty() {
+                let names: Vec<&str> = r.mentioned.iter().map(|m| m.name.as_str()).collect();
+                to.push_str(&format!(", and to the inbox of {}", names.join(", ")));
+            }
+            ui::ok_line(&format!(
+                "Sent #{}{with} to {} {}  {}",
+                r.message_id,
+                ui::heading(&g.name),
+                ui::dim(format!("#{}", g.id)),
+                ui::dim(to)
+            ))
+        }
         None => {
             let peer = r
                 .conversation
@@ -122,10 +129,10 @@ pub async fn send(to: String, body: String, paths: Vec<PathBuf>) -> anyhow::Resu
                 .unwrap_or(to);
             if r.terminal {
                 ui::ok_line(&format!(
-                    "Sent #{}{with} to {}'s terminal inbox  {}",
+                    "Sent #{}{with} to {}'s inbox  {}",
                     r.message_id,
                     ui::heading(peer),
-                    ui::dim("they read it with `imbo inbox`")
+                    ui::dim("they read it in the Imbo app, the web app or with `imbo inbox`")
                 ));
                 return Ok(());
             }
@@ -274,7 +281,7 @@ pub async fn inbox(id: Option<i64>, all: bool) -> anyhow::Result<()> {
         print_message(&r.message, "", true, "");
         return Ok(());
     }
-    // Outside a session, new terminal-inbox messages are shown once and
+    // Outside a session, new inbox messages are shown once and
     // count as read (ADR-010); inside one, only that session is listed.
     let mut fresh: Vec<MessageView> = vec![];
     if matches!(env_actor(), Ok(None)) {
@@ -283,7 +290,7 @@ pub async fn inbox(id: Option<i64>, all: bool) -> anyhow::Result<()> {
             .await
         {
             Ok((v, _)) => fresh = serde_json::from_value::<PullResponse>(v)?.messages,
-            // Servers before v0.1.1 have no terminal inbox and refuse this pull.
+            // Servers before v0.1.1 have no inbox and refuse this pull.
             Err(p) if p.is(ErrorCode::Forbidden) => {}
             Err(p) => return Err(report(&p)),
         }
@@ -291,7 +298,7 @@ pub async fn inbox(id: Option<i64>, all: bool) -> anyhow::Result<()> {
     if !fresh.is_empty() {
         println!(
             "{}  {}",
-            ui::heading("Terminal inbox"),
+            ui::heading("Inbox"),
             ui::dim(format!("{} new", fresh.len()))
         );
         for m in &fresh {
@@ -328,7 +335,7 @@ pub async fn inbox(id: Option<i64>, all: bool) -> anyhow::Result<()> {
     if !fresh.is_empty() {
         println!();
     }
-    // One block per session (or the terminal inbox), in the order each first appears.
+    // One block per session (or the inbox), in the order each first appears.
     let mut groups: Vec<Vec<&InboxItem>> = vec![];
     for it in items {
         match groups.iter_mut().find(|g| g[0].agent.id == it.agent.id) {
@@ -342,7 +349,7 @@ pub async fn inbox(id: Option<i64>, all: bool) -> anyhow::Result<()> {
         }
         let agent = &group[0].agent;
         if agent.tool == TOOL_TERMINAL {
-            println!("{}", ui::heading("Terminal inbox"));
+            println!("{}", ui::heading("Inbox"));
         } else {
             println!(
                 "{}  {}",
