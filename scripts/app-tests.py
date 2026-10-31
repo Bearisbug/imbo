@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TC-141 to TC-144 (docs/TEST.md): the App's sign-in, push, removing a
+"""TC-468 and TC-142 to TC-144 (docs/TEST.md): the App's sign-in, push, removing a
 contact and deleting the account, against the local server.
 
     . crates/scripts/local-env.sh
@@ -169,49 +169,50 @@ A, B, C = ID["alice"], ID["bob"], ID["carol"]
 DA, DB, DC = device_token("alice"), device_token("bob"), device_token("carol")
 
 
-def tc141():
+def tc468():
     global TA
     r = app_login("alice@imbo.test")
     s, b, _ = r
     TA = b.get("token", "") if isinstance(b, dict) else ""
-    check(141, 1, s == 200 and b["new_account"] is False and TA.startswith("imboapp_")
+    check(468, 1, s == 200 and b["new_account"] is False and TA.startswith("imboapp_")
           and b["account"]["id"] == A, "alice signs in to the App, token starts with imboapp_", r[:2])
-    code = ask_code("t141@imbo.test")
-    r = app_login("t141@imbo.test", code=code)
-    check(141, 2, problem(r, 422, "name-required"), "new email without a name: 422 name-required", r[:2])
-    r = app_login("t141@imbo.test", name="t141", code=code)
-    t141 = r[1].get("token") if isinstance(r[1], dict) else None
-    check(141, 3, r[0] == 200 and r[1]["new_account"] is True and r[1]["account"]["name"] == "t141",
-          "same code with a name: 200, new account t141", r[:2])
+    code = ask_code("t468@imbo.test")
+    r = app_login("t468@imbo.test", code=code)
+    check(468, 2, problem(r, 422, "name-required"), "new email without a name: 422 name-required", r[:2])
+    r = app_login("t468@imbo.test", name="t468", code=code)
+    t468 = r[1].get("token") if isinstance(r[1], dict) else None
+    check(468, 3, r[0] == 200 and r[1]["new_account"] is True and r[1]["account"]["name"] == "t468",
+          "same code with a name: 200, new account t468", r[:2])
     r = call("POST", "/v1/app/session", body={"email": "alice@imbo.test", "code": "000000", "platform": "web"})
-    check(141, 4, problem(r, 400, "invalid-request"), "platform web: 400 invalid-request", r[:2])
+    check(468, 4, problem(r, 400, "invalid-request"), "platform web: 400 invalid-request", r[:2])
     s1, me, _ = call("GET", "/v1/me", token=TA)
     s2, conv, _ = call("GET", "/v1/conversations", token=TA)
-    check(141, 5, s1 == 200 and me["account"]["email"] == "alice@imbo.test" and "device" not in me
+    check(468, 5, s1 == 200 and me["account"]["email"] == "alice@imbo.test" and "device" not in me
           and s2 == 200, "App token reads /v1/me without a device, and /v1/conversations", (s1, me, s2))
     r = call("POST", "/v1/messages", token=TA,
-             body={"to": "bob", "body": "T141 from the phone", "client_msg_id": "t141-1"})
+             body={"to": "bob", "body": "T468 from the phone", "client_msg_id": "t468-1"})
     _, inbox = imbo("bob", "inbox")
-    check(141, 6, r[0] == 201 and "T141 from the phone" in inbox and "alice" in inbox,
+    check(468, 6, r[0] == 201 and "T468 from the phone" in inbox and "alice" in inbox,
           "App sends to bob without an Origin; bob's inbox lists it", (r[:2], inbox[-300:]))
-    r1 = call("PATCH", "/v1/me", token=TA, body={"name": "x141"})
-    r2 = call("GET", "/v1/devices", token=TA)
-    check(141, 7, problem(r1, 403, "forbidden") and problem(r2, 403, "forbidden"),
-          "App can't rename or list computers: 403", (r1[:2], r2[:2]))
-    r = call("DELETE", "/v1/app/session", token=t141)
-    after = call("GET", "/v1/me", token=t141)
-    check(141, 8, r[0] == 204 and problem(after, 401, "unauthorized"),
-          "t141 signs out; the token then gets 401", (r[:2], after[:2]))
+    r1 = call("GET", "/v1/inbox", token=TA)
+    r2 = call("POST", "/v1/inbox/pull", token=TA, body={})
+    only = "The Imbo app can't do this. Use imbo on your computer."
+    check(468, 7, all(problem(r, 403, "forbidden") and r[1]["detail"] == only for r in (r1, r2)),
+          "App can't read or pull the computer's inbox: 403", (r1[:2], r2[:2]))
+    r = call("DELETE", "/v1/app/session", token=t468)
+    after = call("GET", "/v1/me", token=t468)
+    check(468, 8, r[0] == 204 and problem(after, 401, "unauthorized"),
+          "t468 signs out; the token then gets 401", (r[:2], after[:2]))
     cookie = web_login("bob@imbo.test")
     r1 = call("DELETE", "/v1/app/session", cookie=cookie, origin=True)
-    r2 = call("PUT", "/v1/app/push", cookie=cookie, origin=True, body={"push_token": "ExponentPushToken[t141]"})
+    r2 = call("PUT", "/v1/app/push", cookie=cookie, origin=True, body={"push_token": "ExponentPushToken[t468]"})
     r3 = call("DELETE", "/v1/app/session", token=DB)
-    check(141, 9, problem(r1, 403, "forbidden") and r1[1]["detail"] == "Only the Imbo App can do this."
+    check(468, 9, problem(r1, 403, "forbidden") and r1[1]["detail"] == "Only the Imbo App can do this."
           and problem(r2, 403, "forbidden") and problem(r3, 403, "forbidden"),
           "web sign-in and computer token can't use the App-only endpoints: 403", (r1[:2], r2[:2], r3[:2]))
     stored = subprocess.run(["grep", "-rlF", TA, f"{L}/server", f"{L}/server.log"],
                             capture_output=True, text=True).stdout
-    check(141, 10, stored == "", "the App token's text is nowhere in the server's data or log", stored[:200])
+    check(468, 10, stored == "", "the App token's text is nowhere in the server's data or log", stored[:200])
 
 
 def tc142():
@@ -329,7 +330,7 @@ def tc144():
     bodies = messages_of(DB, conv["id"]) if conv else []
     check(144, 5, conv is not None and conv["peer"]["name"] == "Deleted account"
           and "T144 from bob" in bodies and "T144 bob to alice's session" in bodies
-          and "T144 from alice" not in bodies and "T141 from the phone" not in bodies,
+          and "T144 from alice" not in bodies and "T468 from the phone" not in bodies,
           "bob's conversation shows Deleted account with only bob's messages", (conv, bodies))
     notice = f"Group g144a (#{ga}) was dissolved because its owner deleted their account."
     _, inbox = imbo("bob", "inbox")
@@ -385,7 +386,7 @@ if __name__ == "__main__":
         tc145()
         print(f"{FAILS} failed")
         sys.exit(1 if FAILS else 0)
-    for case in (tc141, tc142, tc143, tc144):
+    for case in (tc468, tc142, tc143, tc144):
         try:
             case()
         except Exception as e:  # report and go on with the next case
