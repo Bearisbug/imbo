@@ -118,7 +118,28 @@ pub fn footer(m: &MessageView) -> String {
     if !m.files.is_empty() {
         s.push_str(FILE_RULE);
     }
+    if let Some(c) = consult(m) {
+        s.push(' ');
+        s.push_str(&c);
+    }
     s
+}
+
+/// ADR-052: a group message the reader's other sessions got too is talked
+/// over with them before anyone replies.
+pub fn consult(m: &MessageView) -> Option<String> {
+    if m.siblings.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = m
+        .siblings
+        .iter()
+        .map(|s| format!("\"{}\" ({})", strip_control(&s.title, false), s.to))
+        .collect();
+    Some(format!(
+        "Your other sessions {} also got this group message. Before replying, message them with Imbo's send tool to say whether you plan to reply and what, read their plans, then decide for yourself. If you hear nothing back in 3 minutes, decide on your own.",
+        names.join(", ")
+    ))
 }
 
 /// Handling rules under messages read through the inbox tool; `own` when
@@ -266,6 +287,7 @@ mod tests {
             files: vec![],
             from_me: false,
             state: None,
+            siblings: vec![],
         }
     }
 
@@ -303,6 +325,21 @@ mod tests {
         assert!(t.contains("the message is 5000 characters; this shows the first 4000"));
         assert!(t.contains("message_id=7"));
         assert!(t.contains("with to set to #5520183."));
+    }
+
+    #[test]
+    fn consult_names_other_sessions() {
+        let mut m = msg("谁来看一下", true);
+        assert!(!footer(&m).contains("Your other sessions"));
+        m.siblings = vec![imbo_proto::api::Sibling {
+            to: "51730462/372002".into(),
+            title: "a372b".into(),
+        }];
+        let t = for_claude(&m, &[]);
+        assert!(t.contains(
+            "Your other sessions \"a372b\" (51730462/372002) also got this group message. Before replying, message them"
+        ));
+        assert!(t.contains("If you hear nothing back in 3 minutes, decide on your own."));
     }
 
     #[test]

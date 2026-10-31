@@ -145,6 +145,10 @@ impl Adapter for Codex {
         })
     }
 
+    fn note<'a>(&'a self, session_id: &'a str, text: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { deliver(session_id, text).await.map(|_| ()) })
+    }
+
     fn paste(&self) -> Paste {
         Paste::Path(
             " Images the user pasted in this session: the image tag <image … path=…> has the path; put it in files to send it as an attachment.",

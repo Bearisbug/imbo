@@ -399,6 +399,55 @@ async fn rate_check(
     Ok(())
 }
 
+/// RULE-015: which of `sessions` (id, short ID, name) the body names with
+/// `@`. Case doesn't matter and the longest name wins; a name ending in an
+/// ASCII letter or digit must not run on into another one, `-` or `_`.
+fn mentioned(body: &str, sessions: &[(Uuid, String, String)]) -> Vec<Uuid> {
+    let mut hit = vec![];
+    for (i, _) in body.match_indices('@') {
+        let rest = &body[i + 1..];
+        let mut best = 0;
+        let mut who = vec![];
+        for (id, short_id, title) in sessions {
+            for name in [short_id, title] {
+                let Some(len) = names_at(rest, name) else {
+                    continue;
+                };
+                if len > best {
+                    best = len;
+                    who.clear();
+                }
+                if len == best && !who.contains(id) {
+                    who.push(*id);
+                }
+            }
+        }
+        hit.extend(who);
+    }
+    hit.sort_unstable();
+    hit.dedup();
+    hit
+}
+
+/// How many bytes of `rest` the name takes, if `rest` starts with it.
+fn names_at(rest: &str, name: &str) -> Option<usize> {
+    let last = name.chars().last()?;
+    let mut chars = rest.char_indices();
+    for n in name.chars() {
+        let (_, c) = chars.next()?;
+        if !c.to_lowercase().eq(n.to_lowercase()) {
+            return None;
+        }
+    }
+    let len = chars.next().map_or(rest.len(), |(i, _)| i);
+    let next = rest[len..].chars().next();
+    let runs_on = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    if last.is_ascii_alphanumeric() && next.is_some_and(runs_on) {
+        return None;
+    }
+    Some(len)
+}
+
 fn expired() -> ApiError {
     err(
         ErrorCode::FileExpired,
@@ -681,6 +730,18 @@ async fn store(
             .fetch_all(&mut *tx)
             .await?;
             rows.retain(|(_, account)| !inactive.contains(account) && !blockers.contains(account));
+            // RULE-015: naming sessions with @ sends it to them only.
+            let ids: Vec<Uuid> = rows.iter().map(|(a, _)| *a).collect();
+            let names: Vec<(Uuid, String, String)> = sqlx::query_as(
+                "SELECT id, short_id, coalesce(custom_title, title) FROM agents WHERE id = ANY($1)",
+            )
+            .bind(&ids)
+            .fetch_all(&mut *tx)
+            .await?;
+            let picked = mentioned(body, &names);
+            if !picked.is_empty() {
+                rows.retain(|(a, _)| picked.contains(a));
+            }
             inactive_members = Some(others.iter().filter(|a| inactive.contains(a)).count() as u32);
             (
                 ConversationRef {
@@ -941,13 +1002,15 @@ pub async fn list_inbox(
     .await?;
     let ids: Vec<i64> = rows.iter().map(|r| r.message_id).collect();
     let views = views::messages(&st.db, &ids, c.account_id).await?;
+    let got = views::receivers(&st.db, &ids, c.account_id).await?;
     let items = rows
         .into_iter()
         .rev()
         .filter_map(|r| {
             // One message can have several deliveries here (a group message
             // to two of my sessions), so each row gets its own copy.
-            let message = views.iter().find(|v| v.id == r.message_id)?.clone();
+            let mut message = views.iter().find(|v| v.id == r.message_id)?.clone();
+            message.siblings = views::siblings_of(&got, r.message_id, r.agent_id);
             Some(InboxItem {
                 message,
                 agent: AgentRef {
@@ -993,7 +1056,10 @@ pub async fn pull(
     .await?;
     let mut ids = ids;
     ids.sort_unstable();
-    let messages = views::messages(&st.db, &ids, c.account_id).await?;
+    let mut messages = views::messages(&st.db, &ids, c.account_id).await?;
+    if let Some(a) = &c.actor {
+        views::with_siblings(&st.db, &mut messages, c.account_id, a.id).await?;
+    }
     Ok(Json(PullResponse { messages }))
 }
 
@@ -1024,4 +1090,43 @@ pub async fn get_message(
         .next()
         .ok_or_else(not_found)?;
     Ok(Json(MessageResponse { message }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sessions() -> Vec<(Uuid, String, String)> {
+        ["前端", "api", "api-v2", "Docs"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                (
+                    Uuid::from_u128(i as u128 + 1),
+                    format!("37100{}", i + 1),
+                    t.to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn ids(body: &str) -> Vec<u128> {
+        mentioned(body, &sessions())
+            .iter()
+            .map(|u| u.as_u128())
+            .collect()
+    }
+
+    #[test]
+    fn mentions() {
+        assert_eq!(ids("@前端 看一下"), [1]);
+        assert_eq!(ids("@API 看一下"), [2]);
+        assert_eq!(ids("@api-v2: 看一下"), [3]);
+        assert_eq!(ids("@api帮看下"), [2]);
+        assert_eq!(ids("找 @371004"), [4]);
+        assert_eq!(ids("@apix 看一下"), Vec::<u128>::new());
+        assert_eq!(ids("@api_x 和 @3710011"), Vec::<u128>::new());
+        assert_eq!(ids("@前端 @docs"), [1, 4]);
+        assert_eq!(ids("没有点名 a@b.c"), Vec::<u128>::new());
+    }
 }

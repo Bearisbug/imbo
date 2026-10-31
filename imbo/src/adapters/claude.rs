@@ -234,6 +234,23 @@ impl Adapter for Claude {
         })
     }
 
+    fn note<'a>(&'a self, session_id: &'a str, text: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let channel = {
+                let map = self.sessions.lock().unwrap();
+                map.get(session_id)
+                    .and_then(|s| Some((s.socket.clone()?, s.token.clone()?)))
+            };
+            let Some((sock, tok)) = channel else {
+                return Err("no messaging socket".into());
+            };
+            let text = format!(
+                "<cross-session-message from=\"did:imbo:imbo\" from-name=\"Imbo\">\n{text}\n</cross-session-message>"
+            );
+            inject(&sock, &tok, &text).await
+        })
+    }
+
     fn paste(&self) -> Paste {
         Paste::Numbered(
             " Images the user pasted in this session ([Image #N]): put the numbers in images to send them as attachments.",

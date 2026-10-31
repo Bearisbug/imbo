@@ -184,6 +184,18 @@ impl Adapter for Pi {
         })
     }
 
+    fn note<'a>(&'a self, session_id: &'a str, text: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let Some(s) = self.sessions.lock().unwrap().get(session_id).cloned() else {
+                return Err("pi has no such session open".into());
+            };
+            let req = json!({ "token": s.token, "op": "deliver", "text": text });
+            socket_call(&s.socket, &req, Duration::from_secs(5))
+                .await
+                .map(|_| ())
+        })
+    }
+
     fn paste(&self) -> Paste {
         Paste::Path(" To send an image the user pasted, put the path pi shows for it in files.")
     }

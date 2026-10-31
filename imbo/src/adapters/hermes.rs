@@ -185,6 +185,18 @@ impl Adapter for Hermes {
         })
     }
 
+    fn note<'a>(&'a self, session_id: &'a str, text: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let Some(g) = self.sessions.lock().unwrap().get(session_id).cloned() else {
+                return Err("the session is closed".into());
+            };
+            let req = json!({ "token": g.token, "op": "deliver", "session_id": session_id, "text": text });
+            socket_call(&g.socket, &req, Duration::from_secs(5))
+                .await
+                .map(|_| ())
+        })
+    }
+
     fn paste(&self) -> Paste {
         Paste::Path(" To send an image the user pasted, put the path Hermes shows for it in files.")
     }

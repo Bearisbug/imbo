@@ -124,9 +124,16 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             } else {
                 vec![]
             };
-            let r = call(d, &method, &path, body, actor).await;
+            let send = method == "POST" && path == "/v1/messages";
+            let r = call(d, &method, &path, body, actor.clone()).await;
             if r.ok && !sent.is_empty() {
                 super::files::forget(d, &sent);
+            }
+            let group = r.body["conversation"]["group"]["id"].as_i64();
+            if let (true, true, Some(a), Some(g)) = (send, r.ok, &actor, group)
+                && let Some((tool, sid)) = a.split_once(':')
+            {
+                super::consult::spoke(&(tool.into(), sid.into()), g as i32);
             }
             r
         }
@@ -386,6 +393,9 @@ async fn hook_prompt(d: &D, tool: &str, session_id: &str, limit: Option<usize>) 
         .unwrap_or_default();
     if messages.is_empty() {
         return LocalResponse::ok(200, json!({ "context": null }), None);
+    }
+    for m in &messages {
+        super::consult::delivered(d, &key, m);
     }
     // Download first, but the hook gives up after 8 s: whatever isn't done
     // in 5 s is marked and keeps downloading in the background.

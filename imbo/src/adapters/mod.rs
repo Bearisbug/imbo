@@ -280,6 +280,16 @@ pub trait Adapter: Send + Sync {
         files: &'a [LocalFile],
     ) -> BoxFuture<'a, Result<(), String>>;
 
+    /// Put a note from Imbo itself into the session (FLOW-GROUP-CONSULT
+    /// S5). Tools reached only through a listener or a prompt can't.
+    fn note<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _text: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(std::future::ready(Err("this tool takes no notes".into())))
+    }
+
     fn paste(&self) -> Paste;
 
     /// Picture `[Image #n]` pasted into the session; the error is for the

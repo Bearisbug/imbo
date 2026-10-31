@@ -267,7 +267,7 @@ fn message_text(m: &MessageView, files: &[LocalFile]) -> String {
     } else {
         m.reply_to.clone()
     };
-    format!(
+    let mut s = format!(
         "[Imbo message #{}] from {} · {}\nReply to: {}\n\n{}{}",
         m.id,
         render::sender(m),
@@ -277,7 +277,12 @@ fn message_text(m: &MessageView, files: &[LocalFile]) -> String {
         reply,
         m.body,
         render::attachments(m, files)
-    )
+    );
+    if let Some(c) = render::consult(m) {
+        s.push_str("\n\n");
+        s.push_str(&c);
+    }
+    s
 }
 
 /// The local UTC offset at `t`, from the C library. chrono's `Local` links

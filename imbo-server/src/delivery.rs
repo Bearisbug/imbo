@@ -215,7 +215,8 @@ pub async fn push_agent(st: &St, agent: Uuid) -> Result<(), sqlx::Error> {
     if pushed.is_empty() {
         return Ok(());
     }
-    let views = views::messages(&st.db, &pushed, account_id).await?;
+    let mut views = views::messages(&st.db, &pushed, account_id).await?;
+    views::with_siblings(&st.db, &mut views, account_id, agent).await?;
     let mut failed = vec![];
     for message in views {
         let id = message.id;

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use imbo_proto::api::{
-    AccountRef, AgentRef, ConversationRef, FileView, GroupRef, MessageView, Sender,
+    AccountRef, AgentRef, ConversationRef, FileView, GroupRef, MessageView, Sender, Sibling,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -149,6 +149,7 @@ pub async fn messages(
             MessageView {
                 from_me: r.from_account == viewer && r.from_agent_id.is_none(),
                 state: None,
+                siblings: vec![],
                 id: r.id,
                 from: Sender {
                     account_id: r.from_account,
@@ -169,6 +170,72 @@ pub async fn messages(
             }
         })
         .collect())
+}
+
+/// For each group message in `ids`: which of `viewer`'s sessions got it,
+/// as (message, receiving session, how to reach it). Canceled deliveries
+/// don't count (ADR-052).
+pub async fn receivers(
+    db: &PgPool,
+    ids: &[i64],
+    viewer: i32,
+) -> Result<Vec<(i64, Uuid, Sibling)>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let rows: Vec<(i64, Uuid, String, String)> = sqlx::query_as(
+        "SELECT d.message_id, a.id, a.short_id, coalesce(a.custom_title, a.title)
+         FROM deliveries d
+         JOIN agents a ON a.id = d.agent_id
+         JOIN messages m ON m.id = d.message_id
+         JOIN conversations cv ON cv.id = m.conversation_id
+         WHERE d.message_id = ANY($1) AND d.account_id = $2 AND cv.group_id IS NOT NULL
+           AND d.state <> 'canceled' AND a.tool <> 'terminal'
+         ORDER BY d.message_id, a.short_id",
+    )
+    .bind(ids)
+    .bind(viewer)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(message, agent, short_id, title)| {
+            let to = format!("{viewer}/{short_id}");
+            (message, agent, Sibling { to, title })
+        })
+        .collect())
+}
+
+/// Fill `siblings` for what `reader`, one of `viewer`'s sessions, is about
+/// to read.
+pub async fn with_siblings(
+    db: &PgPool,
+    messages: &mut [MessageView],
+    viewer: i32,
+    reader: Uuid,
+) -> Result<(), sqlx::Error> {
+    let ids: Vec<i64> = messages
+        .iter()
+        .filter(|m| m.conversation.group.is_some())
+        .map(|m| m.id)
+        .collect();
+    let got = receivers(db, &ids, viewer).await?;
+    for m in messages.iter_mut() {
+        m.siblings = siblings_of(&got, m.id, reader);
+    }
+    Ok(())
+}
+
+/// The others among `got` that received `message` besides `reader`.
+pub fn siblings_of(got: &[(i64, Uuid, Sibling)], message: i64, reader: Uuid) -> Vec<Sibling> {
+    let mine: Vec<&(i64, Uuid, Sibling)> = got.iter().filter(|(m, _, _)| *m == message).collect();
+    if !mine.iter().any(|(_, a, _)| *a == reader) {
+        return vec![];
+    }
+    mine.into_iter()
+        .filter(|(_, a, _)| *a != reader)
+        .map(|(_, _, s)| s.clone())
+        .collect()
 }
 
 pub async fn agent_refs(db: &PgPool, ids: &[Uuid]) -> Result<Vec<AgentRef>, sqlx::Error> {

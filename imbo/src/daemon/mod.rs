@@ -1,6 +1,7 @@
 //! `imbo daemon`: one per computer. Holds the device token, keeps the
 //! WebSocket to the server, tracks sessions and puts messages into them.
 
+mod consult;
 mod dedupe;
 mod files;
 mod link;
@@ -264,7 +265,10 @@ impl Daemon {
                         info!(session = %key.1, count = batch.len(), "listener told of messages");
                         let ids: Vec<_> = batch.iter().map(|d| d.message.id).collect();
                         listen::noticed(&key, &ids);
-                        batch.iter().for_each(|d| self.send_back(d, "noticed"));
+                        for d in &batch {
+                            self.send_back(d, "noticed");
+                            consult::delivered(&self, &key, &d.message);
+                        }
                     }
                     Err(reason) => batch.iter().for_each(|d| self.nack(d, &reason)),
                 }
@@ -272,7 +276,10 @@ impl Daemon {
             }
             let files = self.download(&d).await;
             match tool.deliver(&key.1, &d.message, &files).await {
-                Ok(()) => self.ack(&d, "inject"),
+                Ok(()) => {
+                    self.ack(&d, "inject");
+                    consult::delivered(&self, &key, &d.message);
+                }
                 Err(e) => self.nack(&d, &format!("inject-failed: {e}")),
             }
         }

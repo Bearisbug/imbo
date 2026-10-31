@@ -368,6 +368,18 @@ pub struct MessageView {
     /// (API-036, API-043): `pending`, `pushed`, `delivered` or `canceled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// On a group message: the reader's other sessions that got it too, to
+    /// talk it over with before replying (ADR-052).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub siblings: Vec<Sibling>,
+}
+
+/// One of the reader's own sessions, as `siblings` lists it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Sibling {
+    /// Address to message it: `<account ID>/<short ID>`.
+    pub to: String,
+    pub title: String,
 }
 
 /// An attachment as messages and uploads show it (DESIGN §8).
