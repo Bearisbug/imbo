@@ -168,6 +168,7 @@ async fn handle(st: &St, caller: &Caller, frame: ClientFrame) -> anyhow::Result<
         ClientFrame::Woken { agent_id, error } => {
             info!(%agent_id, error = error.as_deref().unwrap_or(""), "woken");
             st.wakes.answer(caller.account_id, agent_id, error);
+            st.events.send(caller.account_id, "agents");
         }
     }
     Ok(())

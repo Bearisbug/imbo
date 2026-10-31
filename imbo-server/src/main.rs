@@ -9,6 +9,7 @@ mod db;
 mod delivery;
 mod dev;
 mod error;
+mod events;
 mod hub;
 mod limits;
 mod mail;
@@ -138,6 +139,7 @@ async fn serve() -> anyhow::Result<()> {
     let state = Arc::new(state::AppState::new(cfg.clone(), database.pool.clone())?);
     delivery::spawn_tasks(state.clone());
     safety::spawn_ban_listener(state.clone());
+    events::spawn_listener(state.clone());
     let app = routes::router(state.clone());
 
     let listen: SocketAddr = cfg.listen.parse().context("IMBO_LISTEN")?;

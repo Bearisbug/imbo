@@ -15,6 +15,8 @@ pub struct AppState {
     pub cfg: Config,
     pub db: PgPool,
     pub hub: Hub,
+    /// The web app's and the App's live-update connections (FLOW-LIVE).
+    pub events: crate::events::Events,
     pub mailer: Mailer,
     pub limiter: Limiter,
     /// For Waffo's API.
@@ -38,6 +40,7 @@ impl AppState {
             cfg,
             db,
             hub: Hub::default(),
+            events: Default::default(),
             mailer,
             limiter: Limiter::default(),
             http: crate::billing::http_client(),

@@ -335,6 +335,7 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::POST, "/v1/reports"),
     (Method::POST, "/v1/me/email/code"),
     (Method::POST, "/v1/me/email"),
+    (Method::GET, "/v1/events"),
 ];
 
 /// What only the web app and the App may call.
@@ -355,6 +356,7 @@ const WEB_ONLY: &[(Method, &str)] = &[
     (Method::POST, "/v1/billing/portal"),
     (Method::DELETE, "/v1/web/session"),
     (Method::DELETE, "/v1/account"),
+    (Method::GET, "/v1/events"),
 ];
 
 fn listed(list: &[(Method, &str)], method: &Method, path: &str) -> bool {
@@ -390,7 +392,8 @@ fn permitted(st: &St, c: &Caller, req: &Request) -> ApiResult<()> {
             return Err(err(ErrorCode::Forbidden, detail));
         }
         // Only cookies ride along from other sites; the App's header can't (ADR-033).
-        if c.web.is_some() && method != Method::GET {
+        // A WebSocket handshake is a GET that any page can open (API-079).
+        if c.web.is_some() && (method != Method::GET || path == "/v1/events") {
             require_web_origin(st, req.headers())?;
         }
     } else if listed(WEB_ONLY, method, path) {

@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 
 use crate::error::{ApiError, err};
 use crate::state::St;
-use crate::{dev, ws};
+use crate::{dev, events, ws};
 
 pub fn router(st: St) -> Router {
     let authed = Router::new()
@@ -62,6 +62,7 @@ pub fn router(st: St) -> Router {
             delete(groups::dissolve).patch(groups::rename),
         )
         .route("/v1/ws", get(ws::upgrade))
+        .route("/v1/events", get(events::upgrade))
         .route("/v1/web/session", delete(auth::web_logout))
         .route("/v1/conversations", get(conversations::list))
         .route(

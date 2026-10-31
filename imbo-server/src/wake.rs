@@ -124,6 +124,7 @@ pub async fn request(st: &St, account_id: i32, agent: Uuid) -> Result<(), sqlx::
             },
         );
     }
+    st.events.send(account_id, "agents");
     let frame = ServerFrame::Wake {
         agent_id: agent,
         tool,
