@@ -57,7 +57,10 @@ pub fn router(st: St) -> Router {
             delete(groups::remove),
         )
         .route("/v1/groups/{id}/owner", put(groups::transfer))
-        .route("/v1/groups/{id}", delete(groups::dissolve))
+        .route(
+            "/v1/groups/{id}",
+            delete(groups::dissolve).patch(groups::rename),
+        )
         .route("/v1/ws", get(ws::upgrade))
         .route("/v1/web/session", delete(auth::web_logout))
         .route("/v1/conversations", get(conversations::list))

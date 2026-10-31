@@ -645,6 +645,39 @@ pub async fn transfer(
     Ok(Json(GroupResponse { group }))
 }
 
+#[derive(Deserialize)]
+pub struct RenameBody {
+    name: String,
+}
+
+/// API-077: only the owner, in person, renames the group. Members see the
+/// new name next time they look; no notice goes out.
+pub async fn rename(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(raw): Path<String>,
+    Body(req): Body<RenameBody>,
+) -> ApiResult<Json<GroupResponse>> {
+    c.require_person()?;
+    let mut g = require_member(&st, &c, &raw).await?;
+    let name = validate_group_name(&req.name).map_err(|m| err(ErrorCode::InvalidRequest, m))?;
+    let mut tx = st.db.begin().await?;
+    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
+        return Err(not_owner(&mut tx, &g, "rename it").await?);
+    }
+    if name != g.name {
+        sqlx::query("UPDATE chat_groups SET name = $2 WHERE id = $1")
+            .bind(g.id)
+            .bind(&name)
+            .execute(&mut *tx)
+            .await?;
+        g.name = name;
+    }
+    tx.commit().await?;
+    let group = view(&st, &c, g).await?;
+    Ok(Json(GroupResponse { group }))
+}
+
 /// API-039: only the owner, in person, dissolves the group.
 pub async fn dissolve(
     State(st): State<St>,

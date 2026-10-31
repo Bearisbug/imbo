@@ -10,6 +10,7 @@ use imbo_proto::api::{
     AcceptBody, AcceptResponse, AccountRef, ContactItem, ContactRequestBody, ContactsResponse,
     GroupRef, RequestItem, RequestResponse, RequestsResponse, SessionInfo,
 };
+use imbo_proto::text::valid_email;
 use imbo_proto::{ErrorCode, MAX_NOTE_CHARS};
 use serde::Deserialize;
 use sqlx::{Postgres, Transaction};
@@ -108,19 +109,56 @@ fn agent_label(c: &Caller) -> String {
     }
 }
 
+/// API-008 by email: the account it belongs to, told as plainly as an
+/// account ID would be (ADR-051).
+async fn account_by_email(st: &St, c: &Caller, raw: &str) -> ApiResult<i32> {
+    let email = raw.trim().to_lowercase();
+    if !valid_email(&email) {
+        return Err(err(
+            ErrorCode::InvalidEmail,
+            "That email address doesn't look right.",
+        ));
+    }
+    let id: Option<i32> = sqlx::query_scalar("SELECT id FROM accounts WHERE lower(email) = $1")
+        .bind(&email)
+        .fetch_optional(&st.db)
+        .await?;
+    match id {
+        Some(id) if id == c.account_id => {
+            Err(err(ErrorCode::CannotAddSelf, "That is your own email."))
+        }
+        Some(id) => Ok(id),
+        None => Err(err(
+            ErrorCode::AccountNotFound,
+            format!("No account with email {email}."),
+        )),
+    }
+}
+
 pub async fn request_contact(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
     Body(req): Body<ContactRequestBody>,
 ) -> ApiResult<Response> {
     crate::billing::require_active(&st, c.account_id, "API-008").await?;
-    let target = req.account_id;
-    if target == c.account_id {
-        return Err(err(
-            ErrorCode::CannotAddSelf,
-            "That is your own account ID.",
-        ));
-    }
+    let target = match (req.account_id, req.email.as_deref()) {
+        (Some(id), None) => {
+            if id == c.account_id {
+                return Err(err(
+                    ErrorCode::CannotAddSelf,
+                    "That is your own account ID.",
+                ));
+            }
+            id
+        }
+        (None, Some(email)) => account_by_email(&st, &c, email).await?,
+        _ => {
+            return Err(err(
+                ErrorCode::InvalidRequest,
+                "Give either an account ID or an email.",
+            ));
+        }
+    };
     let note = req
         .note
         .map(|n| n.trim().to_string())

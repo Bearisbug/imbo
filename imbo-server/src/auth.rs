@@ -274,6 +274,10 @@ pub(crate) async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
 /// What the web app may call: the ROLE-WebPerson column of DESIGN §10.
 const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::GET, "/v1/me"),
+    (Method::PATCH, "/v1/me"),
+    (Method::GET, "/v1/devices"),
+    (Method::DELETE, "/v1/devices/{id}"),
+    (Method::POST, "/v1/contacts/requests"),
     (Method::GET, "/v1/requests"),
     (Method::POST, "/v1/requests/{id}/accept"),
     (Method::POST, "/v1/requests/{id}/decline"),
@@ -288,6 +292,11 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::POST, "/v1/groups"),
     (Method::POST, "/v1/groups/{id}/invites"),
     (Method::PUT, "/v1/groups/{id}/sessions"),
+    (Method::DELETE, "/v1/groups/{id}/members/me"),
+    (Method::DELETE, "/v1/groups/{id}/members/{account_id}"),
+    (Method::PUT, "/v1/groups/{id}/owner"),
+    (Method::PATCH, "/v1/groups/{id}"),
+    (Method::DELETE, "/v1/groups/{id}"),
     (Method::POST, "/v1/files"),
     (Method::POST, "/v1/messages"),
     (Method::GET, "/v1/messages/{id}"),

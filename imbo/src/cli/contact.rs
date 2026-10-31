@@ -12,9 +12,10 @@ use crate::ui;
 pub enum ContactCmd {
     /// Contacts and their sessions.
     List,
-    /// Ask someone to be your contact, by account ID.
+    /// Ask someone to be your contact, by account ID or email.
     Add {
-        account_id: i32,
+        /// Their account ID, or the email they sign in with.
+        who: String,
         /// A short note only they will see (up to 200 characters).
         #[arg(long)]
         note: Option<String>,
@@ -48,7 +49,7 @@ pub enum ContactCmd {
 pub async fn run(cmd: ContactCmd) -> anyhow::Result<()> {
     match cmd {
         ContactCmd::List => list().await,
-        ContactCmd::Add { account_id, note } => add(account_id, note).await,
+        ContactCmd::Add { who, note } => add(who, note).await,
         ContactCmd::Requests { out, all } => requests(out, all).await,
         ContactCmd::Accept {
             request_id,
@@ -97,7 +98,7 @@ async fn list() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn add(account_id: i32, note: Option<String>) -> anyhow::Result<()> {
+async fn add(who: String, note: Option<String>) -> anyhow::Result<()> {
     if let Some(n) = &note
         && n.chars().count() > MAX_NOTE_CHARS
     {
@@ -106,23 +107,26 @@ async fn add(account_id: i32, note: Option<String>) -> anyhow::Result<()> {
         ));
         return Err(Reported.into());
     }
-    let v = api(
-        "POST",
-        "/v1/contacts/requests",
-        Some(json!({ "account_id": account_id, "note": note })),
-    )
-    .await?;
+    let to = match who.trim().parse::<i32>() {
+        Ok(id) => json!({ "account_id": id, "note": note }),
+        Err(_) if who.contains('@') => json!({ "email": who.trim(), "note": note }),
+        Err(_) => {
+            ui::error_line("Give an account ID or an email.");
+            return Err(Reported.into());
+        }
+    };
+    let v = api("POST", "/v1/contacts/requests", Some(to)).await?;
     if let Some(c) = v.get("contact") {
         ui::ok_line(&format!(
             "{} had already asked to add you. You're contacts now.",
             ui::heading(c["name"].as_str().unwrap_or("They"))
         ));
     } else {
-        let name = v["request"]["to"]["name"].as_str().unwrap_or("them");
+        let to = &v["request"]["to"];
         ui::ok_line(&format!(
             "Request sent to {} {}",
-            ui::heading(name),
-            ui::dim(format!("({account_id})"))
+            ui::heading(to["name"].as_str().unwrap_or("them")),
+            ui::dim(format!("({})", to["id"]))
         ));
         eprintln!(
             "  {}",

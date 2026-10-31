@@ -141,7 +141,11 @@ pub struct DevicesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactRequestBody {
-    pub account_id: AccountId,
+    /// Exactly one of `account_id` and `email` (API-008).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<AccountId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }

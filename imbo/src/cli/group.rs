@@ -74,6 +74,8 @@ pub enum GroupCmd {
         #[arg(long)]
         remove: bool,
     },
+    /// Rename a group you own. Members see the new name next time they look.
+    Rename { group: String, name: String },
 }
 
 /// Ask once, no by default; `--yes` or no terminal skips the question (PAGE-GROUP).
@@ -194,7 +196,32 @@ pub async fn run(cmd: GroupCmd) -> anyhow::Result<()> {
             picture,
             remove,
         } => avatar(group, picture, remove).await,
+        GroupCmd::Rename { group, name } => rename(group, name).await,
     }
+}
+
+/// API-077.
+async fn rename(group: String, name: String) -> anyhow::Result<()> {
+    let name = match validate_group_name(&name) {
+        Ok(n) => n,
+        Err(e) => {
+            ui::error_line(e);
+            return Err(Reported.into());
+        }
+    };
+    let gid = group_id(&group).await?;
+    let r: GroupResponse = api_as(
+        "PATCH",
+        &format!("/v1/groups/{gid}"),
+        Some(json!({ "name": name })),
+    )
+    .await?;
+    ui::ok_line(&format!(
+        "Renamed {} to {}",
+        ui::heading(&group),
+        ui::heading(&r.group.name)
+    ));
+    Ok(())
 }
 
 /// API-056 and API-057.

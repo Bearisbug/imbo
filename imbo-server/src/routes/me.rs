@@ -97,13 +97,14 @@ pub async fn rename(
             .bind(&name)
             .fetch_one(&st.db)
             .await?;
+    let admin = c.web.is_some() && super::admin::is_admin(&st, c.account_id).await?;
     Ok(Json(AccountResponse {
         account: Account {
             id: c.account_id,
             name,
             email: Some(email),
             avatar_url: crate::avatar::url_of(&st.cfg, avatar),
-            admin: false,
+            admin,
         },
     }))
 }
