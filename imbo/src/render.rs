@@ -114,13 +114,11 @@ pub fn footer(m: &MessageView) -> String {
             m.reply_to
         )
     };
-    let mut s = format!("---\n[Imbo message #{}] {} {RULES}", m.id, reply);
+    // Talking it over comes before how to reply, or the agent replies first.
+    let consult = consult(m).map(|c| c + " ").unwrap_or_default();
+    let mut s = format!("---\n[Imbo message #{}] {consult}{reply} {RULES}", m.id);
     if !m.files.is_empty() {
         s.push_str(FILE_RULE);
-    }
-    if let Some(c) = consult(m) {
-        s.push(' ');
-        s.push_str(&c);
     }
     s
 }
@@ -137,7 +135,7 @@ pub fn consult(m: &MessageView) -> Option<String> {
         .map(|s| format!("\"{}\" ({})", strip_control(&s.title, false), s.to))
         .collect();
     Some(format!(
-        "Your other sessions {} also got this group message. Before replying, message them with Imbo's send tool to say whether you plan to reply and what, read their plans, then decide for yourself. If you hear nothing back in 3 minutes, decide on your own.",
+        "Your other sessions {} also got this group message. Don't reply in the group yet: first message them with Imbo's send tool to say whether you plan to reply and what, then stop and wait for their plans, which come in as new messages. Once you've read them, decide for yourself whether to reply. If you hear nothing back in 3 minutes, decide on your own.",
         names.join(", ")
     ))
 }
@@ -337,9 +335,11 @@ mod tests {
         }];
         let t = for_claude(&m, &[]);
         assert!(t.contains(
-            "Your other sessions \"a372b\" (51730462/372002) also got this group message. Before replying, message them"
+            "[Imbo message #7] Your other sessions \"a372b\" (51730462/372002) also got this group message. Don't reply in the group yet: first message them"
         ));
-        assert!(t.contains("If you hear nothing back in 3 minutes, decide on your own."));
+        assert!(t.contains(
+            "decide on your own. To reply, use Imbo's send tool with to set to #5520183."
+        ));
     }
 
     #[test]

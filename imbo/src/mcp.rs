@@ -505,12 +505,17 @@ impl Imbo {
                         g.name, g.id, r.message_id, r.recipients
                     ),
                     None => {
-                        let peer = r
+                        let mut peer = r
                             .conversation
                             .peer
                             .as_ref()
                             .map(|p| p.name.clone())
                             .unwrap_or_else(|| to.clone());
+                        // The account name alone reads like their terminal
+                        // inbox when the message went to a session.
+                        if to.contains('/') && peer != *to {
+                            peer = format!("{peer} ({to})");
+                        }
                         if r.terminal {
                             format!(
                                 "Sent: message #{}{with} went to {}'s terminal inbox; they read it in a terminal with imbo inbox. To reach their agent, write the recipient as account/session (look it up with the contacts tool).",
