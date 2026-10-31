@@ -269,21 +269,22 @@ impl Adapter for Claude {
 
     fn changes(&self) -> String {
         format!(
-            "Claude Code  {}  plugin imbo; {CLAUDE_RULE} in permissions.allow",
+            "Claude Code  {}  plugin imbo; {CLAUDE_RULE} in permissions.allow; {INBOUND}: accept unless you set it",
             tilde(&settings())
         )
     }
 
     /// The plugin brings the MCP server and the prompt hook; the allow rule
-    /// lets its tools run without asking (ADR-013).
+    /// lets its tools run without asking (ADR-013), and `crossSessionInbound`
+    /// lets Imbo's messages in without asking (ADR-055).
     fn connect(&self, home: &Home, bin: &Path) -> Result<Connected, String> {
         add_plugin(home, bin)?;
-        let warning = allow_tools(true).err().map(|e| {
+        let warning = allow_tools(true).and_then(|()| accept_inbound(home)).err().map(|e| {
             format!(
                 "Couldn't edit {} ({e})  {}",
                 tilde(&settings()),
                 ui::dim(format!(
-                    "add \"{CLAUDE_RULE}\" to permissions.allow there, or Claude Code asks before each Imbo tool"
+                    "add \"{CLAUDE_RULE}\" to permissions.allow and set \"{INBOUND}\": \"accept\" there, or Claude Code asks before each Imbo tool and may hold Imbo's messages"
                 ))
             )
         });
@@ -298,6 +299,7 @@ impl Adapter for Claude {
             remove_plugin(home, bin);
         }
         let _ = allow_tools(false);
+        revert_inbound(home);
     }
 }
 
@@ -803,19 +805,99 @@ fn edit_allow(text: &str, add: bool) -> Result<Option<String>, String> {
 /// Let Claude Code run Imbo's tools without asking each time (ADR-013), or
 /// take that back.
 fn allow_tools(add: bool) -> Result<(), String> {
+    edit_settings(|text| edit_allow(text, add)).map(|_| ())
+}
+
+/// Rewrites Claude Code's settings with `edit`; true when they changed.
+fn edit_settings(
+    edit: impl FnOnce(&str) -> Result<Option<String>, String>,
+) -> Result<bool, String> {
     let path = settings();
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e.to_string()),
     };
-    if let Some(new) = edit_allow(&text, add)? {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let Some(new) = edit(&text)? else {
+        return Ok(false);
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, new).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Claude Code setting for messages from other sessions. Imbo's daemon isn't
+/// a child of the session, so a session that bypasses permission prompts
+/// holds its messages for approval unless this is `accept` (ADR-055).
+const INBOUND: &str = "crossSessionInbound";
+
+/// Claude Code settings text with `crossSessionInbound` set to `accept` when
+/// it's unset (`add`), or removed while it's still `accept`; `None` when
+/// nothing changes.
+fn edit_inbound(text: &str, add: bool) -> Result<Option<String>, String> {
+    let mut v: Value = if text.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(text).map_err(|e| format!("not valid JSON: {e}"))?
+    };
+    let root = v.as_object_mut().ok_or("not a JSON object")?;
+    match (add, root.get(INBOUND)) {
+        (true, None) => {
+            root.insert(INBOUND.into(), json!("accept"));
         }
-        std::fs::write(&path, new).map_err(|e| e.to_string())?;
+        (false, Some(x)) if x == "accept" => {
+            root.shift_remove(INBOUND);
+        }
+        _ => return Ok(None),
+    }
+    let mut out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    out.push('\n');
+    Ok(Some(out))
+}
+
+/// Settings files where Imbo set `crossSessionInbound` itself, one path a
+/// line, so uninstall takes back only those.
+fn inbound_marker(home: &Home) -> PathBuf {
+    home.state().join("claude-inbound")
+}
+
+fn accept_inbound(home: &Home) -> Result<(), String> {
+    if !edit_settings(|text| edit_inbound(text, true))? {
+        return Ok(());
+    }
+    let marker = inbound_marker(home);
+    let path = settings().to_string_lossy().into_owned();
+    let mut text = std::fs::read_to_string(&marker).unwrap_or_default();
+    if !text.lines().any(|l| l == path) {
+        text.push_str(&path);
+        text.push('\n');
+        std::fs::write(&marker, text).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+fn revert_inbound(home: &Home) {
+    let marker = inbound_marker(home);
+    let path = settings().to_string_lossy().into_owned();
+    let Ok(text) = std::fs::read_to_string(&marker) else {
+        return;
+    };
+    if !text.lines().any(|l| l == path) {
+        return;
+    }
+    let _ = edit_settings(|text| edit_inbound(text, false));
+    let rest: String = text
+        .lines()
+        .filter(|l| *l != path)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let _ = if rest.is_empty() {
+        std::fs::remove_file(&marker)
+    } else {
+        std::fs::write(&marker, rest)
+    };
 }
 
 /// `imbo hook prompt`: Claude Code's UserPromptSubmit hook (API-LOCAL-003).
@@ -966,6 +1048,30 @@ mod tests {
         );
         assert_eq!(edit_allow("", false).unwrap(), None);
         assert!(edit_allow("{ not json", true).is_err());
+    }
+
+    #[test]
+    fn inbound_is_set_only_when_unset_and_taken_back_only_while_accept() {
+        let before = r#"{"model":"sonnet","hooks":{}}"#;
+        let added = edit_inbound(before, true).unwrap().unwrap();
+        let v: Value = serde_json::from_str(&added).unwrap();
+        assert_eq!(v["crossSessionInbound"], "accept");
+        let keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, ["model", "hooks", "crossSessionInbound"]);
+        assert_eq!(edit_inbound(&added, true).unwrap(), None);
+
+        let removed = edit_inbound(&added, false).unwrap().unwrap();
+        let v: Value = serde_json::from_str(&removed).unwrap();
+        assert_eq!(v, serde_json::from_str::<Value>(before).unwrap());
+
+        let held = r#"{"crossSessionInbound":"hold"}"#;
+        assert_eq!(edit_inbound(held, true).unwrap(), None);
+        assert_eq!(edit_inbound(held, false).unwrap(), None);
+        assert_eq!(
+            serde_json::from_str::<Value>(&edit_inbound("", true).unwrap().unwrap()).unwrap(),
+            json!({ "crossSessionInbound": "accept" })
+        );
+        assert!(edit_inbound("[]", true).is_err());
     }
 
     #[test]
