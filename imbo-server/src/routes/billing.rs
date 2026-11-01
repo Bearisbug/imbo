@@ -10,23 +10,31 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::{Extension, Json};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    AppStoreTransactionRequest, AppStoreTransactionResponse, AppStoreView, BillingResponse,
-    CheckoutRequest, CheckoutResponse, PortalResponse,
+    AlipayPackResponse, AppStoreTransactionRequest, AppStoreTransactionResponse, AppStoreView,
+    BillingResponse, CheckoutRequest, CheckoutResponse, PortalResponse,
 };
 use tracing::{info, warn};
 
 use super::Body;
 use crate::auth::Caller;
-use crate::config::{Apple, Waffo};
+use crate::config::{Apple, Waffo, Watcha};
 use crate::error::{ApiResult, err, rate_limited};
 use crate::state::St;
-use crate::{apple, billing};
+use crate::{alipay, apple, billing};
 
 fn waffo(st: &St) -> ApiResult<&Waffo> {
     st.cfg
         .waffo
         .as_ref()
         .ok_or_else(|| err(ErrorCode::NotFound, "This server does not take payments."))
+}
+
+fn watcha(st: &St) -> ApiResult<&Watcha> {
+    st.cfg
+        .watcha
+        .as_ref()
+        .filter(|_| st.cfg.billing_on())
+        .ok_or_else(|| err(ErrorCode::NotFound, "This server does not sell time packs."))
 }
 
 fn app_store(st: &St) -> ApiResult<&Apple> {
@@ -43,6 +51,8 @@ pub async fn get(
     Extension(c): Extension<Caller>,
 ) -> ApiResult<Json<BillingResponse>> {
     c.require_person()?;
+    // A time pack bought moments ago is not recorded yet (ADR-061).
+    alipay::sync(&st, c.account_id, alipay::Sync::Page).await;
     let access = billing::access(&st.db, &st.cfg, c.account_id).await?;
     let created_at: chrono::DateTime<chrono::Utc> =
         sqlx::query_scalar("SELECT created_at FROM accounts WHERE id = $1")
@@ -74,6 +84,58 @@ pub async fn get(
             product_yearly: a.product_yearly.clone(),
             account_token: apple::account_token(c.account_id).to_string(),
         }),
+        alipay: st.cfg.watcha.is_some() && st.cfg.billing_on(),
+    }))
+}
+
+/// API-080: only the web app buys a time pack; the App may not sell one.
+pub async fn alipay_pack(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+) -> ApiResult<Json<AlipayPackResponse>> {
+    if c.app.is_some() {
+        return Err(err(
+            ErrorCode::Forbidden,
+            "Time packs are bought in the Imbo web app.",
+        ));
+    }
+    let watcha = watcha(&st)?;
+    let now = chrono::Utc::now();
+    let subs = billing::subscriptions(&st.db, &st.cfg, &[c.account_id]).await?;
+    // A gift does not count, so a gifted account can still buy (ADR-060).
+    if subs
+        .iter()
+        .any(|s| !s.is_gift() && s.grants_until().is_some_and(|g| g > now))
+    {
+        return Err(err(
+            ErrorCode::AlreadySubscribed,
+            "You already have a subscription or a time pack.",
+        ));
+    }
+    if let Err(wait) = st.limiter.hit(
+        &format!("alipay:{}", c.account_id),
+        30,
+        Duration::from_secs(3600),
+    ) {
+        return Err(rate_limited(
+            "alipay",
+            Some(c.account_id),
+            "Too many attempts in the last hour. Try again later.",
+            wait,
+        ));
+    }
+    Ok(Json(match alipay::buy(&st, watcha, c.account_id).await? {
+        alipay::Answer::Granted(pack) => AlipayPackResponse {
+            status: "granted".into(),
+            paid_until: Some(alipay::record(&st, c.account_id, &pack).await?),
+            purchase_url: None,
+        },
+        // The link carries a one-time ticket, so it is never logged.
+        alipay::Answer::PurchaseRequired(url) => AlipayPackResponse {
+            status: "purchase_required".into(),
+            paid_until: None,
+            purchase_url: Some(url),
+        },
     }))
 }
 

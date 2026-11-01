@@ -577,6 +577,9 @@ pub struct BillingResponse {
     /// Only when the server sells App Store subscriptions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_store: Option<AppStoreView>,
+    /// The web app may sell an Alipay time pack (API-080).
+    #[serde(default)]
+    pub alipay: bool,
 }
 
 /// API-071.
@@ -604,6 +607,16 @@ pub struct CheckoutResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortalResponse {
     pub portal_url: String,
+}
+
+/// API-080. `granted` carries `paid_until`, `purchase_required` the link.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlipayPackResponse {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_until: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchase_url: Option<String>,
 }
 
 // ---- groups ----

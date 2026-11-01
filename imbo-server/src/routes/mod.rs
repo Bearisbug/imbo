@@ -82,6 +82,7 @@ pub fn router(st: St) -> Router {
         .route("/v1/billing", get(billing::get))
         .route("/v1/billing/checkout", post(billing::checkout))
         .route("/v1/billing/portal", post(billing::portal))
+        .route("/v1/billing/alipay", post(billing::alipay_pack))
         .route(
             "/v1/billing/apple/transactions",
             post(billing::app_store_transaction),

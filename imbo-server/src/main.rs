@@ -1,5 +1,6 @@
 //! `imbo-server`: one binary for the central server and for self-hosting.
 
+mod alipay;
 mod apple;
 mod auth;
 mod avatar;
@@ -277,8 +278,9 @@ async fn billing_pull(id: &str) -> anyhow::Result<()> {
 
 /// RB-007: the revocation stands even when Waffo can't cancel.
 async fn billing_revoke(id: &str) -> anyhow::Result<()> {
-    if !billing::order_id_ok(id) {
-        anyhow::bail!("An order ID looks like ORD_…");
+    let alipay = id.starts_with("ALIPAY_");
+    if !alipay && !billing::order_id_ok(id) {
+        anyhow::bail!("An order ID looks like ORD_… and a time pack like ALIPAY_…");
     }
     let (_, waffo, database) = billing_setup().await?;
     let mut tx = database.pool.begin().await?;
@@ -290,6 +292,11 @@ async fn billing_revoke(id: &str) -> anyhow::Result<()> {
         )),
         Some(account) => {
             println!("{id}: revoked; account {account} has no access from it any more.");
+            // An Alipay time pack does not renew, so there is nothing to cancel.
+            if alipay {
+                database.close().await;
+                return Ok(());
+            }
             billing::cancel_order(&billing::http_client(), &waffo, id)
                 .await
                 .map(|()| println!("{id}: canceled at Waffo, it won't renew."))

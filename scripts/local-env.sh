@@ -65,6 +65,8 @@ case "${1:-}" in
     tmux -L imbo-test kill-server 2>/dev/null
     # The fake App Store of apple-env.sh.
     [ -s "$L/apple/serve.pid" ] && kill "$(cat "$L/apple/serve.pid")" 2>/dev/null
+    # The fake Watcha of watcha-env.sh.
+    [ -s "$L/watcha/serve.pid" ] && kill "$(cat "$L/watcha/serve.pid")" 2>/dev/null
     pkill -f "$I daemon"; pkill -f "$I mcp"; pkill -f "$I hook"; pkill -f "$I wait"; pkill -f "^$S"
     # The server drains connections for up to 5 s; deleting its database
     # under it leaves it hung on the port.

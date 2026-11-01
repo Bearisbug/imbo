@@ -194,6 +194,12 @@ pub async fn require_active(st: &St, account: i32, endpoint: &str) -> ApiResult<
     if !st.cfg.billing_on() || access(&st.db, &st.cfg, account).await?.active() {
         return Ok(());
     }
+    // An Alipay time pack arrives without a notification, so look once more
+    // before refusing (ADR-061).
+    crate::alipay::sync(st, account, crate::alipay::Sync::Send).await;
+    if access(&st.db, &st.cfg, account).await?.active() {
+        return Ok(());
+    }
     info!(
         event = "subscription_required",
         account_id = account,

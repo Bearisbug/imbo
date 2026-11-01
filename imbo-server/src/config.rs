@@ -36,6 +36,8 @@ pub struct Config {
     pub waffo: Option<Waffo>,
     /// App Store subscriptions; only with Waffo, whose mode they follow (ADR-043).
     pub apple: Option<Apple>,
+    /// Alipay time packs; only with Waffo, whose mode they follow (ADR-061).
+    pub watcha: Option<Watcha>,
     /// First day of charging; unset means everyone is free (RULE-007).
     pub billing_start: Option<DateTime<Utc>>,
     /// The web app's origin, the only one allowed cross-origin with cookies (ADR-023).
@@ -51,6 +53,31 @@ pub struct Config {
     /// The store reviewers' address and its fixed code (API-001).
     pub review: Option<Review>,
 }
+
+/// Watcha, the Alipay collection kit behind the time packs (ADR-061).
+#[derive(Clone)]
+pub struct Watcha {
+    /// The server API key; its environment decides which SKU answers.
+    pub api_key: String,
+    /// The time pack's entitlement, not the SKU.
+    pub entitlement_id: String,
+    /// A fake Watcha for local tests, with IMBO_DEV=1.
+    pub api_url: Option<String>,
+}
+
+impl std::fmt::Debug for Watcha {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Watcha({})", self.entitlement_id)
+    }
+}
+
+impl Watcha {
+    pub fn api_url(&self) -> &str {
+        self.api_url.as_deref().unwrap_or(WATCHA_API)
+    }
+}
+
+const WATCHA_API: &str = "https://pay.watcha.cn";
 
 /// Codes asked for `email` are `code` and no mail is sent (API-001).
 #[derive(Clone)]
@@ -196,6 +223,30 @@ fn apple_from_env(dev: bool) -> anyhow::Result<Option<Apple>> {
         key,
         root_cert,
         api_url: var("IMBO_APPLE_API_URL")
+            .filter(|_| dev)
+            .map(|u| u.trim_end_matches('/').to_string()),
+    }))
+}
+
+fn watcha_from_env(dev: bool) -> anyhow::Result<Option<Watcha>> {
+    let names = ["IMBO_WATCHA_API_KEY", "IMBO_WATCHA_ENTITLEMENT_ID"];
+    let vals: Vec<Option<String>> = names.iter().map(|n| var(n)).collect();
+    if vals.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    if let Some(i) = vals.iter().position(Option::is_none) {
+        bail!(
+            "{} is not set; set all of {} or none",
+            names[i],
+            names.join(", ")
+        );
+    }
+    let mut v = vals.into_iter().map(Option::unwrap_or_default);
+    let mut next = || v.next().unwrap_or_default();
+    Ok(Some(Watcha {
+        api_key: next(),
+        entitlement_id: next(),
+        api_url: var("IMBO_WATCHA_API_URL")
             .filter(|_| dev)
             .map(|u| u.trim_end_matches('/').to_string()),
     }))
@@ -394,6 +445,7 @@ impl Config {
         let dev = flag("IMBO_DEV");
         let waffo = waffo_from_env()?;
         let apple = apple_from_env(dev)?.filter(|_| waffo.is_some());
+        let watcha = watcha_from_env(dev)?.filter(|_| waffo.is_some());
         Ok(Self {
             domain,
             tls,
@@ -411,6 +463,7 @@ impl Config {
             backup_stamp: var("IMBO_BACKUP_STAMP").map(PathBuf::from),
             min_client_version: var("IMBO_MIN_CLIENT_VERSION").unwrap_or_else(|| "0.1.0".into()),
             waffo,
+            watcha,
             apple,
             billing_start: billing_start_from_env()?,
             web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),
