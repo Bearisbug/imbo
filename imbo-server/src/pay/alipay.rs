@@ -1,27 +1,62 @@
 //! Alipay time packs through Watcha (API-080, ADR-061). Watcha sends no
-//! notification, so the server asks it: when the web app buys, when the
-//! account page is read, and before a send is refused.
+//! notification, so the port's refresh asks it: when the account page is
+//! read and before a send is refused; buying asks it too.
 
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use crate::billing::{self, SubRow, provider_failed};
+use super::{Begun, Channel, Ctx, provider_failed};
+use crate::billing;
 use crate::config::Watcha;
 use crate::error::ApiResult;
-use crate::state::St;
 
 /// Watcha answers within this or the call counts as failed.
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// A pack longer than this is the yearly one; a calendar month is at most
 /// 31 days.
 const YEARLY: TimeDelta = TimeDelta::days(62);
-/// The account page asks Watcha at most this often per account.
-const PAGE_EVERY: Duration = Duration::from_secs(5);
-/// Before refusing a send, at most this often per account.
-const SEND_EVERY: Duration = Duration::from_secs(60);
+
+/// Alipay time packs on the payment-channel port. A pack doesn't renew, so
+/// there is nothing to stop.
+pub struct Adapter<'a>(pub &'a Watcha);
+
+#[async_trait]
+impl Channel for Adapter<'_> {
+    fn name(&self) -> &'static str {
+        "alipay"
+    }
+
+    fn owns(&self, id: &str) -> bool {
+        id.starts_with("ALIPAY_")
+    }
+
+    /// API-080: where to send a buyer who wants a pack, or the pack already
+    /// paid for, recorded.
+    async fn begin(&self, ctx: &Ctx<'_>, account: i32, _plan: &str) -> ApiResult<Begun> {
+        let return_url = ctx
+            .cfg
+            .web_origin
+            .as_ref()
+            .map(|o| format!("{o}/account?paid=alipay"));
+        Ok(
+            match ask(ctx, self.0, account, return_url.as_deref()).await? {
+                Answer::Granted(pack) => Begun::Granted(record(ctx, account, &pack).await?),
+                Answer::PurchaseRequired(url) => Begun::Pay(url),
+            },
+        )
+    }
+
+    async fn refresh(&self, ctx: &Ctx<'_>, account: i32) -> ApiResult<()> {
+        if let Answer::Granted(pack) = ask(ctx, self.0, account, None).await? {
+            record(ctx, account, &pack).await?;
+        }
+        Ok(())
+    }
+}
 
 /// A paid time pack, as Watcha dates it.
 pub struct Pack {
@@ -67,7 +102,7 @@ pub fn row(account: i32, pack: &Pack, trial_end: Option<DateTime<Utc>>) -> Row {
     }
 }
 
-pub enum Answer {
+enum Answer {
     /// Paid already.
     Granted(Pack),
     /// Not paid; this link takes the buyer to Alipay.
@@ -76,8 +111,8 @@ pub enum Answer {
 
 /// Ask Watcha about this account's time pack. `return_url` is where the
 /// buyer lands after paying.
-pub async fn ask(
-    st: &St,
+async fn ask(
+    ctx: &Ctx<'_>,
     watcha: &Watcha,
     account: i32,
     return_url: Option<&str>,
@@ -89,7 +124,7 @@ pub async fn ask(
     if let Some(url) = return_url {
         body["return_url"] = json!(url);
     }
-    let answer: Value = st
+    let answer: Value = ctx
         .http
         .post(format!("{}/v1/entitlements/access", watcha.api_url()))
         .bearer_auth(&watcha.api_key)
@@ -140,16 +175,16 @@ fn read(answer: &Value) -> Option<Answer> {
 
 /// Record a paid pack, once (INV-033). Returns what it grants access
 /// through, whether this call recorded it or an earlier one did.
-pub async fn record(st: &St, account: i32, pack: &Pack) -> Result<DateTime<Utc>, sqlx::Error> {
-    let Some(waffo) = &st.cfg.waffo else {
+async fn record(ctx: &Ctx<'_>, account: i32, pack: &Pack) -> Result<DateTime<Utc>, sqlx::Error> {
+    let Some(waffo) = &ctx.cfg.waffo else {
         return Ok(pack.expires_at);
     };
     let created_at: DateTime<Utc> =
         sqlx::query_scalar("SELECT created_at FROM accounts WHERE id = $1")
             .bind(account)
-            .fetch_one(&st.db)
+            .fetch_one(ctx.db)
             .await?;
-    let want = row(account, pack, billing::trial_end(&st.cfg, created_at));
+    let want = row(account, pack, billing::trial_end(ctx.cfg, created_at));
     let recorded: Option<DateTime<Utc>> = sqlx::query_scalar(
         "INSERT INTO subscriptions
            (id, provider, mode, account_id, plan, status, paid_until, provider_updated_at)
@@ -162,7 +197,7 @@ pub async fn record(st: &St, account: i32, pack: &Pack) -> Result<DateTime<Utc>,
     .bind(account)
     .bind(want.plan)
     .bind(want.paid_until)
-    .fetch_optional(&st.db)
+    .fetch_optional(ctx.db)
     .await?;
     match recorded {
         Some(paid_until) => {
@@ -177,88 +212,12 @@ pub async fn record(st: &St, account: i32, pack: &Pack) -> Result<DateTime<Utc>,
             Ok(paid_until)
         }
         // Already recorded: keep what that row grants, revocation included.
-        None => Ok(existing(st, &want.id).await?.unwrap_or(want.paid_until)),
+        None => Ok(billing::row(ctx.db, &want.id)
+            .await?
+            .map_or(want.paid_until, |r| {
+                r.grants_until().unwrap_or(r.paid_until)
+            })),
     }
-}
-
-async fn existing(st: &St, id: &str) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
-    let found: Option<SubRow> = sqlx::query_as(
-        "SELECT id, account_id, provider, mode, plan, status, paid_until, revoked_at
-         FROM subscriptions WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&st.db)
-    .await?;
-    Ok(found.map(|r| r.grants_until().unwrap_or(r.paid_until)))
-}
-
-/// Which throttle a sync goes through.
-#[derive(Clone, Copy)]
-pub enum Sync {
-    /// Reading the account page (API-032).
-    Page,
-    /// About to refuse a send (RULE-008).
-    Send,
-}
-
-/// Ask Watcha whether this account paid since the last look, and record it.
-/// Does nothing when Alipay packs are off, when the account already has a
-/// subscription that grants access, or when it asked moments ago; a Watcha
-/// failure only logs, so the caller answers from what is recorded.
-pub async fn sync(st: &St, account: i32, when: Sync) {
-    let Some(watcha) = &st.cfg.watcha else {
-        return;
-    };
-    if !st.cfg.billing_on() {
-        return;
-    }
-    let (key, every) = match when {
-        Sync::Page => ("alipay-page", PAGE_EVERY),
-        Sync::Send => ("alipay-send", SEND_EVERY),
-    };
-    if st
-        .limiter
-        .hit(&format!("{key}:{account}"), 1, every)
-        .is_err()
-    {
-        return;
-    }
-    let now = Utc::now();
-    match billing::subscriptions(&st.db, &st.cfg, &[account]).await {
-        // A gift does not stand in the way: a gifted account that buys a
-        // pack still gets it recorded (ADR-060).
-        Ok(subs)
-            if subs
-                .iter()
-                .any(|s| !s.is_gift() && s.grants_until().is_some_and(|g| g > now)) =>
-        {
-            return;
-        }
-        Ok(_) => {}
-        Err(e) => {
-            warn!(account_id = account, "cannot read subscriptions: {e}");
-            return;
-        }
-    }
-    match ask(st, watcha, account, None).await {
-        Ok(Answer::Granted(pack)) => {
-            if let Err(e) = record(st, account, &pack).await {
-                warn!(account_id = account, "cannot record the time pack: {e}");
-            }
-        }
-        // Not paid, or Watcha did not answer: both leave the records alone.
-        Ok(Answer::PurchaseRequired(_)) | Err(_) => {}
-    }
-}
-
-/// API-080: where to send a buyer who wants a pack.
-pub async fn buy(st: &St, watcha: &Watcha, account: i32) -> ApiResult<Answer> {
-    let return_url = st
-        .cfg
-        .web_origin
-        .as_ref()
-        .map(|o| format!("{o}/account?paid=alipay"));
-    ask(st, watcha, account, return_url.as_deref()).await
 }
 
 #[cfg(test)]

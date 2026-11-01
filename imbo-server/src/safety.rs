@@ -8,10 +8,11 @@ use sqlx::{PgConnection, PgPool};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::billing;
 use crate::config::Config;
 use crate::error::{ApiResult, err};
 use crate::mail::Mailer;
-use crate::{apple, billing};
+use crate::pay::{self, Ctx};
 
 /// Postgres channel a ban done outside the server is announced on, so the
 /// server can close the banned account's connections (API-066).
@@ -233,38 +234,11 @@ pub async fn ban_tx(tx: &mut PgConnection, target: i32, by: Option<i32>) -> ApiR
     })
 }
 
-/// Cancel the account's Waffo subscriptions that still renew, without a
-/// refund. Nothing to cancel, or no Waffo configured, counts as done; App
-/// Store subscriptions only their owner can cancel.
-pub async fn cancel_subscriptions(
-    db: &PgPool,
-    cfg: &Config,
-    http: &reqwest::Client,
-    account: i32,
-) -> ApiResult<()> {
-    let Some(waffo) = &cfg.waffo else {
-        return Ok(());
-    };
-    let live: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM subscriptions
-         WHERE account_id = $1 AND mode = $2 AND provider = 'waffo'
-           AND status IN ('active', 'past_due')",
-    )
-    .bind(account)
-    .bind(waffo.mode())
-    .fetch_all(db)
-    .await?;
-    for id in live {
-        billing::cancel_order(http, waffo, &id).await?;
-    }
-    Ok(())
-}
-
-/// After a ban commits: cancel the Waffo subscriptions, logging a failure;
-/// the ban stands either way (ADR-041). A first ban of an account with an
-/// App Store subscription that still renews mails it how to cancel that
-/// (API-066). Returns whether the Waffo subscriptions are canceled, and
-/// whether there is such an App Store subscription.
+/// After a ban commits: stop the subscriptions the server can stop, logging
+/// a failure; the ban stands either way (ADR-041). A first ban of an account
+/// with a renewing subscription only it can stop, an App Store one, mails it
+/// how to cancel that (API-066). Returns whether the server's stops went
+/// through, and whether there is such a subscription.
 pub async fn after_ban(
     db: &PgPool,
     cfg: &Config,
@@ -273,15 +247,16 @@ pub async fn after_ban(
     account: i32,
     newly: bool,
 ) -> (bool, bool) {
-    let canceled = match cancel_subscriptions(db, cfg, http, account).await {
+    let ctx = Ctx { db, cfg, http };
+    let canceled = match pay::stop_renewing(&ctx, account).await {
         Ok(()) => true,
         Err(e) => {
             warn!(account_id = account, error = %e.0.detail, "ban: subscription not canceled");
             false
         }
     };
-    let app_store = match apple::renewing(db, cfg, account).await {
-        Ok(subs) => !subs.is_empty(),
+    let app_store = match pay::owner_must_stop(&ctx, account).await {
+        Ok(must) => must,
         Err(e) => {
             warn!(account_id = account, error = %e, "ban: App Store subscriptions not checked");
             false

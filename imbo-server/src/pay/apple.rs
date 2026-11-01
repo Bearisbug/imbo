@@ -1,6 +1,7 @@
 //! App Store subscriptions (ADR-043): transactions the App hands in
 //! (API-071), Apple's notifications (API-072), and asking Apple for a
-//! subscription's current state (API-052, `imbo-server billing pull`).
+//! subscription's current state (API-052, `imbo-server billing pull`), with
+//! its adapter for the payment-channel port.
 
 use app_store_server_library::models::app_store_environment::Environment;
 use app_store_server_library::models::auto_renew_status::AutoRenewStatus;
@@ -10,6 +11,7 @@ use app_store_server_library::models::status::Status;
 use app_store_server_library::models::status_response::StatusResponse;
 use app_store_server_library::models::subtype::Subtype;
 use app_store_server_library::signed_data_verifier::SignedDataVerifier;
+use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
@@ -21,10 +23,66 @@ use sqlx::{PgConnection, PgPool};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::billing::{self, Outcome, SubRow, provider_failed};
+use super::{Channel, Ctx, Outcome, Stopper, provider_failed};
+use crate::billing::{self, SubRow};
 use crate::config::{Apple, Config};
 use crate::error::{ApiError, ApiResult, err};
 use crate::state::St;
+
+/// The App Store on the payment-channel port. It is bought and managed in
+/// the App and on the iPhone, and only its owner can stop it renewing.
+pub struct Adapter<'a>(pub &'a Apple);
+
+#[async_trait]
+impl Channel for Adapter<'_> {
+    fn name(&self) -> &'static str {
+        "apple"
+    }
+
+    /// An original transaction ID: all digits.
+    fn owns(&self, id: &str) -> bool {
+        !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+    }
+
+    fn stopper(&self) -> Stopper {
+        Stopper::Owner
+    }
+
+    async fn pull(&self, ctx: &Ctx<'_>, id: &str) -> anyhow::Result<String> {
+        pull(ctx.db, ctx.cfg, self.0, ctx.http, id).await
+    }
+
+    /// API-052: ask Apple; turned off, record it as Apple has it.
+    async fn renews(&self, ctx: &Ctx<'_>, sub: &SubRow) -> ApiResult<bool> {
+        let asked = Utc::now();
+        let cur = ask(ctx.http, self.0, &env_of(&sub.mode), &sub.id)
+            .await
+            .map_err(|_| provider_failed())?;
+        if cur.renews() {
+            return Ok(true);
+        }
+        let plan = cur
+            .tx
+            .product_id
+            .as_deref()
+            .and_then(|p| self.0.plan(p))
+            .unwrap_or(sub.plan.as_str());
+        let mut tx = ctx.db.begin().await?;
+        record_current(
+            &mut tx,
+            &sub.id,
+            &sub.mode,
+            sub.account_id,
+            false,
+            plan,
+            &cur,
+            asked,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(false)
+    }
+}
 
 /// API-032: the appAccountToken the App passes to Apple for `account`.
 pub fn account_token(account: i32) -> Uuid {
@@ -120,7 +178,7 @@ fn verifier(apple: &Apple, env: Environment) -> SignedDataVerifier {
 // ---- asking Apple ----
 
 /// Apple's current state of one subscription.
-pub struct Current {
+struct Current {
     status: Status,
     auto_renew: bool,
     /// The latest transaction.
@@ -152,7 +210,7 @@ impl Current {
     }
 }
 
-pub enum AskError {
+enum AskError {
     /// Apple has no such subscription in that environment.
     NotFound,
     /// No answer, an error, or data that doesn't verify.
@@ -182,7 +240,7 @@ fn api_token(apple: &Apple) -> Option<String> {
 
 /// Get All Subscription Statuses for one original transaction ID, verified.
 /// `http` times out after 10 seconds.
-pub async fn ask(
+async fn ask(
     http: &reqwest::Client,
     apple: &Apple,
     env: &Environment,
@@ -687,57 +745,12 @@ async fn apply(
     .await
 }
 
-// ---- API-052, API-066, billing pull ----
-
-/// The account's App Store subscriptions that still renew, as RULE-007
-/// counts subscriptions; a refunded one doesn't.
-pub async fn renewing(db: &PgPool, cfg: &Config, account: i32) -> Result<Vec<SubRow>, sqlx::Error> {
-    Ok(billing::subscriptions(db, cfg, &[account])
-        .await?
-        .into_iter()
-        .filter(|s| {
-            s.provider == "apple"
-                && s.revoked_at.is_none()
-                && matches!(s.status.as_str(), "active" | "past_due")
-        })
-        .collect())
-}
-
-/// API-052: before deleting, ask Apple about each App Store subscription
-/// that still renews. Apple still charging: 409; no answer: 502; turned off:
-/// record it as Apple has it and go on.
-pub async fn check_before_delete(st: &St, account: i32) -> ApiResult<()> {
-    let Some(apple) = &st.cfg.apple else {
-        return Ok(());
-    };
-    for s in renewing(&st.db, &st.cfg, account).await? {
-        let asked = Utc::now();
-        let cur = ask(&st.http, apple, &env_of(&s.mode), &s.id)
-            .await
-            .map_err(|_| provider_failed())?;
-        if cur.renews() {
-            return Err(err(
-                ErrorCode::AppStoreRenewing,
-                "Cancel your App Store subscription in Settings on your iPhone first; deleting doesn't stop Apple charging you.",
-            ));
-        }
-        let plan = cur
-            .tx
-            .product_id
-            .as_deref()
-            .and_then(|p| apple.plan(p))
-            .unwrap_or(s.plan.as_str());
-        let mut tx = st.db.begin().await?;
-        record_current(&mut tx, &s.id, &s.mode, account, false, plan, &cur, asked).await?;
-        tx.commit().await?;
-    }
-    Ok(())
-}
+// ---- billing pull ----
 
 /// `imbo-server billing pull <original transaction ID>` (RB-008): record
 /// what Apple has now. The account is the recorded one, or the token's when
 /// it moves (API-072); else the token's.
-pub async fn pull(
+async fn pull(
     db: &PgPool,
     cfg: &Config,
     apple: &Apple,

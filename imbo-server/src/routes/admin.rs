@@ -662,7 +662,7 @@ pub async fn stats(State(st): State<St>) -> ApiResult<Json<StatsResponse>> {
     };
     let paid = subs
         .iter()
-        .filter(|s| !s.is_gift() && s.grants_until().is_some_and(|t| t > now))
+        .filter(|s| crate::pay::paid_grant(&st.cfg, s, now))
         .count() as i64;
     Ok(Json(StatsResponse {
         accounts,

@@ -44,6 +44,8 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 ring = "0.17"
 # Verifies App Store transactions and notifications against Apple's certificate chain (ADR-043).
 app-store-server-library = { version = "6.0.1", default-features = false, features = ["ring"] }
+# Async methods on the payment-channel port, which is used as `dyn Channel`.
+async-trait = "0.1"
 
 [lints]
 workspace = true

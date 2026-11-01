@@ -1670,6 +1670,7 @@ version = "0.2.17"
 dependencies = [
  "anyhow",
  "app-store-server-library",
+ "async-trait",
  "axum",
  "axum-server",
  "base64 0.22.1",

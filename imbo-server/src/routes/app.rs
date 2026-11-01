@@ -15,7 +15,7 @@ use super::groups::{cancel_group, lock_group, post_notice};
 use crate::auth::Caller;
 use crate::error::{ApiResult, err};
 use crate::state::St;
-use crate::{apple, avatar, delivery, push, safety};
+use crate::{avatar, delivery, pay, push, safety};
 
 const MAX_PUSH_TOKEN: usize = 200;
 
@@ -112,7 +112,7 @@ pub async fn delete_account(
     if req.confirm != "DELETE" {
         return Err(err(ErrorCode::InvalidRequest, "Type DELETE to confirm."));
     }
-    apple::check_before_delete(&st, c.account_id).await?;
+    pay::before_delete(&st.pay(), c.account_id).await?;
     delete_now(&st, c.account_id, "its owner deleted their account").await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -121,8 +121,8 @@ pub async fn delete_account(
 /// then everything in one transaction. Groups it owns are dissolved with a
 /// notice ending "because <why>."
 pub(crate) async fn delete_now(st: &St, me: i32, why: &str) -> ApiResult<()> {
-    // Stop charging first; if Waffo can't, nothing is deleted.
-    safety::cancel_subscriptions(&st.db, &st.cfg, &st.http, me).await?;
+    // Stop charging first; if a channel can't, nothing is deleted.
+    pay::stop_renewing(&st.pay(), me).await?;
 
     let mut tx = st.db.begin().await?;
     // Blocks this account's own sends, which take FOR SHARE (DESIGN §16).

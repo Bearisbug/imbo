@@ -1,7 +1,5 @@
 //! `imbo-server`: one binary for the central server and for self-hosting.
 
-mod alipay;
-mod apple;
 mod auth;
 mod avatar;
 mod billing;
@@ -15,6 +13,7 @@ mod hub;
 mod limits;
 mod mail;
 mod notify;
+mod pay;
 mod push;
 mod routes;
 mod safety;
@@ -189,127 +188,78 @@ async fn serve() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The settings, Waffo and database the billing commands work on.
-async fn billing_setup() -> anyhow::Result<(config::Config, config::Waffo, db::Database)> {
+/// The settings and database the billing commands work on.
+async fn billing_setup() -> anyhow::Result<(config::Config, db::Database)> {
     let cfg = config::Config::from_env()?;
-    let waffo = cfg
-        .waffo
-        .clone()
-        .context("Waffo is not configured (IMBO_WAFFO_MERCHANT_ID and the rest)")?;
+    if cfg.waffo.is_none() {
+        anyhow::bail!("Waffo is not configured (IMBO_WAFFO_MERCHANT_ID and the rest)");
+    }
     if cfg.database_url.is_none() {
         anyhow::bail!("billing commands need DATABASE_URL");
     }
     let database = db::open(&cfg).await?;
-    Ok((cfg, waffo, database))
+    Ok((cfg, database))
 }
 
-/// RB-008: an App Store subscription, by its original transaction ID.
-async fn apple_pull(id: &str) -> anyhow::Result<()> {
-    let (cfg, _, database) = billing_setup().await?;
-    let result = match &cfg.apple {
-        Some(apple) => apple::pull(&database.pool, &cfg, apple, &billing::http_client(), id)
-            .await
-            .map(|line| println!("{line}")),
-        None => Err(anyhow::anyhow!(
-            "the App Store is not configured (IMBO_APPLE_BUNDLE_ID and the rest)"
-        )),
-    };
-    database.close().await;
-    result
-}
-
-/// API-035: also cancels an order that still renews when its account is
-/// deleted or banned; the record stands even when Waffo can't cancel.
+/// RB-005, RB-008: the channel whose ID this is records what it has now.
 async fn billing_pull(id: &str) -> anyhow::Result<()> {
-    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
-        return apple_pull(id).await;
-    }
-    let (_, waffo, database) = billing_setup().await?;
-    let http = billing::http_client();
-    let order = billing::fetch_order(&http, &waffo, id)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e.0.detail))?;
-    let mut tx = database.pool.begin().await?;
-    let outcome = billing::record_pulled(&mut tx, &waffo, &order).await?;
-    let renews = matches!(
-        order["status"].as_str(),
-        Some("active" | "trialing" | "past_due")
-    ) && matches!(
-        outcome,
-        Some(billing::Outcome::Applied | billing::Outcome::Stale)
-    );
-    let gone = if renews {
-        billing::gone_account(&mut tx, id).await?
-    } else {
-        None
+    let (cfg, database) = billing_setup().await?;
+    let http = pay::http_client();
+    let ctx = pay::Ctx {
+        db: &database.pool,
+        cfg: &cfg,
+        http: &http,
     };
-    tx.commit().await?;
-    println!(
-        "{id}: {} (status {}, period ends {})",
-        match outcome {
-            Some(billing::Outcome::Applied) => "recorded",
-            Some(billing::Outcome::Stale) => "already up to date",
-            Some(billing::Outcome::UnknownAccount) => "no account in its metadata, not recorded",
-            Some(billing::Outcome::UnknownProduct) => "not one of the two plans, not recorded",
-            _ => "a status that is never recorded",
-        },
-        order["status"].as_str().unwrap_or("?"),
-        order["currentPeriodEnd"].as_str().unwrap_or("?"),
-    );
-    let result = match gone {
-        None => Ok(()),
-        Some(account) => billing::cancel_order(&http, &waffo, id)
-            .await
-            .map(|()| {
-                println!(
-                    "{id}: account {account} is deleted or banned; canceled at Waffo, it won't renew."
-                )
-            })
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "{id}: account {account} is deleted or banned but Waffo did not cancel it ({}); run this again",
-                    e.0.detail
-                )
-            }),
+    let result = match pay::owner(&cfg, id) {
+        Some(ch) => ch.pull(&ctx, id).await.map(|line| println!("{line}")),
+        None => Err(anyhow::anyhow!("An order ID looks like ORD_…")),
     };
     database.close().await;
     result
 }
 
-/// RB-007: the revocation stands even when Waffo can't cancel.
+/// RB-007: for a subscription paid for here that the server can stop or
+/// that doesn't renew. The revocation stands even when the stop fails.
 async fn billing_revoke(id: &str) -> anyhow::Result<()> {
-    let alipay = id.starts_with("ALIPAY_");
-    if !alipay && !billing::order_id_ok(id) {
-        anyhow::bail!("An order ID looks like ORD_… and a time pack like ALIPAY_…");
-    }
-    let (_, waffo, database) = billing_setup().await?;
-    let mut tx = database.pool.begin().await?;
+    let (cfg, database) = billing_setup().await?;
+    let result = revoke(&cfg, &database.pool, id).await;
+    database.close().await;
+    result
+}
+
+async fn revoke(cfg: &config::Config, db: &sqlx::PgPool, id: &str) -> anyhow::Result<()> {
+    let ch = pay::owner(cfg, id)
+        .filter(|c| c.voluntary() && c.stopper() != pay::Stopper::Owner)
+        .context("An order ID looks like ORD_… and a time pack like ALIPAY_…")?;
+    let mut tx = db.begin().await?;
     let account = billing::revoke(&mut tx, id).await?;
     tx.commit().await?;
-    let result = match account {
-        None => Err(anyhow::anyhow!(
-            "no subscription {id} is recorded; run `imbo-server billing pull {id}` first"
-        )),
-        Some(account) => {
-            println!("{id}: revoked; account {account} has no access from it any more.");
-            // An Alipay time pack does not renew, so there is nothing to cancel.
-            if alipay {
-                database.close().await;
-                return Ok(());
-            }
-            billing::cancel_order(&billing::http_client(), &waffo, id)
-                .await
-                .map(|()| println!("{id}: canceled at Waffo, it won't renew."))
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "{id} is revoked but Waffo did not cancel it ({}); run this again",
-                        e.0.detail
-                    )
-                })
-        }
+    let account = account.with_context(|| {
+        format!("no subscription {id} is recorded; run `imbo-server billing pull {id}` first")
+    })?;
+    println!("{id}: revoked; account {account} has no access from it any more.");
+    if ch.stopper() != pay::Stopper::Server {
+        return Ok(());
+    }
+    let sub = billing::row(db, id)
+        .await?
+        .with_context(|| format!("{id}: gone while revoking"))?;
+    let http = pay::http_client();
+    let ctx = pay::Ctx {
+        db,
+        cfg,
+        http: &http,
     };
-    database.close().await;
-    result
+    ch.stop(&ctx, &sub)
+        .await
+        .map(|()| println!("{id}: canceled at {}, it won't renew.", ch.title()))
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "{id} is revoked but {} did not cancel it ({}); run this again",
+                ch.title(),
+                e.0.detail
+            )
+        })
 }
 
 /// `imbo-server account ban|unban`. With the embedded database the server
@@ -342,7 +292,7 @@ async fn account_cmd(cmd: AccountCmd) -> anyhow::Result<()> {
                 let (canceled, app_store) = safety::after_ban(
                     pool,
                     &cfg,
-                    &billing::http_client(),
+                    &pay::http_client(),
                     &mailer,
                     account_id,
                     b.newly,

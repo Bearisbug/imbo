@@ -19,7 +19,7 @@ pub struct AppState {
     pub events: crate::events::Events,
     pub mailer: Mailer,
     pub limiter: Limiter,
-    /// For Waffo's API.
+    /// For the payment channels' APIs.
     pub http: reqwest::Client,
     /// Payment webhooks that failed the signature or processing (API-025).
     webhook_errors: Mutex<VecDeque<Instant>>,
@@ -43,12 +43,21 @@ impl AppState {
             events: Default::default(),
             mailer,
             limiter: Limiter::default(),
-            http: crate::billing::http_client(),
+            http: crate::pay::http_client(),
             webhook_errors: Mutex::new(VecDeque::new()),
             push_locks: Mutex::new(HashMap::new()),
             stats: Mutex::new(None),
             wakes: Default::default(),
         })
+    }
+
+    /// What the payment channels work with.
+    pub fn pay(&self) -> crate::pay::Ctx<'_> {
+        crate::pay::Ctx {
+            db: &self.db,
+            cfg: &self.cfg,
+            http: &self.http,
+        }
     }
 
     /// Attachment content, `<id>` once complete and `<id>.part` while uploading.
