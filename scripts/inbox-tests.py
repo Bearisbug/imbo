@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""TC-377, TC-378 and TC-379 (docs/TEST.md): what the red dot in the web
+"""TC-377, TC-378 and TC-480 (docs/TEST.md): what the red dot in the web
 app and the App counts and marking a conversation read (API-030, API-031,
 API-078), where a message sent in person was written from (ADR-056), and
-an @ in a group naming a member (RULE-015, ADR-057), against the local
+an @ in a group naming a member (RULE-015, ADR-059), against the local
 server.
 
     . crates/scripts/local-env.sh
-    python3 crates/scripts/inbox-tests.py <RUN-ID> [377 378 379]
+    python3 crates/scripts/inbox-tests.py <RUN-ID> [377 378 480]
 
 Each case starts its own server and seed the way parity-tests.py does, and
 writes its lines to docs/test-runs/<run>-tc-NNN.txt (with RUN_HEADER, if
@@ -217,97 +217,103 @@ def pushes(body):
     return out
 
 
-def tc379():
+def tc480():
     P.up("alice:bob,alice:carol", IMBO_WEB_ORIGIN=P.ORIGIN, IMBO_PUSH_LOG_ONLY="1")
     i = P.ids()
     A, B, C = i["alice"], i["bob"], i["carol"]
-    g = P.make_group("t379", [("bob", B), ("carol", C)])
-    for who, n, title in (("alice", "379001", "front"), ("bob", "379002", "api"), ("carol", "379003", "docs")):
+    g = P.make_group("t480", [("bob", B), ("carol", C)])
+    for who, n, title in (("alice", "480001", "front"), ("bob", "480002", "api"), ("carol", "480003", "docs")):
         fake(who, n, title)
-        imbo(who, "group", "sessions", "t379", "--sessions", n)
+        imbo(who, "group", "sessions", "t480", "--sessions", n)
     tok = {w: P.computer_token(f"{L}/{w}") for w in ("alice", "bob", "carol")}
     bob = {"bearer": P.app_token("bob@imbo.test")}
     carol = {"bearer": P.app_token("carol@imbo.test")}
-    call("PUT", "/v1/app/push", {"push_token": "ExponentPushToken[t379-bob]", "locale": "zh-Hans"}, **bob)
-    call("PUT", "/v1/app/push", {"push_token": "ExponentPushToken[t379-carol]"}, **carol)
-    OUT.append(f"前置:群 t379 #{g};alice {A},bob {B},carol {C}")
+    call("PUT", "/v1/app/push", {"push_token": "ExponentPushToken[t480-bob]", "locale": "zh-Hans"}, **bob)
+    call("PUT", "/v1/app/push", {"push_token": "ExponentPushToken[t480-carol]"}, **carol)
+    OUT.append(f"前置:群 t480 #{g};alice {A},bob {B},carol {C}")
 
     def send(body):
-        out = mcp("alice", "send", {"to": f"#{g}", "body": body}, "379001").strip()
+        out = mcp("alice", "send", {"to": f"#{g}", "body": body}, "480001").strip()
         return out.splitlines()[0] if out else ""
 
     def where(body):
         return {w: got(tok[w], body) for w in tok}
 
-    out = send("@bob 帮忙看下 T379-1")
-    want = f"Sent to group t379 (#{g}): message #"
-    check(379, 1, "@ 一个人", out.startswith(want) and out.endswith(", 0 receiving session(s), and to the inbox of bob."), out)
-    w = where("@bob 帮忙看下 T379-1")
-    check(379, 2, "只进他的收件箱", w == {"alice": [], "bob": ["inbox"], "carol": []}, f"收到的 {w}")
-    gc = conv_with(bob, group="t379")
-    check(379, 3, "算进红点", gc.get("pending") == 1, f"群 t379 pending={gc.get('pending')}")
+    out = send("@bob 帮忙看下 T480-1")
+    want = f"Sent to group t480 (#{g}): message #"
+    check(480, 1, "@ 一个人", out.startswith(want) and out.endswith(", 2 receiving session(s), and to the inbox of bob."), out)
+    w = where("@bob 帮忙看下 T480-1")
+    check(480, 2, "会话照常收、另进他的收件箱", w == {"alice": [], "bob": ["480002", "inbox"], "carol": ["480003"]}, f"收到的 {w}")
+    gc = conv_with(bob, group="t480")
+    check(480, 3, "算进红点", gc.get("pending") == 1, f"群 t480 pending={gc.get('pending')}")
     time.sleep(1)
-    p = pushes("T379-1")
+    p = pushes("T480-1")
     to_bob = [x for x in p if x[0] == B]
     to_carol = [x for x in p if x[0] == C]
-    ok = (to_bob == [(B, "t379", "alice · front @了你：@bob 帮忙看下 T379-1")]
-          and to_carol == [(C, "t379", "alice · front: @bob 帮忙看下 T379-1")])
-    check(379, 4, "推送", ok, f"推送记录 {p}")
+    ok = (to_bob == [(B, "t480", "alice · front @了你：@bob 帮忙看下 T480-1")]
+          and to_carol == [(C, "t480", "alice · front: @bob 帮忙看下 T480-1")])
+    check(480, 4, "推送", ok, f"推送记录 {p}")
 
-    m1 = by_body(msgs(bob, gc.get("id")), "@bob 帮忙看下 T379-1").get("id")
+    m1 = by_body(msgs(bob, gc.get("id")), "@bob 帮忙看下 T480-1").get("id")
     s, b, _ = call("POST", f"/v1/conversations/{gc.get('id')}/read", {"up_to": m1}, **bob)
-    after = conv_with(bob, group="t379").get("pending")
-    check(379, 5, "记已读", s == 200 and (b or {}).get("marked") == 1 and after == 0, f"{s} {b};之后 pending={after}")
+    after = conv_with(bob, group="t480").get("pending")
+    check(480, 5, "记已读", s == 200 and (b or {}).get("marked") == 1 and after == 0, f"{s} {b};之后 pending={after}")
 
-    out = send("@Bob @api T379-2")
-    w = where("@Bob @api T379-2")
-    check(379, 6, "人和会话都点", "1 receiving session(s), and to the inbox of bob" in out
-          and w == {"alice": [], "bob": ["379002", "inbox"], "carol": []}, f"{out};收到的 {w}")
+    out = send("@Bob @api T480-2")
+    w = where("@Bob @api T480-2")
+    check(480, 6, "人和会话都点", "1 receiving session(s), and to the inbox of bob" in out
+          and w == {"alice": [], "bob": ["480002", "inbox"], "carol": []}, f"{out};收到的 {w}")
 
-    _, out = imbo("alice", "send", f"#{g}", "@alice T379-3")
-    w = where("@alice T379-3")
-    check(379, 7, "亲手 @ 自己不算", w == {"alice": ["379001"], "bob": ["379002"], "carol": ["379003"]},
+    _, out = imbo("alice", "send", f"#{g}", "@alice T480-3")
+    w = where("@alice T480-3")
+    check(480, 7, "亲手 @ 自己不算", w == {"alice": ["480001"], "bob": ["480002"], "carol": ["480003"]},
           f"{out.splitlines()[0] if out else ''};收到的 {w}")
 
-    out = send("@alice 做完了 T379-4")
-    w = where("@alice 做完了 T379-4")
-    check(379, 8, "会话 @ 自己的账号", "0 receiving session(s), and to the inbox of alice" in out
-          and w == {"alice": ["inbox"], "bob": [], "carol": []}, f"{out};收到的 {w}")
+    out = send("@alice 做完了 T480-4")
+    w = where("@alice 做完了 T480-4")
+    check(480, 8, "会话 @ 自己的账号", "2 receiving session(s), and to the inbox of alice" in out
+          and w == {"alice": ["inbox"], "bob": ["480002"], "carol": ["480003"]}, f"{out};收到的 {w}")
 
-    fake("carol", "379004", "bob")
-    imbo("carol", "group", "sessions", "t379", "--sessions", "379003,379004")
-    send("@bob @carol T379-5")
-    w = where("@bob @carol T379-5")
+    fake("carol", "480004", "bob")
+    imbo("carol", "group", "sessions", "t480", "--sessions", "480003,480004")
+    send("@bob @carol T480-5")
+    w = where("@bob @carol T480-5")
     time.sleep(1)
-    pc = [x for x in pushes("T379-5") if x[0] == C]
-    check(379, 9, "同名都收、没登记语言写英文",
-          w == {"alice": [], "bob": ["inbox"], "carol": ["379004", "inbox"]}
-          and pc == [(C, "t379", "alice · front mentioned you: @bob @carol T379-5")], f"收到的 {w};推给 carol {pc}")
+    pc = [x for x in pushes("T480-5") if x[0] == C]
+    check(480, 9, "同名都收、没登记语言写英文",
+          w == {"alice": [], "bob": ["inbox"], "carol": ["480004", "inbox"]}
+          and pc == [(C, "t480", "alice · front mentioned you: @bob @carol T480-5")], f"收到的 {w};推给 carol {pc}")
 
-    send(f"@{B} T379-6")
-    w = where(f"@{B} T379-6")
-    check(379, 10, "@ 账号 ID", w == {"alice": [], "bob": ["inbox"], "carol": []}, f"收到的 {w}")
+    send(f"@{B} T480-6")
+    w = where(f"@{B} T480-6")
+    check(480, 10, "@ 账号 ID", w == {"alice": [], "bob": ["480002", "inbox"], "carol": ["480003", "480004"]}, f"收到的 {w}")
 
     call("POST", "/v1/blocks", {"account_id": A}, **carol)
-    out = send("@carol T379-7")
-    w = where("@carol T379-7")
-    check(379, 11, "屏蔽了发件人的点不到", out.startswith(want) and out.endswith(", 1 receiving session(s).")
-          and w == {"alice": [], "bob": ["379002"], "carol": []}, f"{out};收到的 {w}")
+    out = send("@carol T480-7")
+    w = where("@carol T480-7")
+    check(480, 11, "屏蔽了发件人的点不到", out.startswith(want) and out.endswith(", 1 receiving session(s).")
+          and w == {"alice": [], "bob": ["480002"], "carol": []}, f"{out};收到的 {w}")
 
-    s, b, _ = call("PUT", "/v1/app/push", {"push_token": "ExponentPushToken[t379-bob]", "locale": "fr"}, **bob)
-    check(379, 12, "语言不认", s == 400 and typ(b) == "/errors/invalid-request", f"{s} {typ(b)}")
+    s, b, _ = call("PUT", "/v1/app/push", {"push_token": "ExponentPushToken[t480-bob]", "locale": "fr"}, **bob)
+    check(480, 12, "语言不认", s == 400 and typ(b) == "/errors/invalid-request", f"{s} {typ(b)}")
 
     _, b, _ = call("GET", "/v1/groups", **bob)
     grp = next((x for x in b["groups"] if x["id"] == g), {})
     ses = {m["name"]: sorted(x["title"] for x in m.get("sessions", [])) for m in grp.get("members", [])}
     keys = all(set(x) >= {"id", "short_id", "title", "tool"} for m in grp.get("members", []) for x in m.get("sessions", []))
-    check(379, 13, "成员带会话", ses == {"alice": ["front"], "bob": ["api"], "carol": ["bob", "docs"]} and keys,
+    check(480, 13, "成员带会话", ses == {"alice": ["front"], "bob": ["api"], "carol": ["bob", "docs"]} and keys,
           f"成员的会话 {ses};字段齐全:{'是' if keys else '否'}")
+
+    line = next((l for l in mcp("alice", "groups", {"action": "list"}, "480001").splitlines()
+                 if l.startswith(f"- t480 (#{g})")), "")
+    ok = ("alice (sessions: 480001 front)" in line and "bob (sessions: 480002 api)" in line
+          and ("carol (sessions: 480003 docs, 480004 bob)" in line or "carol (sessions: 480004 bob, 480003 docs)" in line))
+    check(480, 14, "groups 工具列出成员的会话", ok, line)
 
 
 def main():
     run = sys.argv[1]
-    want = sys.argv[2:] or ["377", "378", "379"]
+    want = sys.argv[2:] or ["377", "378", "480"]
     head = os.environ.get("RUN_HEADER")
     root = os.path.dirname(os.path.dirname(HERE))
     for tc in want:

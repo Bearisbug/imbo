@@ -759,8 +759,8 @@ async fn store(
             .fetch_all(&mut *tx)
             .await?;
             rows.retain(|(_, account)| !inactive.contains(account) && !blockers.contains(account));
-            // RULE-015: naming sessions or members with @ sends it to them
-            // only; a member named gets it in their inbox. Members it still
+            // RULE-015: naming sessions with @ sends it to them only; a member
+            // named gets it in their inbox as well (ADR-059). Members it still
             // reaches can be named, and the sender's own account when one of
             // its sessions sends it.
             let ids: Vec<Uuid> = rows.iter().map(|(a, _)| *a).collect();
@@ -794,7 +794,7 @@ async fn store(
                 names.push((Named::Person(*id), id.to_string()));
             }
             let picked = mentioned(body, &names);
-            if !picked.is_empty() {
+            if picked.iter().any(|n| matches!(n, Named::Session(_))) {
                 rows.retain(|(a, _)| picked.contains(&Named::Session(*a)));
             }
             for (id, name) in people {

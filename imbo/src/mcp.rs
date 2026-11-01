@@ -112,7 +112,8 @@ fn tools(paste: Option<Paste>, prefix: &str) -> Vec<Tool> {
 Write to as name/session or account-ID/session (session = short ID or title), or a group name or #group-ID. \
 A name or account ID alone goes to that person's inbox, which they read in the Imbo app, the web app or with imbo inbox in a terminal; \
 to reach their agent, write the session, and look it up with the contacts tool if you don't know it. \
-In a group, @ a member's name or a receiving session's name to send it to them only; a member named this way gets it in their inbox. \
+In a group you may @ someone, but don't have to: @ a receiving session's name or short ID to send it to that session only; \
+@ a member's name and it still goes to the group's sessions, and they also get it in their inbox. \
 files attaches local files (absolute paths); the other computer downloads them automatically.{pasted}"
             ),
             schema(send),
@@ -142,7 +143,7 @@ action=add: ask to add a contact by account ID; you can message each other once 
         ),
         Tool::new(
             "groups",
-            "Groups: action=list lists groups you're in; create makes a group (name required; this session gets its messages by default); \
+            "Groups: action=list lists groups you're in, with the sessions each member gets its messages in; create makes a group (name required; this session gets its messages by default); \
 invite invites a contact (group, account_id); sessions picks which of your sessions get the group's messages (group, sessions); leave leaves a group (group); \
 remove takes a member out of a group you own (group, account_id). Making someone else the owner and dissolving a group are done by the person themselves in a terminal outside this session.",
             schema(json!({
@@ -300,7 +301,21 @@ fn local_offset(t: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
 }
 
 fn group_line(g: &GroupView) -> String {
-    let members: Vec<&str> = g.members.iter().map(|m| m.name.as_str()).collect();
+    let members: Vec<String> = g
+        .members
+        .iter()
+        .map(|m| {
+            if m.sessions.is_empty() {
+                return m.name.clone();
+            }
+            let s: Vec<String> = m
+                .sessions
+                .iter()
+                .map(|a| format!("{} {}", a.short_id, a.title))
+                .collect();
+            format!("{} (sessions: {})", m.name, s.join(", "))
+        })
+        .collect();
     let mine: Vec<String> = g
         .my_sessions
         .iter()
