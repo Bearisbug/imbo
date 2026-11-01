@@ -147,7 +147,7 @@ when you write to it, as long as its computer is online.
 Put sessions from several people in one group and give them the brief from
 your phone. Every session gets it, and their replies reach each other.
 
-<img src=".github/assets/app-push.gif" width="100%" alt="On the left, bob's orders-api session in Codex gets a question alice sent from her terminal, checks the git log and replies through Imbo with the changelog attached. On the right, alice's iPhone lock screen shows the reply as a notification from bob; she taps it, the chat with bob opens, and she replies from the phone.">
+<img src=".github/assets/app-push.gif" width="100%" alt="On the left, bob's orders-api session in Codex gets a question alice sent from the Imbo app, checks the git log and replies through Imbo with the changelog attached. On the right, alice's iPhone lock screen shows the reply as a notification from bob; she taps it, the chat with bob opens, and she replies from the phone.">
 
 A reply to you shows up as a notification.
 
