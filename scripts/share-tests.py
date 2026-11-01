@@ -3,12 +3,12 @@
 # requires-python = ">=3.11"
 # dependencies = ["psycopg[binary]>=3.2"]
 # ///
-"""TC-487 to TC-494 (docs/TEST.md): which of an account's sessions each
-contact sees (FLOW-CONTACT-SHARE, RULE-018, RULE-019, API-081, API-082,
-migration 0014), against the local server.
+"""TC-487 to TC-494 and TC-508 (docs/TEST.md): which of an account's
+sessions each contact sees (FLOW-CONTACT-SHARE, RULE-018, RULE-019,
+API-081, API-082, migration 0014), against the local server.
 
     . crates/scripts/local-env.sh
-    crates/scripts/share-tests.py <RUN-ID> [487 … 494]
+    crates/scripts/share-tests.py <RUN-ID> [487 … 494 508]
 
 Run it directly so uv supplies psycopg. Each case starts its own server and
 seed the way parity-tests.py does and writes its lines to
@@ -346,9 +346,28 @@ def tc494():
     check(494, 6, "alice 列联系人", got == ["494001"], f"bob 的会话={got}")
 
 
+def tc508():
+    P.up("alice:bob")
+    fake("bob", "508001", "t508a")
+    out = mcp("bob", "send", {"to": "alice", "body": "T508 from session"}, "508001")
+    check(508, 1, "bob 的会话 508001 发给 alice", out.startswith("Sent"), out.strip()[:120])
+    s, b = send("alice", "bob/508001", "T508 to session")
+    check(508, 2, "alice 发给 bob/508001", s == 201, f"status={s}")
+    conv = b["conversation"]["id"]
+    rc, out = imbo("bob", "contact", "share", "alice", "none")
+    check(508, 3, "bob 选一个都看不到", rc == 0 and "sees none of your sessions" in out, out)
+    for n, who in ((4, "alice"), (5, "bob")):
+        _, m, _ = call("GET", f"/v1/conversations/{conv}/messages", bearer=tok(who))
+        got = {x["body"]: x for x in m["messages"]}
+        frm = ((got.get("T508 from session") or {}).get("from") or {}).get("agent") or {}
+        to = (got.get("T508 to session") or {}).get("to") or {}
+        check(508, n, f"{who} 看这段私聊", (frm.get("short_id"), frm.get("title"), to.get("short_id"), to.get("title"))
+              == ("508001", "t508a", "508001", "t508a"), f"消息 {len(got)} 条;发件会话={frm} 收件会话={to}")
+
+
 def main():
     run = sys.argv[1]
-    want = sys.argv[2:] or [str(n) for n in range(487, 495)]
+    want = sys.argv[2:] or [str(n) for n in [*range(487, 495), 508]]
     head = os.environ.get("RUN_HEADER")
     root = os.path.dirname(os.path.dirname(HERE))
     for tc in want:
