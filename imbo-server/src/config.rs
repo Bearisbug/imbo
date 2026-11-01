@@ -20,6 +20,10 @@ pub struct Config {
     pub smtp_url: Option<String>,
     pub mail_from: String,
     pub mail_log_only: bool,
+    /// Code requests skip the one-a-minute and 20-an-hour limits
+    /// (`IMBO_SKIP_CODE_WAIT`), for local tests; only with `mail_log_only`,
+    /// so a server that really sends mail always keeps them.
+    pub skip_code_wait: bool,
     /// Lower-case email domains allowed to sign up; empty = everyone.
     pub signup_domains: Vec<String>,
     pub acme_email: Option<String>,
@@ -399,6 +403,7 @@ impl Config {
             smtp_url,
             mail_from,
             mail_log_only,
+            skip_code_wait: mail_log_only && flag("IMBO_SKIP_CODE_WAIT"),
             signup_domains,
             acme_email: var("IMBO_ACME_EMAIL"),
             acme_staging: flag("IMBO_ACME_STAGING"),

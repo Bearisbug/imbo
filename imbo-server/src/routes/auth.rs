@@ -26,7 +26,7 @@ use super::Body;
 use crate::auth::{
     APP_DAYS, Caller, WEB_COOKIE, new_app_token, new_token, require_web_origin, token_hash,
 };
-use crate::error::{ApiResult, err};
+use crate::error::{ApiResult, err, rate_limited};
 use crate::state::St;
 
 const CODE_TTL_MIN: i64 = 10;
@@ -109,20 +109,27 @@ pub async fn request_code(
 
 /// At most 20 code requests an hour from one network, sign-in and email change together.
 fn limit_ip(st: &St, headers: &HeaderMap, peer: SocketAddr) -> ApiResult<()> {
+    if st.cfg.skip_code_wait {
+        return Ok(());
+    }
     let ip = client_ip(headers, peer);
     st.limiter
         .hit(&format!("ip:{ip}"), 20, Duration::from_secs(3600))
         .map_err(|wait| {
-            err(
-                ErrorCode::RateLimited,
+            rate_limited(
+                "code-ip",
+                None,
                 "Too many code requests from this network. Try again later.",
+                wait,
             )
-            .retry_after(wait)
         })
 }
 
 /// One code a minute to an email, whoever asks.
 async fn wait_for_email(st: &St, email: &str) -> ApiResult<()> {
+    if st.cfg.skip_code_wait {
+        return Ok(());
+    }
     let last: Option<DateTime<Utc>> =
         sqlx::query_scalar("SELECT max(created_at) FROM email_codes WHERE lower(email) = $1")
             .bind(email)
@@ -131,11 +138,12 @@ async fn wait_for_email(st: &St, email: &str) -> ApiResult<()> {
     if let Some(last) = last {
         let age = (Utc::now() - last).num_seconds();
         if age < 60 {
-            return Err(err(
-                ErrorCode::RateLimited,
+            return Err(rate_limited(
+                "code-email",
+                None,
                 "A code was just sent. Wait a minute before asking again.",
-            )
-            .retry_after((60 - age).max(1) as u64));
+                (60 - age).max(1) as u64,
+            ));
         }
     }
     Ok(())
@@ -374,6 +382,18 @@ async fn sign_in(
     Ok((tx, account, new_account))
 }
 
+/// `EVT:account_registered` (DESIGN §20), once the new account is committed.
+fn registered(account: &Account, new_account: bool, via: &str) {
+    if new_account {
+        info!(
+            event = "account_registered",
+            account_id = account.id,
+            via,
+            "account registered"
+        );
+    }
+}
+
 pub async fn verify(
     State(st): State<St>,
     Body(req): Body<VerifyRequest>,
@@ -408,6 +428,7 @@ pub async fn verify(
     .await?;
     tx.commit().await?;
     info!(account = account.id, new_account, "signed in");
+    registered(&account, new_account, "terminal");
     Ok(Json(VerifyResponse {
         account,
         device_id,
@@ -447,6 +468,7 @@ pub async fn web_login(
     tx.commit().await?;
     // After the commit, so a new admin's account is there to look up.
     account.admin = super::admin::is_admin(&st, account.id).await?;
+    registered(&account, new_account, "web");
     info!(
         event = "web_login",
         account_id = account.id,
@@ -508,6 +530,7 @@ pub async fn app_login(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    registered(&account, new_account, "app");
     info!(
         event = "app_login",
         account_id = account.id,

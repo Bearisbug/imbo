@@ -42,6 +42,8 @@ REPORT_EMAIL = "reports@imbo.test"
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 FAILS = 0
 CODE_AT = {}
+# local-env.sh turns the code limits off unless IMBO_SKIP_CODE_WAIT=0.
+CODE_WAIT = os.environ.get("IMBO_SKIP_CODE_WAIT", "1") == "0"
 SECRETS = []
 OUT = []
 PIC = tempfile.mkdtemp(prefix="imbo-safety-")
@@ -145,11 +147,11 @@ def log():
 
 
 def ask_code(email):
-    """Ask for a code (waiting out the one-a-minute limit) and read it from the log.
+    """Ask for a code (waiting out the one-a-minute limit when it's on) and read it from the log.
     Each request claims its own address, so the 20-an-hour limit per network
     isn't reached."""
     wait = 61 - (time.time() - CODE_AT.get(email, 0))
-    if wait > 0:
+    if CODE_WAIT and wait > 0:
         time.sleep(wait)
     pattern = re.compile(rf"mail-log-only code=(\d{{6}}) email={re.escape(email)}$", re.M)
     before = len(pattern.findall(log()))
@@ -1203,7 +1205,8 @@ def tc190():
     check(190, 2, s[0] == 200 and s[1]["new_account"] is True and me[1]["account"]["email"] == review,
           "the App signs in with the fixed code: 200, a new account review@imbo.test", (brief(s), me[1].get("account")))
     CODE_AT[review] = time.time()
-    time.sleep(61)
+    if CODE_WAIT:
+        time.sleep(61)
     r = review_code_request(review)
     tries = [call("POST", "/v1/app/session", body={"email": review, "code": wrong, "platform": "ios"}) for _ in range(5)]
     after = call("POST", "/v1/app/session", body={"email": review, "code": fixed, "platform": "ios"})

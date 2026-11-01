@@ -88,13 +88,18 @@ async fn run(st: St, caller: Caller, socket: WebSocket) {
         .execute(&st.db)
         .await;
         // Anything in flight comes back immediately for the next connection.
-        let _ = sqlx::query(
+        let back: Vec<(i64, Uuid)> = sqlx::query_as(
             "UPDATE deliveries d SET state = 'pending', next_push_at = now()
-             FROM agents a WHERE a.id = d.agent_id AND a.device_id = $1 AND d.state = 'pushed'",
+             FROM agents a WHERE a.id = d.agent_id AND a.device_id = $1 AND d.state = 'pushed'
+             RETURNING d.message_id, d.agent_id",
         )
         .bind(device)
-        .execute(&st.db)
-        .await;
+        .fetch_all(&st.db)
+        .await
+        .unwrap_or_default();
+        for (message_id, agent) in back {
+            delivery::requeued(message_id, agent, "disconnected");
+        }
     }
     info!(%device, "device disconnected");
 }
@@ -163,7 +168,7 @@ async fn handle(st: &St, caller: &Caller, frame: ClientFrame) -> anyhow::Result<
             reason,
         } => {
             info!(message_id, %agent_id, reason, "nack");
-            delivery::nack(st, caller.account_id, message_id, agent_id).await?;
+            delivery::nack(st, caller.account_id, message_id, agent_id, &reason).await?;
         }
         ClientFrame::Woken { agent_id, error } => {
             info!(%agent_id, error = error.as_deref().unwrap_or(""), "woken");

@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use super::Body;
 use crate::auth::Caller;
 use crate::config::{Apple, Waffo};
-use crate::error::{ApiResult, err};
+use crate::error::{ApiResult, err, rate_limited};
 use crate::state::St;
 use crate::{apple, billing};
 
@@ -92,11 +92,12 @@ pub async fn checkout(
         10,
         Duration::from_secs(3600),
     ) {
-        return Err(err(
-            ErrorCode::RateLimited,
+        return Err(rate_limited(
+            "checkout",
+            Some(c.account_id),
             "Too many checkouts in the last hour. Try again later.",
-        )
-        .retry_after(wait));
+            wait,
+        ));
     }
     let now = chrono::Utc::now();
     let subs = billing::subscriptions(&st.db, &st.cfg, &[c.account_id]).await?;

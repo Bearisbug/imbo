@@ -21,7 +21,7 @@ use super::Body;
 use crate::auth::Caller;
 use crate::billing;
 use crate::delivery;
-use crate::error::{ApiError, ApiResult, err};
+use crate::error::{ApiError, ApiResult, err, rate_limited};
 use crate::safety;
 use crate::state::St;
 use crate::views;
@@ -394,11 +394,12 @@ async fn rate_check(
         } else {
             "This conversation already had 30 messages in the last minute."
         };
-        return Err(err(
-            ErrorCode::RateLimited,
+        return Err(rate_limited(
+            "conversation",
+            Some(me),
             format!("{what} Try again in {wait} s."),
-        )
-        .retry_after(wait));
+            wait,
+        ));
     }
     let (n, oldest): (i64, Option<f64>) = sqlx::query_as(
         "SELECT count(*), extract(epoch FROM now() - min(created_at))::float8 FROM messages
@@ -409,11 +410,12 @@ async fn rate_check(
     .await?;
     if n >= 120 {
         let wait = (60.0 - oldest.unwrap_or(0.0)).ceil().max(1.0) as u64;
-        return Err(err(
-            ErrorCode::RateLimited,
+        return Err(rate_limited(
+            "sender",
+            Some(me),
             format!("You sent 120 messages in the last minute. Try again in {wait} s."),
-        )
-        .retry_after(wait));
+            wait,
+        ));
     }
     Ok(())
 }
@@ -865,7 +867,22 @@ async fn store(
         .await?;
     }
     tx.commit().await?;
-    delivery::kick(st, recipients.iter().map(|(a, _)| *a));
+    let agents: Vec<Uuid> = recipients.iter().map(|(a, _)| *a).collect();
+    let online: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM agents WHERE id = ANY($1) AND online")
+            .bind(&agents)
+            .fetch_one(&st.db)
+            .await?;
+    info!(
+        event = "message_sent",
+        message_id,
+        account_id = c.account_id,
+        conversation_kind = %conversation.kind,
+        recipients = agents.len(),
+        online_recipients = online,
+        "message sent"
+    );
+    delivery::kick(st, agents);
     crate::push::messages(st, vec![message_id]);
     Ok(SendResponse {
         message_id,
@@ -1108,19 +1125,26 @@ pub async fn pull(
         "pull"
     };
     // An agent takes its own unread; the person takes the terminal inbox.
-    let ids: Vec<i64> = sqlx::query_scalar(
+    let taken: Vec<(i64, i64)> = sqlx::query_as(
         "UPDATE deliveries d SET state = 'delivered', delivered_at = now(), via = $3
          FROM agents a
          WHERE a.id = d.agent_id AND d.state IN ('pending', 'pushed')
            AND (a.id = $1 OR ($1 IS NULL AND a.account_id = $2 AND a.tool = 'terminal'))
-         RETURNING d.message_id",
+         RETURNING d.message_id, (SELECT (extract(epoch FROM now() - m.created_at) * 1000)::bigint
+                                  FROM messages m WHERE m.id = d.message_id)",
     )
     .bind(c.actor.as_ref().map(|a| a.id))
     .bind(c.account_id)
     .bind(via)
     .fetch_all(&st.db)
     .await?;
-    let mut ids = ids;
+    // A session taking its own messages; the person's terminal inbox isn't one.
+    if let Some(a) = &c.actor {
+        for (message_id, latency_ms) in &taken {
+            info!(event = "delivery_acked", message_id, agent_id = %a.id, via, latency_ms, "delivered");
+        }
+    }
+    let mut ids: Vec<i64> = taken.into_iter().map(|(id, _)| id).collect();
     ids.sort_unstable();
     let mut messages = views::messages(&st.db, &ids, c.account_id).await?;
     if let Some(a) = &c.actor {

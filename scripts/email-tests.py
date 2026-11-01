@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""TC-338 to TC-341 (docs/TEST.md): changing the sign-in email (API-075,
-API-076), against the local server, with real HTTP requests.
+"""TC-338 to TC-341 and TC-479 (docs/TEST.md): changing the sign-in email
+(API-075, API-076) and the switch that lifts the code request limits for
+local tests, against the local server, with real HTTP requests.
 
     . crates/scripts/local-env.sh
-    python3 crates/scripts/email-tests.py <RUN-ID> [338 339 340 341]
+    python3 crates/scripts/email-tests.py <RUN-ID> [338 339 340 341 479]
 
 Each case starts its own server and seed with `local-env.sh down` and
 `local-env.sh up alice:bob`, under the variables its precondition names, and
 the last one is taken down at the end. Prints PASS or FAIL for every step and
 writes each case's lines to docs/test-runs/<run>-tc-NNN.txt (with
-RUN_HEADER, if set, on the first line); exits 1 when any step failed. About 6
-minutes for all four, most of it waiting out the one-code-a-minute limit.
+RUN_HEADER, if set, on the first line); exits 1 when any step failed. About 3
+minutes for all five, most of it TC-341, which turns the one-code-a-minute
+limit back on (IMBO_SKIP_CODE_WAIT=0) and waits it out.
 Verification codes, tokens and cookies are never written out.
 """
 
@@ -25,6 +27,8 @@ import time
 L = os.environ["L"]
 LOG = f"{L}/server.log"
 ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local-env.sh")
+# local-env.sh turns the code limits off unless IMBO_SKIP_CODE_WAIT=0.
+CODE_WAIT = os.environ.get("IMBO_SKIP_CODE_WAIT", "1") == "0"
 ORIGIN = "https://app.imbo.dev"
 OUT = []
 FAILS = 0
@@ -109,7 +113,8 @@ def typ(b):
 def tc338():
     a = app_token("alice@imbo.test")
     me = call("GET", "/v1/me", bearer=a)[1]["account"]["id"]
-    time.sleep(61)
+    if CODE_WAIT:
+        time.sleep(61)
     ck = web_cookie("alice@imbo.test")
     mark = len(open(LOG, errors="replace").readlines())
     s, b, _ = call("POST", "/v1/me/email/code", {"email": "New338@imbo.test"}, bearer=a)
@@ -125,7 +130,8 @@ def tc338():
     new = open(LOG, errors="replace").readlines()[mark:]
     old = [l for l in new if "email=alice@imbo.test" in l or "to=alice@imbo.test" in l]
     check(338, 5, "nothing to the old email", not old, old)
-    time.sleep(61)
+    if CODE_WAIT:
+        time.sleep(61)
     ask_code("new338@imbo.test")
     s, b = computer_login("new338@imbo.test", code_of("new338@imbo.test"), 338)
     check(338, 6, "new email signs in to the same account", s == 200 and b["account"]["id"] == me and b["new_account"] is False, f"{s} {b and b.get('account')}")
@@ -166,7 +172,8 @@ def tc340():
                    env={**os.environ, "IMBO_DATA_DIR": f"{L}/server"}, stdout=subprocess.DEVNULL, check=True)
     s, b = sub("t340a@imbo.test", k1)
     check(340, 3, "expired", s == 410 and typ(b) == "/errors/code-expired", f"{s} {b}")
-    time.sleep(61)
+    if CODE_WAIT:
+        time.sleep(61)
     s0, _, _ = call("POST", "/v1/me/email/code", {"email": "t340a@imbo.test"}, bearer=a)
     k2 = code_of("t340a@imbo.test")
     bad = "000000" if k2 != "000000" else "111111"
@@ -184,7 +191,8 @@ def tc340():
     c = code_of("t340c@imbo.test")
     s2, b2 = computer_login("t340c@imbo.test", c, 340, "t340c")
     check(340, 6, "a change code can't sign in", s == 202 and s2 == 400 and typ(b2) == "/errors/code-invalid", f"{s} {s2} {b2}")
-    time.sleep(61)
+    if CODE_WAIT:
+        time.sleep(61)
     s, _ = ask_code("t340c@imbo.test")
     s2, b2 = sub("t340c@imbo.test", c)
     check(340, 7, "a new sign-in code leaves the change code", s == 202 and s2 == 200 and b2["account"]["email"] == "t340c@imbo.test", f"{s} {s2} {b2}")
@@ -219,9 +227,45 @@ def tc341():
     check(341, 7, "still alice@", email == "alice@imbo.test", email)
 
 
-CASES = {"338": tc338, "339": tc339, "340": tc340, "341": tc341}
+def tc479():
+    s1, _ = ask_code("t479@imbo.test")
+    s2, _ = ask_code("t479@imbo.test")
+    n = len(lines(r"mail-log-only code=\d{6} email=t479@imbo\.test$"))
+    check(479, 1, "two codes in a row", s1 == s2 == 202 and n == 2, f"{s1} {s2}; {n} code lines")
+    got = [ask_code(f"t479-{i}@imbo.test", xff="10.4.79.1")[0] for i in range(1, 22)]
+    check(479, 2, "21 from a network", got == [202] * 21, got)
+    subprocess.run([ENV, "server"], env={**os.environ, "IMBO_SKIP_CODE_WAIT": "0"}, capture_output=True, check=True)
+    s1, _ = ask_code("t479b@imbo.test")
+    s2, b2 = ask_code("t479b@imbo.test")
+    check(479, 3, "limits back with IMBO_SKIP_CODE_WAIT=0", s1 == 202 and s2 == 429 and typ(b2) == "/errors/rate-limited",
+          f"{s1} {s2} {typ(b2)}")
+    pid = int(open(f"{L}/server.pid").read())
+    os.kill(pid, 15)
+    while subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode == 0:
+        time.sleep(0.2)
+    env = {k: v for k, v in os.environ.items() if k != "IMBO_MAIL_LOG_ONLY"}
+    env.update(IMBO_DATA_DIR=f"{L}/server", IMBO_LISTEN="127.0.0.1:18080", IMBO_DEV="1",
+               IMBO_SKIP_CODE_WAIT="1", IMBO_SMTP_URL="smtp://127.0.0.1:9")
+    with open(LOG, "a") as log:
+        p = subprocess.Popen([os.environ["S"]], cwd=L, env=env, stdout=log, stderr=log)
+    open(f"{L}/server.pid", "w").write(str(p.pid))
+    for _ in range(100):
+        try:
+            if call("GET", "/v1/health")[0] == 200:
+                break
+        except OSError:
+            time.sleep(0.2)
+    s1, b1 = ask_code("t479c@imbo.test")
+    s2, b2 = ask_code("t479c@imbo.test")
+    check(479, 4, "a server that really mails keeps the limits",
+          s1 == 502 and typ(b1) == "/errors/email-send-failed" and s2 == 429 and typ(b2) == "/errors/rate-limited",
+          f"{s1} {typ(b1)}; {s2} {typ(b2)}")
+
+
+CASES = {"338": tc338, "339": tc339, "340": tc340, "341": tc341, "479": tc479}
 # What each case's precondition adds before `up`.
-EXTRA = {"339": {"IMBO_REVIEW_EMAIL": "review@imbo.test", "IMBO_REVIEW_CODE": "246810", "IMBO_SIGNUP_EMAIL_DOMAINS": "imbo.test"}}
+EXTRA = {"339": {"IMBO_REVIEW_EMAIL": "review@imbo.test", "IMBO_REVIEW_CODE": "246810", "IMBO_SIGNUP_EMAIL_DOMAINS": "imbo.test"},
+         "341": {"IMBO_SKIP_CODE_WAIT": "0"}}
 
 if __name__ == "__main__":
     run = sys.argv[1]

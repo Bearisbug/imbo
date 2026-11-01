@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use imbo_proto::frames::{Delivery, ServerFrame};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::state::St;
@@ -96,15 +96,19 @@ async fn requeue(st: &St) -> Result<(), sqlx::Error> {
         "UPDATE deliveries SET state = 'pending', next_push_at = {BACKOFF_SQL}
          FROM unnest($1::bigint[], $2::uuid[]) AS t(message_id, agent_id)
          WHERE deliveries.message_id = t.message_id AND deliveries.agent_id = t.agent_id
-           AND deliveries.state = 'pushed'"
+           AND deliveries.state = 'pushed'
+         RETURNING deliveries.message_id, deliveries.agent_id"
     );
-    let r = sqlx::query(sqlx::AssertSqlSafe(sql))
+    let back: Vec<(i64, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&messages)
         .bind(&agents)
-        .execute(&st.db)
+        .fetch_all(&st.db)
         .await?;
-    if r.rows_affected() > 0 {
-        info!(count = r.rows_affected(), "delivery.requeue: ack timed out");
+    if !back.is_empty() {
+        info!(count = back.len(), "delivery.requeue: ack timed out");
+    }
+    for (message_id, agent) in back {
+        requeued(message_id, agent, "ack-timeout");
     }
     Ok(())
 }
@@ -203,18 +207,19 @@ pub async fn push_agent(st: &St, agent: Uuid) -> Result<(), sqlx::Error> {
     if due.is_empty() {
         return Ok(());
     }
-    let pushed: Vec<i64> = sqlx::query_scalar(
+    let attempts: Vec<(i64, i32)> = sqlx::query_as(
         "UPDATE deliveries SET state = 'pushed', attempts = attempts + 1, pushed_at = now()
          WHERE agent_id = $1 AND message_id = ANY($2) AND state = 'pending'
-         RETURNING message_id",
+         RETURNING message_id, attempts",
     )
     .bind(agent)
     .bind(&due)
     .fetch_all(&st.db)
     .await?;
-    if pushed.is_empty() {
+    if attempts.is_empty() {
         return Ok(());
     }
+    let pushed: Vec<i64> = attempts.iter().map(|(id, _)| *id).collect();
     let mut views = views::messages(&st.db, &pushed, account_id).await?;
     views::with_siblings(&st.db, &mut views, account_id, agent).await?;
     let mut failed = vec![];
@@ -227,7 +232,8 @@ pub async fn push_agent(st: &St, agent: Uuid) -> Result<(), sqlx::Error> {
             message,
         });
         if st.hub.send(device, frame) {
-            debug!(message = id, %agent, "pushed");
+            let attempt = attempts.iter().find(|(m, _)| *m == id).map(|(_, n)| *n);
+            info!(event = "delivery_pushed", message_id = id, agent_id = %agent, attempt, "pushed");
         } else {
             failed.push(id);
         }
@@ -258,17 +264,22 @@ pub async fn ack(
         "prompt_hook" | "pull" => via,
         _ => "inject",
     };
-    let r = sqlx::query(
+    let latency_ms: Option<i64> = sqlx::query_scalar(
         "UPDATE deliveries SET state = 'delivered', delivered_at = now(), via = $4
-         WHERE message_id = $1 AND agent_id = $2 AND account_id = $3 AND state IN ('pending', 'pushed')",
+         WHERE message_id = $1 AND agent_id = $2 AND account_id = $3 AND state IN ('pending', 'pushed')
+         RETURNING (SELECT (extract(epoch FROM now() - m.created_at) * 1000)::bigint
+                    FROM messages m WHERE m.id = $1)",
     )
     .bind(message_id)
     .bind(agent)
     .bind(account_id)
     .bind(via)
-    .execute(&st.db)
+    .fetch_optional(&st.db)
     .await?;
-    Ok(r.rows_affected() > 0)
+    if let Some(latency_ms) = latency_ms {
+        info!(event = "delivery_acked", message_id, agent_id = %agent, via, latency_ms, "delivered");
+    }
+    Ok(latency_ms.is_some())
 }
 
 /// nack: pushed → pending with backoff.
@@ -277,18 +288,27 @@ pub async fn nack(
     account_id: i32,
     message_id: i64,
     agent: Uuid,
+    reason: &str,
 ) -> Result<(), sqlx::Error> {
     let sql = format!(
         "UPDATE deliveries SET state = 'pending', next_push_at = {BACKOFF_SQL}
          WHERE message_id = $1 AND agent_id = $2 AND account_id = $3 AND state = 'pushed'"
     );
-    sqlx::query(sqlx::AssertSqlSafe(sql))
+    let r = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(message_id)
         .bind(agent)
         .bind(account_id)
         .execute(&st.db)
         .await?;
+    if r.rows_affected() > 0 {
+        requeued(message_id, agent, reason);
+    }
     Ok(())
+}
+
+/// `EVT:delivery_requeued` (DESIGN §20).
+pub fn requeued(message_id: i64, agent: Uuid, reason: &str) {
+    info!(event = "delivery_requeued", message_id, agent_id = %agent, reason, "requeued");
 }
 
 /// Send `cancel` frames for deliveries that were canceled while pushed.

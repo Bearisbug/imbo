@@ -3,7 +3,7 @@
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use imbo_proto::{Candidate, ErrorCode, Problem};
-use tracing::error;
+use tracing::{error, info};
 
 tokio::task_local! {
     /// `Imbo-Request-Id` of the request being handled.
@@ -17,6 +17,23 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 pub fn err(code: ErrorCode, detail: impl Into<String>) -> ApiError {
     ApiError(Problem::new(code, detail))
+}
+
+/// A 429 that also logs `EVT:rate_limited` (DESIGN §20): `scope` names the
+/// limit, `account` who hit it when known.
+pub fn rate_limited(
+    scope: &str,
+    account: Option<i32>,
+    detail: impl Into<String>,
+    wait: u64,
+) -> ApiError {
+    info!(
+        event = "rate_limited",
+        scope,
+        account_id = account,
+        "rate limited"
+    );
+    err(ErrorCode::RateLimited, detail).retry_after(wait)
 }
 
 impl ApiError {

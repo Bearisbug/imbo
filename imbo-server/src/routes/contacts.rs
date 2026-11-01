@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::Body;
 use crate::auth::Caller;
-use crate::error::{ApiResult, err};
+use crate::error::{ApiResult, err, rate_limited};
 use crate::state::St;
 use crate::{delivery, notify, safety, views};
 
@@ -268,11 +268,12 @@ pub async fn request_contact(
     .fetch_one(&mut *tx)
     .await?;
     if today >= 20 {
-        return Err(err(
-            ErrorCode::RateLimited,
+        return Err(rate_limited(
+            "contact-requests",
+            Some(c.account_id),
             "At most 20 contact requests per day.",
-        )
-        .retry_after(3600));
+            3600,
+        ));
     }
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO requests (kind, from_account, to_account, note) VALUES ('contact', $1, $2, $3) RETURNING id",

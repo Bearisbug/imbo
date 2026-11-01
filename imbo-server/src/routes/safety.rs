@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::Body;
 use crate::auth::Caller;
-use crate::error::{ApiResult, err};
+use crate::error::{ApiResult, err, rate_limited};
 use crate::state::St;
 use crate::{delivery, safety, views};
 
@@ -357,11 +357,12 @@ pub async fn report(
     .fetch_one(&mut *tx)
     .await?;
     if today >= REPORTS_PER_DAY {
-        return Err(err(
-            ErrorCode::RateLimited,
+        return Err(rate_limited(
+            "reports",
+            Some(me),
             "At most 10 reports a day. Try again tomorrow.",
-        )
-        .retry_after(3600));
+            3600,
+        ));
     }
     let copy = snapshot(&mut tx, me, target, req.group_id).await?;
     // Two at once: the partial unique index keeps one (INV-031).

@@ -27,10 +27,12 @@ start_daemon() {
     nohup "$I" daemon >> "$L/$1/daemon.log" 2>&1 &
 }
 
+# Code requests skip the one-a-minute and 20-an-hour limits unless the
+# shell sets IMBO_SKIP_CODE_WAIT=0, as the cases that test those limits do.
 start_server() {
   (cd "$L" || exit
     IMBO_DATA_DIR=$L/server IMBO_LISTEN=127.0.0.1:18080 IMBO_MAIL_LOG_ONLY=1 IMBO_DEV=1 \
-      nohup "$S" >> "$L/server.log" 2>&1 &
+      IMBO_SKIP_CODE_WAIT=${IMBO_SKIP_CODE_WAIT:-1} nohup "$S" >> "$L/server.log" 2>&1 &
     echo $! > "$L/server.pid")
   until curl -sf --noproxy '*' http://127.0.0.1:18080/v1/health >/dev/null; do sleep 0.3; done
 }

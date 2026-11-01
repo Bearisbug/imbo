@@ -19,7 +19,7 @@ use uuid::Uuid;
 use super::groups::{not_owner, require_member, role_locked};
 use crate::auth::Caller;
 use crate::avatar;
-use crate::error::{ApiResult, err};
+use crate::error::{ApiResult, err, rate_limited};
 use crate::state::St;
 
 fn too_large() -> crate::error::ApiError {
@@ -100,11 +100,12 @@ fn count_change(st: &St, account: i32) -> ApiResult<()> {
             Duration::from_secs(24 * 3600),
         )
         .map_err(|wait| {
-            err(
-                ErrorCode::RateLimited,
+            rate_limited(
+                "avatar",
+                Some(account),
                 "At most 20 avatar changes a day. Try again tomorrow.",
+                wait,
             )
-            .retry_after(wait)
         })
 }
 

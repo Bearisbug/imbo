@@ -319,8 +319,8 @@ pub trait Adapter: Send + Sync {
 
 /// `IMBO_FAULT_INJECT=claude-code,codex` (tool IDs) makes those tools'
 /// inserts fail (for listening tools, hand-overs), `download` makes
-/// attachment downloads fail and `slow-upload` holds each upload 55 seconds
-/// (tests of the fallbacks).
+/// attachment downloads fail, `slow-upload` holds each upload 55 seconds
+/// and `lose-ack` drops each delivery's first ack (tests of the fallbacks).
 pub fn fault(tool: &str) -> bool {
     std::env::var("IMBO_FAULT_INJECT")
         .map(|v| v.split(',').any(|t| t.trim() == tool))

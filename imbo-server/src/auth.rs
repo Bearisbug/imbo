@@ -11,7 +11,7 @@ use imbo_proto::{ErrorCode, HEADER_ACTOR, HEADER_REQUEST_ID, HEADER_UNREAD};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::error::{ApiResult, REQUEST_ID, err};
+use crate::error::{ApiResult, REQUEST_ID, err, rate_limited};
 use crate::state::St;
 
 pub fn new_token() -> String {
@@ -161,7 +161,12 @@ async fn resolve_web(st: &St, token: &str) -> ApiResult<Caller> {
         .limiter
         .hit(&format!("web:{web}"), 600, Duration::from_secs(60))
     {
-        return Err(err(ErrorCode::RateLimited, "Too many requests.").retry_after(wait));
+        return Err(rate_limited(
+            "web",
+            Some(account_id),
+            "Too many requests.",
+            wait,
+        ));
     }
     Ok(Caller {
         account_id,
@@ -191,7 +196,12 @@ async fn resolve_app(st: &St, token: &str) -> ApiResult<Caller> {
         .limiter
         .hit(&format!("app:{app}"), 600, Duration::from_secs(60))
     {
-        return Err(err(ErrorCode::RateLimited, "Too many requests.").retry_after(wait));
+        return Err(rate_limited(
+            "app",
+            Some(account_id),
+            "Too many requests.",
+            wait,
+        ));
     }
     // Each use pushes expiry back 90 days, at most once a day.
     sqlx::query(
@@ -230,11 +240,12 @@ pub(crate) async fn resolve(st: &St, headers: &HeaderMap) -> ApiResult<Caller> {
         .limiter
         .hit(&format!("dev:{device_id}"), 600, Duration::from_secs(60))
     {
-        return Err(err(
-            ErrorCode::RateLimited,
+        return Err(rate_limited(
+            "device",
+            Some(account_id),
             "Too many requests from this computer.",
-        )
-        .retry_after(wait));
+            wait,
+        ));
     }
     sqlx::query(
         "UPDATE devices SET last_seen_at = now()

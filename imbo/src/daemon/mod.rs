@@ -43,6 +43,8 @@ pub struct Daemon {
     dedupe: Mutex<dedupe::Dedupe>,
     queues: Mutex<HashMap<Key, mpsc::UnboundedSender<Delivery>>>,
     canceled: Mutex<HashSet<(i64, Uuid)>>,
+    /// Deliveries whose first ack `IMBO_FAULT_INJECT=lose-ack` dropped.
+    lost_acks: Mutex<HashSet<(i64, Uuid)>>,
     /// Sessions with a delivery sent back to the server: only these pull in
     /// the prompt hooks (API-LOCAL-003).
     pub nacked: Mutex<HashSet<Key>>,
@@ -168,6 +170,16 @@ impl Daemon {
 
     fn ack(&self, d: &Delivery, via: &str) {
         self.dedupe.lock().unwrap().add(d.message.id, d.agent_id);
+        if adapters::fault("lose-ack")
+            && self
+                .lost_acks
+                .lock()
+                .unwrap()
+                .insert((d.message.id, d.agent_id))
+        {
+            info!(msg = d.message.id, "dropped the first ack (lose-ack)");
+            return;
+        }
         self.send_frame(ClientFrame::Ack {
             message_id: d.message.id,
             agent_id: d.agent_id,
@@ -331,6 +343,7 @@ pub async fn run() -> anyhow::Result<()> {
         notices: Mutex::new(VecDeque::new()),
         queues: Mutex::new(HashMap::new()),
         canceled: Mutex::new(HashSet::new()),
+        lost_acks: Mutex::new(HashSet::new()),
         nacked: Mutex::new(HashSet::new()),
         waking: Mutex::new(HashSet::new()),
         uploads: Mutex::new(HashMap::new()),
