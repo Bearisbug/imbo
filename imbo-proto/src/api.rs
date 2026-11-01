@@ -550,7 +550,8 @@ pub struct SubscriptionView {
     /// `active`, `past_due`, `scheduled_cancel` or `canceled` (API-035).
     pub status: String,
     pub paid_until: DateTime<Utc>,
-    /// `waffo` or `apple`: where it is managed; `gift` when ops gave it (ADR-060).
+    /// `waffo` or `apple`: where it is managed; `alipay` for a time pack
+    /// bought in the web app (API-080); `gift` when ops gave it (ADR-060).
     pub provider: String,
 }
 
