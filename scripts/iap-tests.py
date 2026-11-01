@@ -4,7 +4,8 @@
 # dependencies = ["psycopg[binary]>=3.2"]
 # ///
 """TC-261 to TC-263, TC-265 to TC-269, TC-282, TC-285 to TC-287, TC-291 to
-TC-293, TC-295, TC-296 and TC-298 (docs/TEST.md, 应用内购买), and TC-297 (App),
+TC-293, TC-295, TC-296 and TC-298 (docs/TEST.md, 应用内购买), TC-297 (App) and
+TC-481 (付费与网页, gift subscriptions),
 against the local server, with real HTTP requests, the fake App Store of
 apple-event.py and real database queries.
 
@@ -1214,6 +1215,56 @@ def tc298():
 
 # ---------- main ----------
 
+# ---------- TC-481 ----------
+
+def tc481():
+    setup("alice:bob", "export IMBO_ADMIN_EMAILS=admin@imbo.test", tokens=("alice", "bob"))
+    A, B = ID["alice"], ID["bob"]
+    age(A)
+    alice = web_login("alice@imbo.test", f"{L}/alice.jar")
+    admin = web_login("admin@imbo.test", f"{L}/admin.jar", "admin")
+
+    def gift(account, until):
+        sql("INSERT INTO subscriptions (id, mode, account_id, plan, status, paid_until, provider_updated_at, provider) "
+            f"VALUES ('gift-{account}', 'test', {account}, 'yearly', 'scheduled_cancel', '{until}', now(), 'gift') RETURNING id")
+
+    def checkout():
+        return call("POST", "/v1/billing/checkout", body={"plan": "monthly"}, cookie=alice, origin=WEB)
+
+    end = "2036-11-01T15:59:59Z"
+    gift(A, "2036-11-01 23:59:59+08")
+    b = billing("alice")[1]
+    check(481, 1, b["access"] == {"state": "paid", "until": end}
+          and b.get("subscription") == {"plan": "yearly", "status": "scheduled_cancel", "paid_until": end,
+                                        "provider": "gift"},
+          "alice's gift: access paid until 2036-11-01T15:59:59Z; subscription is the gift", b)
+    _, sent = imbo("alice", "send", str(B), "T481-1")
+    _, who = imbo("alice", "whoami")
+    check(481, 2, "Sent" in sent and "subscribed, paid through 2036-11-01" in who,
+          "alice sends; whoami: subscribed, paid through 2036-11-01", (sent, who))
+    age(B)
+    gift(B, "2026-10-01 00:00:00+08")
+    _, out = imbo("bob", "send", str(A), "T481-2")
+    check(481, 3, "Subscription required" in out, "bob's gift ended: Subscription required", out)
+    r = checkout()
+    check(481, 4, r[0] == 200 and str((r[1] or {}).get("checkout_url", "")).startswith("https://pancake.waffo.ai/"),
+          "alice with only a gift: checkout 200", brief(r) if r[0] != 200 else "200 checkout_url")
+    code, out = run([os.path.join(HERE, "waffo-event.py"), "subscription.activated", "--order", "ORD_t481",
+                     "--account", str(A), "--period-end", "+30d"])
+    b = billing("alice")[1]
+    s = b.get("subscription") or {}
+    check(481, 5, waffo_ok(out) and s.get("provider") == "waffo" and s.get("status") == "active"
+          and s.get("plan") == "monthly" and b["access"].get("until") == end,
+          "alice pays on Waffo: subscription is the Waffo one; access until still 2036-11-01", (out[-200:], b))
+    dup = [ln for ln in log().splitlines() if 'event="duplicate_subscription"' in ln]
+    check(481, 6, dup == [], "no duplicate_subscription", dup)
+    r = checkout()
+    check(481, 7, problem(r, 409, "already-subscribed"), "checkout again: 409 already-subscribed", brief(r))
+    r = call("GET", "/v1/admin/stats", cookie=admin, origin=WEB)
+    check(481, 8, r[0] == 200 and (r[1] or {}).get("paid") == 1, "admin stats: paid 1, the gifts don't count",
+          brief(r) if r[0] != 200 else {"paid": r[1].get("paid")})
+
+
 def write(run_id, tc, header):
     path = os.path.join(os.environ.get("EVIDENCE_DIR", "docs/test-runs"), f"{run_id.lower()}-tc-{tc}.txt")
     with open(path, "w") as f:
@@ -1229,7 +1280,7 @@ if __name__ == "__main__":
     cases = [("261", tc261), ("262", tc262), ("263", tc263), ("265", tc265), ("266", tc266), ("267", tc267),
              ("268", tc268), ("269", tc269), ("282", tc282), ("285", tc285), ("286", tc286), ("287", tc287),
              ("291", tc291), ("292", tc292), ("293", tc293), ("295", tc295), ("296", tc296), ("297", tc297),
-             ("298", tc298)]
+             ("298", tc298), ("481", tc481)]
     for n, case in cases:
         if only and n not in only:
             continue

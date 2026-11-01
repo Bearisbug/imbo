@@ -61,7 +61,7 @@ impl Access {
 pub struct SubRow {
     pub id: String,
     pub account_id: i32,
-    /// `waffo` or `apple`.
+    /// `waffo`, `apple` or `gift`.
     pub provider: String,
     pub mode: String,
     pub plan: String,
@@ -81,6 +81,12 @@ impl SubRow {
             "scheduled_cancel" | "canceled" => Some(self.paid_until),
             _ => None,
         }
+    }
+
+    /// ADR-060: written by ops, not paid for. It grants access but doesn't
+    /// stand in the way of paying.
+    pub fn is_gift(&self) -> bool {
+        self.provider == "gift"
     }
 
     pub fn view(&self) -> SubscriptionView {
@@ -763,8 +769,8 @@ pub async fn handle_event(st: &St, waffo: &Waffo, event: &Value) -> ApiResult<Ou
     Ok(outcome)
 }
 
-/// Two subscriptions granting access to one account means one was paid twice
-/// (DESIGN §16); ops refunds one by RB-005.
+/// Two paid subscriptions granting access to one account means one was paid
+/// twice (DESIGN §16); ops refunds one by RB-005. A gift doesn't count.
 pub async fn warn_if_duplicate(st: &St, sub_id: &str) -> Result<(), sqlx::Error> {
     let account: Option<i32> =
         sqlx::query_scalar("SELECT account_id FROM subscriptions WHERE id = $1")
@@ -778,7 +784,7 @@ pub async fn warn_if_duplicate(st: &St, sub_id: &str) -> Result<(), sqlx::Error>
     let granting = subscriptions(&st.db, &st.cfg, &[account])
         .await?
         .iter()
-        .filter(|s| s.grants_until().is_some_and(|g| g > now))
+        .filter(|s| !s.is_gift() && s.grants_until().is_some_and(|g| g > now))
         .count();
     if granting > 1 {
         warn!(

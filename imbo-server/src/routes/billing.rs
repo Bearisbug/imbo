@@ -50,11 +50,13 @@ pub async fn get(
             .fetch_one(&st.db)
             .await?;
     let subs = billing::subscriptions(&st.db, &st.cfg, &[c.account_id]).await?;
-    // The one that grants access longest, else the newest.
+    // The paid one that grants access longest, else a gift that does (ADR-060),
+    // else the newest.
+    let now = chrono::Utc::now();
     let subscription = subs
         .iter()
-        .filter(|s| s.grants_until().is_some_and(|g| g > chrono::Utc::now()))
-        .max_by_key(|s| s.grants_until())
+        .filter(|s| s.grants_until().is_some_and(|g| g > now))
+        .max_by_key(|s| (!s.is_gift(), s.grants_until()))
         .or(subs.first())
         .map(billing::SubRow::view);
     Ok(Json(BillingResponse {
@@ -103,7 +105,7 @@ pub async fn checkout(
     let subs = billing::subscriptions(&st.db, &st.cfg, &[c.account_id]).await?;
     if subs
         .iter()
-        .any(|s| s.grants_until().is_some_and(|g| g > now))
+        .any(|s| !s.is_gift() && s.grants_until().is_some_and(|g| g > now))
     {
         return Err(err(
             ErrorCode::AlreadySubscribed,

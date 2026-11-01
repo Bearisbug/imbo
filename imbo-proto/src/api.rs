@@ -550,7 +550,7 @@ pub struct SubscriptionView {
     /// `active`, `past_due`, `scheduled_cancel` or `canceled` (API-035).
     pub status: String,
     pub paid_until: DateTime<Utc>,
-    /// `waffo` or `apple`: where it is managed.
+    /// `waffo` or `apple`: where it is managed; `gift` when ops gave it (ADR-060).
     pub provider: String,
 }
 
@@ -840,7 +840,7 @@ pub struct ResolveResponse {
 pub struct AdminSubscription {
     pub status: String,
     pub paid_until: DateTime<Utc>,
-    /// `waffo` or `apple`.
+    /// `waffo`, `apple` or `gift`.
     pub provider: String,
 }
 
