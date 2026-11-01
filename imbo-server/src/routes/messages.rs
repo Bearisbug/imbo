@@ -23,6 +23,7 @@ use crate::billing;
 use crate::delivery;
 use crate::error::{ApiError, ApiResult, err, rate_limited};
 use crate::safety;
+use crate::share;
 use crate::state::St;
 use crate::views;
 
@@ -104,12 +105,17 @@ async fn my_groups(db: &PgPool, me: i32) -> Result<Vec<GroupRef>, sqlx::Error> {
         .collect())
 }
 
-async fn agents_of(db: &PgPool, account: i32) -> Result<Vec<AgentRow>, sqlx::Error> {
+/// The account's sessions `viewer` may see: all of them for the account
+/// itself, the ones it lets `viewer` see otherwise (RULE-018).
+async fn agents_of(db: &PgPool, account: i32, viewer: i32) -> Result<Vec<AgentRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, short_id, coalesce(custom_title, title) AS title, tool, online FROM agents WHERE account_id = $1 AND tool <> 'terminal'
+        "SELECT id, short_id, coalesce(custom_title, title) AS title, tool, online FROM agents
+         WHERE account_id = $1 AND tool <> 'terminal'
+           AND ($1 = $2 OR imbo_session_visible(account_id, $2, id, device_id))
          ORDER BY online DESC, last_online_at DESC NULLS LAST",
     )
     .bind(account)
+    .bind(viewer)
     .fetch_all(db)
     .await
 }
@@ -222,7 +228,7 @@ async fn resolve(db: &PgPool, me: &AccountRef, to: &str) -> ApiResult<Target> {
                     .candidates(many.iter().map(|p| contact_candidate(p)).collect()));
                 }
             };
-            let agents = agents_of(db, peer.id).await?;
+            let agents = agents_of(db, peer.id, me.id).await?;
             let s = session.to_lowercase();
             if let Some(a) = agents.iter().find(|a| a.short_id == s) {
                 return Ok(Target::Direct {
@@ -627,13 +633,18 @@ async fn store(
                 .bind(peer.id)
                 .execute(&mut *tx)
                 .await?;
-            let still: Option<i32> = sqlx::query_scalar(
-                "SELECT peer_id FROM contacts WHERE account_id = $1 AND peer_id = $2 FOR SHARE",
-            )
-            .bind(c.account_id)
-            .bind(peer.id)
-            .fetch_optional(&mut *tx)
-            .await?;
+            // A session writing may add itself to the peer's list
+            // (RULE-019), so it takes the row for update from the start.
+            let lock = if from_agent.is_some() {
+                "SELECT peer_id FROM contacts WHERE account_id = $1 AND peer_id = $2 FOR UPDATE"
+            } else {
+                "SELECT peer_id FROM contacts WHERE account_id = $1 AND peer_id = $2 FOR SHARE"
+            };
+            let still: Option<i32> = sqlx::query_scalar(lock)
+                .bind(c.account_id)
+                .bind(peer.id)
+                .fetch_optional(&mut *tx)
+                .await?;
             // Writing to myself needs no contact (RULE-011).
             if still.is_none() && peer.id != c.account_id {
                 return Err(err(
@@ -645,6 +656,9 @@ async fn store(
             if peer.id != c.account_id {
                 safety::check_blocks(&mut tx, c.account_id, peer.id, &peer.name).await?;
                 safety::check_not_banned(&mut tx, peer.id, &peer.name).await?;
+                if let Some(agent) = from_agent {
+                    share::reveal(&mut tx, c.account_id, peer.id, agent).await?;
+                }
             }
             let (lo, hi) = if c.account_id < peer.id {
                 (c.account_id, peer.id)

@@ -183,7 +183,9 @@ pub async fn seed(
                 format!("unknown seed name in {x}:{y}"),
             ));
         };
-        sqlx::query("INSERT INTO contacts (account_id, peer_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING")
+        // Seeded contacts stand for ones made before migration 0014, which
+        // see every session; the tests written before it rely on that.
+        sqlx::query("INSERT INTO contacts (account_id, peer_id, share) VALUES ($1, $2, 'all'), ($2, $1, 'all') ON CONFLICT DO NOTHING")
             .bind(a)
             .bind(b)
             .execute(&st.db)

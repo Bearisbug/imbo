@@ -230,6 +230,43 @@ pub struct ContactsResponse {
     pub contacts: Vec<ContactItem>,
 }
 
+/// Which of my sessions a contact sees (API-081, API-082, RULE-018).
+pub const SHARE_ALL: &str = "all";
+pub const SHARE_CHOSEN: &str = "chosen";
+pub const SHARE_NONE: &str = "none";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShareDevice {
+    pub id: Uuid,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShareSession {
+    pub id: Uuid,
+    pub short_id: String,
+    pub title: String,
+    pub tool: String,
+    pub device_id: Option<Uuid>,
+    pub online: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShareResponse {
+    pub share: String,
+    pub devices: Vec<ShareDevice>,
+    pub sessions: Vec<ShareSession>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShareBody {
+    pub share: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devices: Option<Vec<Uuid>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<Vec<Uuid>>,
+}
+
 // ---- agents ----
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

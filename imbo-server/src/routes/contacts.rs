@@ -8,12 +8,14 @@ use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use imbo_proto::api::{
     AcceptBody, AcceptResponse, AccountRef, ContactItem, ContactRequestBody, ContactsResponse,
-    GroupRef, RequestItem, RequestResponse, RequestsResponse, SessionInfo,
+    GroupRef, RequestItem, RequestResponse, RequestsResponse, SHARE_ALL, SHARE_CHOSEN, SHARE_NONE,
+    SessionInfo, ShareBody, ShareDevice, ShareResponse, ShareSession,
 };
 use imbo_proto::text::valid_email;
 use imbo_proto::{ErrorCode, MAX_NOTE_CHARS};
 use serde::Deserialize;
 use sqlx::{Postgres, Transaction};
+use tracing::info;
 use uuid::Uuid;
 
 use super::Body;
@@ -600,6 +602,7 @@ pub async fn list_contacts(
          JOIN accounts a ON a.id = ct.peer_id
          LEFT JOIN agents ag ON ag.account_id = a.id AND ag.tool <> 'terminal'
               AND (ag.online OR ($2 AND ag.last_online_at > now() - interval '7 days'))
+              AND imbo_session_visible(a.id, $1, ag.id, ag.device_id)
          WHERE ct.account_id = $1
          ORDER BY a.name, a.id, ag.online DESC, coalesce(ag.custom_title, ag.title)",
     )
@@ -694,4 +697,201 @@ pub async fn remove_contact(
         None,
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Most devices and sessions one contact's list may hold (API-082).
+const MAX_SHARED: usize = 200;
+
+#[derive(sqlx::FromRow)]
+struct SharedSessionRow {
+    id: Uuid,
+    short_id: String,
+    title: String,
+    tool: String,
+    device_id: Option<Uuid>,
+    online: bool,
+}
+
+/// What `peer` sees of my sessions (API-081); every chosen session, however
+/// long it has been offline.
+async fn share_view(db: &mut sqlx::PgConnection, me: i32, peer: i32) -> ApiResult<ShareResponse> {
+    let share: Option<String> =
+        sqlx::query_scalar("SELECT share FROM contacts WHERE account_id = $1 AND peer_id = $2")
+            .bind(me)
+            .bind(peer)
+            .fetch_optional(&mut *db)
+            .await?;
+    let Some(share) = share else {
+        return Err(err(
+            ErrorCode::NotContact,
+            "That account is not your contact.",
+        ));
+    };
+    let devices: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT d.id, d.name FROM contact_shares cs JOIN devices d ON d.id = cs.device_id
+         WHERE cs.account_id = $1 AND cs.peer_id = $2 ORDER BY d.name, d.id",
+    )
+    .bind(me)
+    .bind(peer)
+    .fetch_all(&mut *db)
+    .await?;
+    let sessions: Vec<SharedSessionRow> = sqlx::query_as(
+        "SELECT ag.id, ag.short_id, coalesce(ag.custom_title, ag.title) AS title, ag.tool, ag.device_id, ag.online
+         FROM contact_shares cs JOIN agents ag ON ag.id = cs.agent_id
+         WHERE cs.account_id = $1 AND cs.peer_id = $2
+         ORDER BY ag.online DESC, ag.last_online_at DESC NULLS LAST, ag.id",
+    )
+    .bind(me)
+    .bind(peer)
+    .fetch_all(&mut *db)
+    .await?;
+    Ok(ShareResponse {
+        share,
+        devices: devices
+            .into_iter()
+            .map(|(id, name)| ShareDevice { id, name })
+            .collect(),
+        sessions: sessions
+            .into_iter()
+            .map(|r| ShareSession {
+                id: r.id,
+                short_id: r.short_id,
+                title: r.title,
+                tool: r.tool,
+                device_id: r.device_id,
+                online: r.online,
+            })
+            .collect(),
+    })
+}
+
+/// API-081.
+pub async fn get_share(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(peer): Path<i32>,
+) -> ApiResult<Json<ShareResponse>> {
+    let mut conn = st.db.acquire().await?;
+    Ok(Json(share_view(&mut conn, c.account_id, peer).await?))
+}
+
+/// API-082: replaces the whole setting for one contact.
+pub async fn set_share(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(peer): Path<i32>,
+    Body(req): Body<ShareBody>,
+) -> ApiResult<Json<ShareResponse>> {
+    c.require_person()?;
+    let share = req.share.as_str();
+    if ![SHARE_ALL, SHARE_CHOSEN, SHARE_NONE].contains(&share) {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "share must be all, chosen or none.",
+        ));
+    }
+    let (mut devices, mut sessions) = if share == SHARE_CHOSEN {
+        (
+            req.devices.unwrap_or_default(),
+            req.sessions.unwrap_or_default(),
+        )
+    } else {
+        (vec![], vec![])
+    };
+    devices.sort_unstable();
+    devices.dedup();
+    sessions.sort_unstable();
+    sessions.dedup();
+    if devices.len() + sessions.len() > MAX_SHARED {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            format!("Choose at most {MAX_SHARED} computers and sessions."),
+        ));
+    }
+    let mut tx = st.db.begin().await?;
+    let found: Option<i32> = sqlx::query_scalar(
+        "SELECT peer_id FROM contacts WHERE account_id = $1 AND peer_id = $2 FOR UPDATE",
+    )
+    .bind(c.account_id)
+    .bind(peer)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if found.is_none() {
+        return Err(err(
+            ErrorCode::NotContact,
+            "That account is not your contact.",
+        ));
+    }
+    let mine: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM devices WHERE account_id = $1 AND id = ANY($2) AND revoked_at IS NULL",
+    )
+    .bind(c.account_id)
+    .bind(&devices)
+    .fetch_one(&mut *tx)
+    .await?;
+    if mine as usize != devices.len() {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "Some of those computers aren't yours or are signed out.",
+        ));
+    }
+    let mine: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agents WHERE account_id = $1 AND id = ANY($2) AND tool <> 'terminal'",
+    )
+    .bind(c.account_id)
+    .bind(&sessions)
+    .fetch_one(&mut *tx)
+    .await?;
+    if mine as usize != sessions.len() {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "Some of those sessions aren't yours.",
+        ));
+    }
+    sqlx::query("UPDATE contacts SET share = $3 WHERE account_id = $1 AND peer_id = $2")
+        .bind(c.account_id)
+        .bind(peer)
+        .bind(share)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM contact_shares WHERE account_id = $1 AND peer_id = $2")
+        .bind(c.account_id)
+        .bind(peer)
+        .execute(&mut *tx)
+        .await?;
+    let ids: Vec<Uuid> = (0..devices.len() + sessions.len())
+        .map(|_| Uuid::now_v7())
+        .collect();
+    let (device_ids, agent_ids) = ids.split_at(devices.len());
+    sqlx::query(
+        "INSERT INTO contact_shares (id, account_id, peer_id, device_id)
+         SELECT id, $1, $2, device FROM unnest($3::uuid[], $4::uuid[]) AS t(id, device)",
+    )
+    .bind(c.account_id)
+    .bind(peer)
+    .bind(device_ids)
+    .bind(&devices)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO contact_shares (id, account_id, peer_id, agent_id)
+         SELECT id, $1, $2, agent FROM unnest($3::uuid[], $4::uuid[]) AS t(id, agent)",
+    )
+    .bind(c.account_id)
+    .bind(peer)
+    .bind(agent_ids)
+    .bind(&sessions)
+    .execute(&mut *tx)
+    .await?;
+    let view = share_view(&mut tx, c.account_id, peer).await;
+    tx.commit().await?;
+    info!(
+        account = c.account_id,
+        peer,
+        share,
+        devices = devices.len(),
+        sessions = sessions.len(),
+        "contact share set"
+    );
+    Ok(Json(view?))
 }

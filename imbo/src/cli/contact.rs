@@ -2,7 +2,10 @@
 
 use clap::Subcommand;
 use imbo_proto::MAX_NOTE_CHARS;
-use imbo_proto::api::{AcceptResponse, ContactsResponse, RequestItem, RequestsResponse};
+use imbo_proto::api::{
+    AcceptResponse, AgentsResponse, ContactItem, ContactsResponse, DevicesResponse, RequestItem,
+    RequestsResponse, SHARE_ALL, SHARE_CHOSEN, SHARE_NONE, ShareBody, ShareResponse,
+};
 use serde_json::json;
 
 use super::{Reported, api, api_as, pad, tool_name};
@@ -44,6 +47,14 @@ pub enum ContactCmd {
         #[arg(long, short)]
         yes: bool,
     },
+    /// Which of your sessions a contact can see.
+    Share {
+        /// The contact's account ID or name.
+        who: String,
+        /// `all`, `none`, or computer names and session short IDs; leave out
+        /// to see the current setting.
+        items: Vec<String>,
+    },
 }
 
 pub async fn run(cmd: ContactCmd) -> anyhow::Result<()> {
@@ -61,6 +72,7 @@ pub async fn run(cmd: ContactCmd) -> anyhow::Result<()> {
             Ok(())
         }
         ContactCmd::Remove { account_id, yes } => remove(account_id, yes).await,
+        ContactCmd::Share { who, items } => share(who, items).await,
     }
 }
 
@@ -256,4 +268,174 @@ async fn remove(account_id: i32, yes: bool) -> anyhow::Result<()> {
         ui::heading(name.unwrap_or_else(|| account_id.to_string()))
     ));
     Ok(())
+}
+
+/// A contact by account ID or name, matched like a message recipient.
+fn find_contact<'a>(contacts: &'a [ContactItem], who: &str) -> Vec<&'a ContactItem> {
+    if let Ok(id) = who.parse::<i32>()
+        && who.len() == 8
+    {
+        return contacts.iter().filter(|c| c.id == id).collect();
+    }
+    let exact: Vec<_> = contacts.iter().filter(|c| c.name == who).collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    contacts
+        .iter()
+        .filter(|c| c.name.to_lowercase() == who.to_lowercase())
+        .collect()
+}
+
+/// What one item names: a computer of mine, else a session by short ID or
+/// title (FLOW-CONTACT-SHARE S2).
+enum Pick {
+    Device(uuid::Uuid),
+    Session(uuid::Uuid),
+}
+
+fn pick(item: &str, devices: &DevicesResponse, agents: &AgentsResponse) -> Result<Pick, String> {
+    let d: Vec<_> = devices
+        .devices
+        .iter()
+        .filter(|d| d.name.to_lowercase() == item.to_lowercase())
+        .collect();
+    if let [one] = d.as_slice() {
+        return Ok(Pick::Device(one.id));
+    }
+    if d.len() > 1 {
+        return Err(format!("You have {} computers called {item}.", d.len()));
+    }
+    if let Some(a) = agents
+        .agents
+        .iter()
+        .find(|a| a.short_id.eq_ignore_ascii_case(item))
+    {
+        return Ok(Pick::Session(a.id));
+    }
+    match agents
+        .agents
+        .iter()
+        .filter(|a| a.title == item)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [one] => Ok(Pick::Session(one.id)),
+        [] => Err(format!("No computer or session called {item}.")),
+        many => Err(format!(
+            "{} sessions are called {item}. Use the short ID.",
+            many.len()
+        )),
+    }
+}
+
+async fn share(who: String, items: Vec<String>) -> anyhow::Result<()> {
+    let r: ContactsResponse = api_as("GET", "/v1/contacts", None).await?;
+    let found = find_contact(&r.contacts, who.trim());
+    let contact = match found.as_slice() {
+        [one] => (*one).clone(),
+        [] => {
+            ui::error_line(&format!("No contact called {who}."));
+            return Err(Reported.into());
+        }
+        _ => {
+            ui::error_line(&format!(
+                "More than one contact is called {who}. Use the account ID."
+            ));
+            return Err(Reported.into());
+        }
+    };
+    let path = format!("/v1/contacts/{}/share", contact.id);
+    let view: ShareResponse = match items.as_slice() {
+        [] => api_as("GET", &path, None).await?,
+        [one] if one == SHARE_ALL || one == SHARE_NONE => {
+            let body = ShareBody {
+                share: one.clone(),
+                devices: None,
+                sessions: None,
+            };
+            api_as("PUT", &path, Some(serde_json::to_value(body)?)).await?
+        }
+        _ => {
+            let devices: DevicesResponse = api_as("GET", "/v1/devices", None).await?;
+            let agents: AgentsResponse = api_as("GET", "/v1/agents", None).await?;
+            let (mut on, mut sessions) = (vec![], vec![]);
+            for item in &items {
+                match pick(item, &devices, &agents) {
+                    Ok(Pick::Device(id)) => on.push(id),
+                    Ok(Pick::Session(id)) => sessions.push(id),
+                    Err(e) => {
+                        ui::error_line(&e);
+                        mine(&devices, &agents);
+                        return Err(Reported.into());
+                    }
+                }
+            }
+            let body = ShareBody {
+                share: SHARE_CHOSEN.into(),
+                devices: Some(on),
+                sessions: Some(sessions),
+            };
+            api_as("PUT", &path, Some(serde_json::to_value(body)?)).await?
+        }
+    };
+    if !items.is_empty() {
+        ui::ok_line("Saved");
+    }
+    show_share(&contact.name, &view);
+    Ok(())
+}
+
+/// My computers and sessions, to pick from.
+fn mine(devices: &DevicesResponse, agents: &AgentsResponse) {
+    eprintln!("  {}", ui::dim("Your computers:"));
+    for d in &devices.devices {
+        eprintln!("    {}", d.name);
+    }
+    eprintln!("  {}", ui::dim("Your sessions:"));
+    for a in &agents.agents {
+        eprintln!(
+            "    {} {}  {}",
+            ui::dot(a.online),
+            pad(&a.short_id, 8),
+            a.title
+        );
+    }
+}
+
+fn show_share(name: &str, v: &ShareResponse) {
+    match v.share.as_str() {
+        SHARE_ALL => println!("{} sees all your sessions.", ui::heading(name)),
+        SHARE_NONE => println!(
+            "{} sees none of your sessions and can only write to your inbox.",
+            ui::heading(name)
+        ),
+        _ if v.devices.is_empty() && v.sessions.is_empty() => println!(
+            "{} sees only the sessions you choose, and none are chosen yet.",
+            ui::heading(name)
+        ),
+        _ => {
+            println!("{} sees only these:", ui::heading(name));
+            for d in &v.devices {
+                println!(
+                    "  {}  {}",
+                    pad(&d.name, 26),
+                    ui::dim("every session on this computer, new ones too")
+                );
+            }
+            for s in &v.sessions {
+                println!(
+                    "  {} {}  {}  {}",
+                    ui::dot(s.online),
+                    pad(&s.short_id, 8),
+                    pad(&s.title, 24),
+                    ui::dim(tool_name(&s.tool))
+                );
+            }
+        }
+    }
+    println!(
+        "{}",
+        ui::dim("Sessions you put in a group you share are visible there too.")
+    );
 }

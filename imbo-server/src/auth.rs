@@ -306,6 +306,8 @@ const WEB_ALLOWED: &[(Method, &str)] = &[
     (Method::POST, "/v1/requests/{id}/decline"),
     (Method::GET, "/v1/contacts"),
     (Method::DELETE, "/v1/contacts/{account_id}"),
+    (Method::GET, "/v1/contacts/{account_id}/share"),
+    (Method::PUT, "/v1/contacts/{account_id}/share"),
     (Method::GET, "/v1/agents"),
     (Method::GET, "/v1/agents/{id}/messages"),
     (Method::POST, "/v1/agents/{id}/messages"),

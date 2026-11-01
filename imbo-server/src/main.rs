@@ -17,6 +17,7 @@ mod pay;
 mod push;
 mod routes;
 mod safety;
+mod share;
 mod state;
 mod views;
 mod wake;

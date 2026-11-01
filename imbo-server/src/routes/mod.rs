@@ -38,6 +38,10 @@ pub fn router(st: St) -> Router {
             "/v1/contacts/{account_id}",
             delete(contacts::remove_contact),
         )
+        .route(
+            "/v1/contacts/{account_id}/share",
+            get(contacts::get_share).put(contacts::set_share),
+        )
         .route("/v1/requests", get(contacts::list_requests))
         .route("/v1/requests/{id}/accept", post(contacts::accept))
         .route("/v1/requests/{id}/decline", post(contacts::decline))
