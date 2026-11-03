@@ -156,7 +156,8 @@ pub async fn list_agents(
     Ok(Json(AgentsResponse { agents }))
 }
 
-/// API-014's rows: my sessions seen in the last 7 days, or just `only`.
+/// API-014's rows: my 200 most recent sessions seen in the last 7 days, online ones first, or just `only`. One account
+/// had 4,240, and the App froze drawing them.
 async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>> {
     let rows: Vec<(
         Uuid,
@@ -181,7 +182,8 @@ async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>
          FROM agents ag LEFT JOIN devices d ON d.id = ag.device_id
          WHERE ag.account_id = $1 AND ag.tool <> 'terminal' AND (ag.online OR ag.last_online_at > now() - interval '7 days')
            AND ($2::uuid IS NULL OR ag.id = $2)
-         ORDER BY ag.online DESC, ag.last_online_at DESC NULLS LAST",
+         ORDER BY ag.online DESC, ag.last_online_at DESC NULLS LAST
+         LIMIT 200",
     )
     .bind(me)
     .bind(only)
