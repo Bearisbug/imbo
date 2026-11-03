@@ -26,7 +26,7 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 | 8 | Write to a session, it replies | ✅ | `hello-from-phone` → `Hello! Got your message from your phone.` |
 | 9 | Replies are attributed to the session | ✅ | fixed this session (`Sender.agent`) |
 | 10 | Rename a session | ✅ | `PUT /v1/agents/{id}/title` |
-| 11 | Wake a closed session from the phone | ⚠️ | server has `wake.rs` + `wakeable`; the app never shows it or “waking…” |
+| 11 | Wake a closed session from the phone | ⚠️ | UI shows 「离线（可唤醒）」, but both Codex sessions report `wakeable=false`, so no wake is ever offered; the flow could not be exercised on this setup |
 | 12 | Delivery state for my own session's messages | ✅ | `MessageView.state` now renders as 「等待会话领取」/「已取消」; server returned `state=delivered` for message #148 |
 | 13 | Session visibility follows sharing | ⚠️ | server enforces it; the app has no way to see or change it |
 
