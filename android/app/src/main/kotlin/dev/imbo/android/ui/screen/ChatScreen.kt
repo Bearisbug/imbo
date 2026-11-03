@@ -175,12 +175,11 @@ class ChatViewModel @Inject constructor(
             // 这里直接取一页，别依赖 refresh()——它是异步的，读 _state 时可能还是空的
             val newest = runCatching { api.messages(id, limit = PAGE_SIZE).messages.lastOrNull()?.id }
                 .getOrNull()
-            if (newest != null && newest > 0) {
-                if (id > 0) {
-                    runCatching { api.markConversationRead(id, newest) }
-                } else if (agentId != null) {
-                    runCatching { api.markRead(agentId, newest) }
-                }
+            if (agentId != null) {
+                // 没有消息时 up_to=0 相当于什么都不标，和「打开但没有新消息」一致
+                runCatching { api.markRead(agentId, newest ?: 0L) }
+            } else if (id > 0) {
+                if (newest != null && newest > 0) runCatching { api.markConversationRead(id, newest) }
             }
         }
         if (!subscribed) {
