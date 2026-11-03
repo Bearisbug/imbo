@@ -43,7 +43,7 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 
 | # | Official behaviour | Android | Evidence / gap |
 | --- | --- | --- | --- |
-| 18 | Create a group, pick which of my sessions receive it | ⚠️ | `createGroup` now sends `sessions`, but the dialog still only picks members; the picker is the remaining work |
+| 18 | Create a group, pick which of my sessions receive it | ✅ | new-group screen lists my sessions and sends the checked ids; `picker-test` came back with `sessions=d2012d` |
 | 19 | Invite contacts only | ✅ | server rejects non-contacts; the error is surfaced |
 | 20 | Invitee joins the group | ✅ | alice invited bob (`kind=group` request #4); `POST /v1/requests/4/accept` as bob; his group list then shows `invite-test` with members alice,bob |
 | 21 | A group message reaches every selected session of every member | ✅ | two Codex sessions in group 4229147: send returned `"recipients":2`; both TUIs showed message #144 |
@@ -93,8 +93,8 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 
 | Status | Items |
 | --- | --- |
-| ✅ implemented and exercised | 37 |
-| ⚠️ implemented, not verified or partial | 3 |
+| ✅ implemented and exercised | 38 |
+| ⚠️ implemented, not verified or partial | 2 |
 | ❌ missing | 2 (contact note, subscription checkout) |
 | **Total tracked** | **42** |
 
