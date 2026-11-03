@@ -22,8 +22,8 @@ class SenderLabelTest {
     }
 
     @Test
-    fun `duplicate title gets a short id`() {
-        assertEquals("codex · 1a3cb5", senderLabel(message("codex", "1a3cb5"), setOf("codex")))
+    fun `a duplicate title still shows the tool, not the id`() {
+        assertEquals("codex · dsh", senderLabel(message("codex", "1a3cb5", "dsh"), setOf("codex")))
     }
 
     @Test
