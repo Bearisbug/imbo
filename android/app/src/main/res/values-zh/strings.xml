@@ -1,0 +1,280 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Imbo</string>
+
+    <!-- tabs -->
+    <string name="tab_chats">对话</string>
+    <string name="tab_sessions">会话</string>
+    <string name="tab_contacts">联系人</string>
+
+    <!-- brand bar -->
+    <string name="trial_days_left">试用还剩 %1$d 天</string>
+    <string name="subscribed">已订阅</string>
+    <string name="subscribe">订阅</string>
+
+    <!-- auth -->
+    <string name="sign_in_title">登录 Imbo</string>
+    <string name="sign_in_body">我们会把 6 位验证码发到你的邮箱。</string>
+    <string name="email_label">邮箱</string>
+    <string name="email_placeholder">you@example.com</string>
+    <string name="continue_action">继续</string>
+    <string name="first_time">第一次用 Imbo？</string>
+    <string name="create_account">创建账号</string>
+    <string name="check_email_title">查收邮件</string>
+    <string name="check_email_body">验证码已发到 %1$s，请查收。</string>
+    <string name="code_label">验证码</string>
+    <string name="verify_action">验证</string>
+    <string name="resend_code">重新发送验证码</string>
+    <string name="register_title">创建你的账号</string>
+    <string name="register_body">这个名字会显示给你的联系人和群成员。</string>
+    <string name="name_label">名字</string>
+    <string name="have_account">已经在用 Imbo？</string>
+    <string name="sign_in_link">登录</string>
+    <string name="welcome_title">欢迎加入，%1$s。</string>
+    <string name="welcome_body">30 天免费试用已经开始了。添加一个联系人，或者在电脑上连接一个 AI 会话，就能发出第一条消息。</string>
+    <string name="open_imbo">打开 Imbo</string>
+
+    <!-- chats list -->
+    <string name="new_group">新建群聊</string>
+    <string name="empty_chats_title">还没有对话</string>
+    <string name="empty_chats_body">你发给联系人或 AI 会话的消息会出现在这里。</string>
+
+    <!-- sessions -->
+    <string name="empty_sessions_title">还没有会话</string>
+    <string name="empty_sessions_body">在电脑上运行 imbo login，这里就会显示对应的 AI 会话。</string>
+
+    <!-- contacts -->
+    <string name="add_contact">添加联系人</string>
+    <string name="requests">请求</string>
+    <string name="group_invite_request">邀请你加入「%1$s」</string>
+    <string name="request_pending">想加你为联系人</string>
+    <string name="accept">接受</string>
+    <string name="decline">拒绝</string>
+
+    <!-- chat -->
+    <string name="message_placeholder">发消息…</string>
+    <string name="attach">添加附件</string>
+    <string name="attach_unavailable">附件功能还没接上，先发文字吧。</string>
+    <string name="attach_picker_title">添加附件</string>
+    <string name="attach_photo">照片</string>
+    <string name="attach_file">文件</string>
+    <string name="attach_default_name">附件</string>
+    <string name="send">发送</string>
+    <string name="online">在线</string>
+    <string name="seen_minutes_ago">%1$d 分钟前活跃</string>
+    <string name="members_count">%1$d 位成员</string>
+    <string name="chat_loading_earlier">加载更早的消息…</string>
+    <string name="chat_copy">复制</string>
+    <string name="chat_quote">引用</string>
+    <string name="chat_no_body">（附件）</string>
+
+    <!-- account -->
+    <string name="account_title">账号</string>
+    <string name="picture">图片</string>
+    <string name="change_picture">更换图片</string>
+    <string name="remove_picture">移除图片</string>
+    <string name="avatar_uploading">上传中…</string>
+    <string name="avatar_removing">移除中…</string>
+    <string name="avatar_upload_failed">头像更新失败，请重试。</string>
+    <string name="picture_formats">JPEG 或 PNG · 最大 5 MB</string>
+    <string name="picture_unavailable">图片上传还没接上，这个版本先显示名字首字母。</string>
+    <string name="picture_hint">支持 JPEG 或 PNG，最大 5 MB。Imbo 会把它裁成正方形，你的联系人和群成员都能看到。</string>
+    <string name="edit">修改</string>
+    <string name="change">更换</string>
+    <string name="account_id">账号 ID</string>
+    <string name="account_id_hint">别人用这个 ID 加你为联系人。</string>
+    <string name="free_trial_days">免费试用，还剩 %1$d 天</string>
+    <string name="subscribe_hint">现在订阅，首期费用 30 天后才扣。</string>
+    <string name="plan_yearly">每年 $20</string>
+    <string name="plan_monthly">每月 $2</string>
+    <string name="taxes_note">税费在结账时另计，可随时取消。</string>
+    <string name="language">语言</string>
+    <string name="language_english">English</string>
+    <string name="language_chinese">简体中文</string>
+    <string name="language_system">跟随系统</string>
+    <string name="language_system_hint">选择后跟随系统语言。</string>
+    <string name="devices">设备</string>
+    <string name="device_seen_now">刚刚在线</string>
+    <string name="device_seen_minutes">最后在线 %1$d 分钟前</string>
+    <string name="device_seen_hours">最后在线 %1$d 小时前</string>
+    <string name="device_seen_days">最后在线 %1$d 天前</string>
+    <string name="device_online_minutes">最后在线 %1$d 分钟前</string>
+    <string name="sign_out">退出登录</string>
+    <string name="devices_hint">这些是你运行过 imbo login 的电脑。让其中一台退出登录后，它的会话会停止，直到你在那台电脑上重新登录。</string>
+    <string name="blocked">已屏蔽</string>
+    <string name="manage">管理</string>
+    <string name="blocked_hint">被屏蔽的账号不能给你发消息、请求或邀请。</string>
+    <string name="unblock">取消屏蔽</string>
+    <string name="delete_account">删除账号…</string>
+
+    <!-- common -->
+    <string name="back">返回</string>
+    <string name="retry">重试</string>
+    <string name="loading">加载中</string>
+    <string name="error_generic">出了点问题，请检查网络后重试。</string>
+
+    <!-- auth states -->
+    <string name="sending">发送中…</string>
+    <string name="verifying">验证中…</string>
+    <string name="auth_err_email">请输入有效的邮箱地址。</string>
+    <string name="auth_err_code">验证码错误或已过期。</string>
+
+    <!-- dialogs -->
+    <string name="cancel">取消</string>
+    <string name="save">保存</string>
+    <string name="rename_title">你的名字</string>
+    <string name="change_email_title">更换邮箱</string>
+    <string name="email_change_body">验证码会发到新邮箱。旧邮箱不会收到提示，已登录的设备也不会掉线。</string>
+    <string name="email_change_code_title">输入验证码</string>
+    <string name="email_change_code_body">已发到 %1$s。过期了可以再发一次。</string>
+    <string name="email_change_send">发送验证码</string>
+    <string name="email_change_confirm">换成这个</string>
+    <string name="email_change_sent">验证码已发到 %1$s。</string>
+    <string name="email_change_same">这就是你现在的邮箱。</string>
+    <string name="subscribe_title">订阅 Imbo</string>
+    <string name="subscribe_unavailable">订阅暂未开放。试用期会继续有效，到期为止。</string>
+    <string name="delete_account_title">删除账号</string>
+    <string name="delete_account_body">账号、联系人、群和消息都会一并删除，无法恢复。</string>
+    <string name="delete_account_failed">账号没有删掉，请再试一次。</string>
+    <string name="group_avatar_change">更换群头像</string>
+    <string name="group_avatar_remove">移除群头像</string>
+    <string name="group_avatar_failed">群头像没换成，请再试一次。</string>
+    <string name="group_avatar_owner_only">只有群主能换群头像。</string>
+    <string name="group_avatar_uploading">正在上传…</string>
+    <string name="sign_out_action">退出登录</string>
+    <string name="sign_out_account">退出这个账号</string>
+    <string name="access_expired">试用已结束。</string>
+    <string name="access_free">这个账号没有试用，也没有订阅。</string>
+    <string name="this_device">本设备</string>
+    <string name="server_label">服务器</string>
+    <string name="server_address_title">服务器地址</string>
+    <string name="server_address_hint">自己部署的服务器填这里，例如 https://imbo.example.com 或 https://my-pc.tail1234.ts.net。留空就用内置地址。</string>
+    <string name="server_address_invalid">地址格式不对，试试 https://主机 或 主机:端口。</string>
+    <string name="server_address_https_required">正式版只能连 https 地址。</string>
+    <string name="server_not_set">服务器 · 未配置（点此填写）</string>
+    <string name="server_using_default">服务器 · %1$s（默认）</string>
+    <string name="server_current">服务器 · %1$s</string>
+
+    <!-- add contact -->
+    <string name="add_contact_hint">填对方账号页上的 8 位账号 ID，或对方的登录邮箱。</string>
+    <string name="add_contact_invalid">账号 ID 是 8 位数字，或者填邮箱。</string>
+    <string name="add_contact_sent">请求已发出，对方会在「联系人」里看到。</string>
+    <string name="account_id_or_email">账号 ID 或邮箱</string>
+    <string name="via_app">安卓 App</string>
+    <string name="via_web">网页</string>
+    <string name="via_terminal">电脑终端</string>
+    <string name="group_my_sessions">我的会话</string>
+    <string name="attach_camera">拍照</string>
+    <string name="session_online">在线</string>
+    <string name="session_offline">离线</string>
+    <string name="mention_picker_title">提醒谁</string>
+    <string name="chat_select">多选</string>
+    <string name="share_selected_count">已选 %1$d 条</string>
+    <string name="share_as_image">分享为图片</string>
+    <string name="err_already_contact">对方已经在你的联系人里了。</string>
+    <string name="err_not_contact">对方不是你的联系人。</string>
+    <string name="err_signed_out">登录已失效，请重新登录。</string>
+    <string name="err_push_token">推送令牌格式不对。</string>
+    <string name="err_rate_limited">操作太频繁了，稍等一会儿再试。</string>
+    <string name="err_group_not_invited">对方还不在这个群里，先邀请他。</string>
+    <string name="err_not_owner">只有群主能做这件事。</string>
+    <string name="err_empty_value">内容不能为空。</string>
+    <string name="chat_failed_tap_retry">发送失败 · 点按重试</string>
+    <string name="err_network">连不上服务器，检查网络或服务器地址。</string>
+    <string name="err_network_timeout">服务器没有响应，稍后再试。</string>
+    <string name="session_last_seen">最后在线 %1$s</string>
+    <string name="message_mine">我</string>
+    <string name="chat_forward">转发</string>
+    <string name="forward_title">转发到</string>
+    <string name="forward_empty">还没有其它会话可以转发。</string>
+    <string name="forward_done">已转发</string>
+    <string name="search_chats_label">搜索会话</string>
+    <string name="search_chats_placeholder">名字或消息内容</string>
+    <string name="search_empty_title">没有匹配的会话</string>
+    <string name="search_empty_body">「%1$s」在会话标题和最近一条消息里都没找到。</string>
+    <string name="resend_code_countdown">重新发送验证码（%1$d 秒）</string>
+    <string name="contact_no_chat_yet">你们还没有聊过，发第一条消息就会开始会话。</string>
+    <string name="chat_jump_to_latest">回到最新消息</string>
+    <string name="chat_unread_divider">以下为新消息</string>
+    <string name="push_label">推送</string>
+    <string name="push_topic_value">话题 %1$s</string>
+    <string name="push_set_server">设置</string>
+    <string name="push_server_label">ntfy 地址</string>
+    <string name="push_server_hint">例如 https://ntfy.example.com 或 http://100.x.y.z:8081；留空用内置默认值。</string>
+    <string name="push_topic_only">话题 %1$s（未配置 ntfy 地址）</string>
+    <string name="check_connection">检查连接</string>
+    <string name="check_ok">连接正常 · 服务端 %1$s</string>
+    <string name="check_failed">连接失败：%1$s</string>
+    <string name="checking">检查中…</string>
+
+    <!-- new group -->
+    <string name="new_group_members">成员</string>
+    <string name="new_group_no_contacts">先添加联系人，才能建群。</string>
+    <string name="new_group_invite_hint">被邀请的人接受后才会进群。</string>
+    <string name="new_group_create">创建群聊</string>
+
+    <!-- group info -->
+    <string name="group_info">群信息</string>
+    <string name="group_members">成员</string>
+    <string name="group_actions">操作</string>
+    <string name="group_owner">群主</string>
+    <string name="group_you">你</string>
+    <string name="group_rename">改群名</string>
+    <string name="group_rename_title">修改群名</string>
+    <string name="group_name_label">群名</string>
+    <string name="group_invite">邀请联系人</string>
+    <string name="group_invite_title">邀请联系人</string>
+    <string name="group_invite_empty">没有可邀请的联系人。</string>
+    <string name="group_remove">移除</string>
+    <string name="group_remove_title">移除成员</string>
+    <string name="group_remove_body">%1$s 会离开这个群，之后可以再次邀请。</string>
+    <string name="group_leave">退出群聊</string>
+    <string name="group_owner_cannot_leave">群主不能直接退群，请先转让群主或解散群。</string>
+    <string name="group_leave_title">退出群聊</string>
+    <string name="group_leave_body">退出后这个群会从你的对话列表消失，你也不会再收到它的消息。</string>
+    <string name="group_dissolve">解散群</string>
+    <string name="group_dissolve_title">解散群</string>
+    <string name="group_dissolve_body">所有成员都会失去这个群，且无法恢复。</string>
+    <string name="group_saving">保存中…</string>
+    <string name="group_inviting">邀请中…</string>
+    <string name="group_removing">移除中…</string>
+    <string name="group_leaving">退出中…</string>
+    <string name="group_dissolving">解散中…</string>
+    <string name="group_renamed">群名已更新。</string>
+    <string name="group_invited">已邀请 %1$s。</string>
+    <string name="group_removed">已移除 %1$s。</string>
+
+    <!-- safety -->
+    <string name="block_action">屏蔽</string>
+    <string name="blocked_toast">已屏蔽 %1$s。</string>
+    <string name="report">举报</string>
+    <string name="report_title">举报这个对话</string>
+    <string name="report_body">举报会提交给 Imbo 团队，对方不会收到通知。</string>
+    <string name="report_reason_spam">垃圾信息或诈骗</string>
+    <string name="report_reason_harassment">骚扰辱骂</string>
+    <string name="report_reason_other">其他问题</string>
+    <string name="report_sent">已收到举报，谢谢。</string>
+    <string name="report_block_after">举报并屏蔽</string>
+    <string name="ai_agent">AI 会话</string>
+    <string name="ai_agent_hint">回复由 %1$s 生成，一个运行在你电脑上的 AI 代理。</string>
+    <string name="chat_more">更多</string>
+    <string name="search">搜索</string>
+    <string name="chat_search_placeholder">搜索聊天记录</string>
+    <string name="chat_search_empty">没有匹配</string>
+    <string name="chat_search_empty_body">这里没有包含“%1$s”的消息。</string>
+    <string name="chat_empty_title">还没有消息</string>
+    <string name="chat_empty_body">发出第一条消息，对话就开始了。</string>
+    <string name="chat_empty_group_title">还没有消息</string>
+    <string name="chat_empty_group_body">这个群还没有聊天记录，你的第一条消息会开启它。</string>
+    <string name="delete_contact_title">删除 %1$s？</string>
+    <string name="delete_contact_body">对方会从你的联系人里移除，聊天记录仍保留。</string>
+    <string name="delete_contact_action">删除</string>
+    <string name="rename_session_title">给这个会话改名</string>
+    <string name="transfer_owner">转让群主</string>
+    <string name="transfer_owner_title">把群主转让给 %1$s？</string>
+    <string name="transfer_owner_body">转让后你不再是群主，改群名和解散群只有群主能做。</string>
+    <string name="session_name_label">会话名称</string>
+    <string name="group_transferring">正在转让…</string>
+    <string name="group_transferred">群主已转给 %1$s。</string>
+    <string name="group_transfer_empty">群里没有其他成员可以转让。</string>
+</resources>

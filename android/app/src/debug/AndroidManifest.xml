@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  debug 专用：本地联调要连 http://<局域网IP>:8080，Android 9 以后默认禁止明文 HTTP。
+  只影响 debug 构建，release 仍然只允许 HTTPS。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:usesCleartextTraffic="true"
+        tools:ignore="UnusedAttribute" />
+</manifest>

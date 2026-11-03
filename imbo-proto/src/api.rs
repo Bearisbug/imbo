@@ -721,6 +721,15 @@ pub struct MySessionsResponse {
 
 // ---- health ----
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Which notification channels this server can deliver to. Absent means the
+/// server predates the field, so a client must not assume any channel.
+pub struct PushChannels {
+    pub expo: bool,
+    pub fcm: bool,
+    pub ntfy: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
     pub status: String,
@@ -741,6 +750,9 @@ pub struct Health {
     /// Hours the oldest open report has waited; absent when none is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest_open_report_h: Option<f64>,
+    /// Notification channels currently configured; absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushChannels>,
 }
 
 /// API-074: what the website shows; no account or session details.

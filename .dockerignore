@@ -1,0 +1,12 @@
+# 构建上下文只需要 dist/ 里的预编译二进制；源码、Android 工程、构建产物都不进上下文
+target/
+android/
+deploy/
+imbo/
+imbo-proto/
+imbo-server/
+scripts/
+.github/
+.git/
+*.md
+.env*

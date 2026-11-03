@@ -1,0 +1,20 @@
+Bundled fonts
+=============
+
+app/src/main/res/font/jetbrains_mono_regular.ttf
+app/src/main/res/font/jetbrains_mono_medium.ttf
+app/src/main/res/font/jetbrains_mono_semibold.ttf
+
+JetBrains Mono, Copyright 2020 The JetBrains Mono Project Authors.
+Licensed under the SIL Open Font License, Version 1.1.
+https://github.com/JetBrains/JetBrainsMono/blob/master/OFL.txt
+
+Bundled because the Imbo web app uses JetBrains Mono for all UI text.
+
+Brand assets
+------------
+
+app/src/main/res/drawable/imbo_wordmark.xml
+app/src/main/res/drawable/ic_launcher.xml
+
+Generated from the Imbo wordmark served by app.imbo.dev.
