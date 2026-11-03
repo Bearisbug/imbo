@@ -79,3 +79,10 @@ MIUI 关掉了「USB 安装」，`adb install` 一律 `INSTALL_FAILED_USER_RESTR
 ## dist 与源码一致性
 
 用 aapt2 检查 dist/imbo-release-signed.apk 的资源字符串，确认包含本轮新增的文案：备注（可选）、等待会话领取、对方能看到的会话（%1 / %2）。说明 dist 里的包是当前 main 构建的，不是旧产物。
+
+## 正式包装机冒烟（已完成）
+
+- 卸载 debug 包后安装 \dist/imbo-release-signed.apk\（sha256 426e34…），首次启动完成登录（alice）并授予通知权限
+- 发出的消息 #158 \elease-smoke\ 在服务端可见
+- bob 发的 #159 触发 ntfy 通知，通知栏显示「💬 bob｜release push check」
+- 冷启动深链 \imbo://chat/1\ 直接进入 bob 会话；\imbo://chat/148\ 进入 cross-account 群，消息标签显示 \worker · ec965c\`r
