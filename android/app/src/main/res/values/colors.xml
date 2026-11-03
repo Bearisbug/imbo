@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="imbo_background">#0F0F0E</color>
+    <color name="imbo_on_background">#EDEAE2</color>
+    <color name="imbo_primary">#EDEAE2</color>
+    <color name="imbo_on_primary">#0F0F0E</color>
+    <color name="imbo_secondary_container">#312F2B</color>
+    <color name="imbo_tertiary">#A19D93</color>
+    <color name="imbo_tertiary_container">#080707</color>
+    <color name="imbo_outline">#838077</color>
+    <color name="imbo_outline_variant">#312F2B</color>
+    <color name="imbo_error">#D91E36</color>
+    <color name="imbo_success">#5BCC80</color>
+</resources>
