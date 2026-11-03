@@ -86,6 +86,7 @@
     <string name="message_state_canceled">Canceled</string>
     <string name="session_offline_wakeable">Offline (can wake)</string>
     <string name="share_button">Share</string>
+    <string name="share_title_counts">Sessions they can see (%1$d / %2$d)</string>
     <string name="share_title">Sessions they can see</string>
     <string name="share_all">All sessions</string>
     <string name="share_chosen">Only selected sessions</string>

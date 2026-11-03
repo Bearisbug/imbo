@@ -86,6 +86,7 @@
     <string name="message_state_canceled">已取消</string>
     <string name="session_offline_wakeable">离线（可唤醒）</string>
     <string name="share_button">共享</string>
+    <string name="share_title_counts">对方能看到的会话（%1$d / %2$d）</string>
     <string name="share_title">对方能看到的会话</string>
     <string name="share_all">全部会话</string>
     <string name="share_chosen">仅选中的会话</string>

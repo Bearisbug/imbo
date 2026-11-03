@@ -452,7 +452,11 @@ fun ContactShareDialog(
                 .padding(vertical = 4.dp),
         ) {
             Text(
-                text = stringResource(R.string.share_title),
+                text = stringResource(
+                    R.string.share_title_counts,
+                    if (share.share == "all") share.sessions.size else share.sessions.count { it.selected },
+                    share.sessions.size,
+                ),
                 color = ImboColor.Tertiary,
                 fontFamily = ImboMono,
                 fontSize = 12.sp,

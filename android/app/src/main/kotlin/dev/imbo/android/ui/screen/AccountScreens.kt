@@ -1234,6 +1234,7 @@ fun NewGroupScreen(
     val contactsState by viewModel.contacts.collectAsStateWithLifecycle()
     val selected by viewModel.selected.collectAsStateWithLifecycle()
     val agents by viewModel.agents.collectAsStateWithLifecycle()
+    val duplicatedSessionTitles = agents.groupBy { it.title }.filterValues { it.size > 1 }.keys
     val selectedSessions by viewModel.selectedSessions.collectAsStateWithLifecycle()
     val state by viewModel.state.collectAsStateWithLifecycle()
 
@@ -1343,7 +1344,7 @@ fun NewGroupScreen(
                         Spacer(Modifier.size(12.dp))
                         Column {
                             Text(
-                                text = session.title,
+                                text = if (session.title in duplicatedSessionTitles) "${session.title} · ${session.id.takeLast(6)}" else session.title,
                                 color = if (active) ImboColor.OnBackground else ImboColor.Tertiary,
                                 fontFamily = ImboMono,
                                 fontSize = 14.sp,
