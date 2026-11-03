@@ -1,0 +1,53 @@
+# 自托管 imbo-server + ntfy（Docker）
+#
+# 用法：
+#   cp .env.example .env    # 改 SMTP、ntfy 令牌等
+#   docker compose up -d
+#
+# 两个容器只监听本机回环：公网入口交给 Tailscale（tailscale serve）或你自己的反向代理。
+# 这样不需要在云厂商安全组里开放 8080/8081。
+
+services:
+  imbo:
+    # 用官方镜像，或本机 `docker save` 过去的 imbo-server:ntfy
+    image: ${IMBO_IMAGE:-imbo-server:ntfy}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${IMBO_PORT:-8080}:8080"
+    environment:
+      IMBO_LISTEN: 0.0.0.0:8080
+      # 有公网域名和证书时用这两个；只走 Tailscale 时留空
+      IMBO_DOMAIN: ${IMBO_DOMAIN:-}
+      IMBO_ACME_EMAIL: ${IMBO_ACME_EMAIL:-}
+      # 发验证码的 SMTP；不配就发不出码（本地调试可用 IMBO_MAIL_LOG_ONLY=1）
+      IMBO_SMTP_URL: ${IMBO_SMTP_URL:-}
+      IMBO_MAIL_LOG_ONLY: ${IMBO_MAIL_LOG_ONLY:-0}
+      IMBO_SIGNUP_EMAIL_DOMAINS: ${IMBO_SIGNUP_EMAIL_DOMAINS:-}
+      # 推送：指向下面的 ntfy 容器
+      IMBO_NTFY_URL: http://ntfy:80
+      IMBO_NTFY_TOKEN: ${IMBO_NTFY_TOKEN:-}
+      IMBO_DEV: ${IMBO_DEV:-0}
+      IMBO_REVIEW_EMAIL: ${IMBO_REVIEW_EMAIL:-}
+      IMBO_REVIEW_CODE: ${IMBO_REVIEW_CODE:-}
+    volumes:
+      - imbo-data:/data
+    depends_on:
+      - ntfy
+
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    restart: unless-stopped
+    command: serve
+    ports:
+      - "127.0.0.1:${NTFY_PORT:-8081}:80"
+    volumes:
+      - ntfy-cache:/var/cache/ntfy
+      - ntfy-config:/etc/ntfy
+    # 开了访问控制后把令牌写进 imbo 的 IMBO_NTFY_TOKEN：
+    #   docker exec ntfy ntfy user add --role=admin imbo
+    #   docker exec ntfy ntfy access everyone 'imbo-*' write-only
+
+volumes:
+  imbo-data:
+  ntfy-cache:
+  ntfy-config:
