@@ -62,7 +62,7 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 | 29 | Share selected messages as one image | ✅ | `ShareImage`, system share sheet |
 | 30 | In-chat search, unread divider, jump to latest | ✅ | |
 | 31 | Failed send is retryable | ✅ | tap the bubble |
-| 32 | Same-title sessions distinguishable in a chat | ⚠️ | reply shows the session title only; two `codex` sessions would look alike |
+| 32 | Same-title sessions distinguishable | ✅ | duplicate titles append a uuid tail in the session list ("… · b44119"); chat replies still show the title alone |
 
 ## Notifications
 
@@ -93,8 +93,8 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 
 | Status | Items |
 | --- | --- |
-| ✅ implemented and exercised | 36 |
-| ⚠️ implemented, not verified or partial | 4 |
+| ✅ implemented and exercised | 37 |
+| ⚠️ implemented, not verified or partial | 3 |
 | ❌ missing | 2 (contact note, subscription checkout) |
 | **Total tracked** | **42** |
 
