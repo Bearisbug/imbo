@@ -255,7 +255,7 @@ fun SessionsScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .combinedClickable(
-                                        onClick = {},
+                                        onClick = { onOpenChat(dev.imbo.android.data.remote.Mapper.agentConversationId(session.id)) },
                                         onLongClick = { renameTarget = session },
                                     )
                                     .padding(vertical = 8.dp),

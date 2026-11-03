@@ -95,8 +95,9 @@ object Mapper {
         id = dto.id,
         conversationId = conversationId,
         body = dto.body,
-        senderName = dto.from.name,
-        mine = dto.fromMe || dto.from.accountId == myId,
+        senderName = dto.from.agent?.title ?: dto.from.name,
+        // 自己账号发的、但来自 agent 会话的消息不是「我」说的，标签写会话名
+        mine = dto.fromMe || (dto.from.accountId == myId && dto.from.agent == null),
         createdAt = instantOrZero(dto.createdAt),
         clientId = null,
         delivery = dev.imbo.android.data.Delivery.Sent,
