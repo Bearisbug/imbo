@@ -26,7 +26,7 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 | 8 | Write to a session, it replies | ✅ | `hello-from-phone` → `Hello! Got your message from your phone.` |
 | 9 | Replies are attributed to the session | ✅ | fixed this session (`Sender.agent`) |
 | 10 | Rename a session | ✅ | `PUT /v1/agents/{id}/title` |
-| 11 | Wake a closed session from the phone | ⚠️ | Wake is implemented only for Claude Code (`imbo/src/adapters/claude.rs::wake`), Kimi Code and MiniMax Code; Codex sessions report `wakeable=false` by design. Claude Code is installed and connected here, but it stops at its login screen and this machine has no Anthropic credentials, so the wake itself is unverified |
+| 11 | Wake a closed session from the phone | ⚠️ | Server-side wake exists and the client shows `可唤醒`, but only the Claude Code, Kimi Code, MiniMax Code and ZCode adapters can reopen a session (`claude.rs::wake`, `kimi.rs`, `mcode.rs`, `zcode.rs`). **Codex and DeepSeek Harness do not implement it**, so with our toolset `wakeable` is always false and the flow is unreachable — upstream limitation, not a client gap |
 | 12 | Delivery state for my own session's messages | ✅ | `MessageView.state` now renders as 「等待会话领取」/「已取消」; server returned `state=delivered` for message #148 |
 | 13 | Session visibility follows sharing | ✅ | the share dialog shows 「对方能看到的会话（1 / 2）」 and lets the policy be changed |
 
