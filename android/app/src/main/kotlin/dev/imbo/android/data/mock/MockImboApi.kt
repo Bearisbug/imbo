@@ -488,7 +488,7 @@ class MockImboApi(
         changeFlow.emit(ChangeArea.Conversations)
     }
 
-    override suspend fun createGroup(name: String, memberIds: List<String>): Conversation = gate {
+    override suspend fun createGroup(name: String, memberIds: List<String>, sessions: List<String>): Conversation = gate {
         val groupId = "grp-${System.nanoTime()}"
         val members = mutableListOf(Contact(me.id, me.name))
         memberIds.forEach { id ->

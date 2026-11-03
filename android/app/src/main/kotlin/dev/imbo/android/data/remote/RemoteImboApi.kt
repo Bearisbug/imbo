@@ -397,8 +397,8 @@ class RemoteImboApi @Inject constructor(
 
     // ------------------------------------------------------------ groups
 
-    override suspend fun createGroup(name: String, memberIds: List<String>): Conversation {
-        val payload = json.encodeToString(CreateGroupBodyDto.serializer(), CreateGroupBodyDto(name))
+    override suspend fun createGroup(name: String, memberIds: List<String>, sessions: List<String>): Conversation {
+        val payload = json.encodeToString(CreateGroupBodyDto.serializer(), CreateGroupBodyDto(name, sessions.ifEmpty { null }))
         val res = http.post("/v1/groups", payload, GroupResponseDto.serializer())
         // 服务端的建群接口只收群名，成员要逐个邀请
         memberIds.mapNotNull { it.toIntOrNull() }.forEach { accountId ->

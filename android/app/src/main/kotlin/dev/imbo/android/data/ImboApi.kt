@@ -100,7 +100,7 @@ interface ImboApi {
     /** PUT /v1/agents/{id}/title：给自己的一台会话改名。 */
     suspend fun renameAgent(agentId: String, title: String)
 
-    suspend fun createGroup(name: String, memberIds: List<String>): Conversation
+    suspend fun createGroup(name: String, memberIds: List<String>, sessions: List<String> = emptyList()): Conversation
 
     /** PUT /v1/groups/{id}/owner：群主把群交给另一位成员。 */
     suspend fun transferGroupOwner(groupId: String, accountId: String)
