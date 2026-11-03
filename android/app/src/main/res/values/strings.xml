@@ -82,6 +82,11 @@
     <string name="edit">Edit</string>
     <string name="change">Change</string>
     <string name="account_id">Account ID</string>
+    <string name="share_button">Share</string>
+    <string name="share_title">Sessions they can see</string>
+    <string name="share_all">All sessions</string>
+    <string name="share_chosen">Only selected sessions</string>
+    <string name="share_none">Nothing</string>
     <string name="account_id_hint">People add you as a contact with this ID.</string>
     <string name="free_trial_days">Free trial, %1$d days left</string>
     <string name="subscribe_hint">Subscribe now and the first charge comes in 30 days.</string>

@@ -434,3 +434,41 @@ fun ForwardDialog(
         }
     }
 }
+/** 联系人会话共享：全部 / 仅选中 / 不共享；选「仅选中」时列出我的会话。 */
+@Composable
+fun ContactShareDialog(
+    share: dev.imbo.android.data.ContactShare,
+    onMode: (String) -> Unit,
+    onToggleSession: (String, Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val chosen = share.share == "chosen"
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(ImboColor.SecondaryContainer)
+                .padding(vertical = 4.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.share_title),
+                color = ImboColor.Tertiary,
+                fontFamily = ImboMono,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+            Hairline(vertical = false)
+            listOf("all" to R.string.share_all, "chosen" to R.string.share_chosen, "none" to R.string.share_none)
+                .forEach { (mode, label) ->
+                    ActionRow(
+                        text = stringResource(label),
+                        color = if (share.share == mode) ImboColor.OnBackground else ImboColor.Tertiary,
+                        onClick = { onMode(mode) },
+                    )
+                }
+            Hairline(vertical = false)
+            ActionRow(stringResource(R.string.cancel), ImboColor.Tertiary, onDismiss)
+        }
+    }
+}

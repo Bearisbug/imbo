@@ -360,6 +360,21 @@ class ContactsViewModel @Inject constructor(private val api: ImboApi) : ViewMode
         }
     }
 
+    /** 当前打开共享设置的联系人的会话可见范围。 */
+    private val _share = MutableStateFlow<dev.imbo.android.data.ContactShare?>(null)
+    val share: StateFlow<dev.imbo.android.data.ContactShare?> = _share.asStateFlow()
+
+    fun loadShare(id: String) {
+        viewModelScope.launch {
+            _share.value = runCatching { api.contactShare(id) }.getOrNull()
+        }
+    }
+
+    fun setShare(id: String, mode: String, sessions: List<String> = emptyList()) {
+        viewModelScope.launch {
+            _share.value = runCatching { api.setContactShare(id, mode, sessions = sessions) }.getOrNull()
+        }
+    }
     /** 解除联系人关系，历史消息仍在（服务端只删 contacts 行）。 */
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
@@ -413,6 +428,9 @@ fun ContactsScreen(
     val contacts = (contactsState as? UiState.Content)?.data.orEmpty()
     // 长按联系人弹出解除确认；联系人关系删掉后历史消息仍在
     var removeTarget by remember { mutableStateOf<dev.imbo.android.data.Contact?>(null) }
+    // 会话共享：点「共享」打开该联系人的可见范围
+    var shareTarget by remember { mutableStateOf<dev.imbo.android.data.Contact?>(null) }
+    val shareState by viewModel.share.collectAsStateWithLifecycle()
     // 点还没聊过的联系人时用的提示（ViewModel 里拿不到 stringResource）
     viewModel.noChatYet = stringResource(R.string.contact_no_chat_yet)
 
@@ -496,6 +514,20 @@ fun ContactsScreen(
         }
     }
 
+    shareTarget?.let { target ->
+        shareState?.let { share ->
+            dev.imbo.android.ui.components.ContactShareDialog(
+                share = share,
+                onMode = { mode -> viewModel.setShare(target.id, mode) },
+                onToggleSession = { sessionId, on ->
+                    val current = share.sessions.map { it.id }
+                    val next = if (on) current + sessionId else current - sessionId
+                    viewModel.setShare(target.id, "chosen", next)
+                },
+                onDismiss = { shareTarget = null },
+            )
+        }
+    }
     removeTarget?.let { target ->
         dev.imbo.android.ui.components.ImboDialog(
             title = stringResource(R.string.delete_contact_title, target.name),

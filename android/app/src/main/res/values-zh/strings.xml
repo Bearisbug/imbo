@@ -82,6 +82,11 @@
     <string name="edit">修改</string>
     <string name="change">更换</string>
     <string name="account_id">账号 ID</string>
+    <string name="share_button">共享</string>
+    <string name="share_title">对方能看到的会话</string>
+    <string name="share_all">全部会话</string>
+    <string name="share_chosen">仅选中的会话</string>
+    <string name="share_none">不共享</string>
     <string name="account_id_hint">别人用这个 ID 加你为联系人。</string>
     <string name="free_trial_days">免费试用，还剩 %1$d 天</string>
     <string name="subscribe_hint">现在订阅，首期费用 30 天后才扣。</string>
