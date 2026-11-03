@@ -1,3 +1,24 @@
+# Imbo for Android
+
+Native Android client (Kotlin, Jetpack Compose, minSdk 26) for the Imbo App API.
+Build it against any self-hosted server; the server address and the ntfy URL are
+runtime settings, not constants:
+
+```sh
+cd android
+./gradlew :app:assembleDebug -Pimbo.useMock=false -Pimbo.baseUrl=https://imbo.example.com
+./gradlew :app:assembleRelease -Pimbo.baseUrl=https://imbo.example.com -Pimbo.ntfyUrl=https://ntfy.example.com
+```
+
+`-Pimbo.baseUrl` and `-Pimbo.ntfyUrl` are optional. Without them the app opens
+with "server not configured" and asks for the address on the login screen; the
+ntfy URL can be changed later on the account page. Notifications come from a
+self-hosted ntfy instance (see [`deploy/docker`](../deploy/docker)), not FCM.
+
+The rest of this file is the detailed (Chinese) guide: build flags, features,
+tests, verification records and known gaps.
+
+---
 # Imbo 安卓端（Kotlin + Compose）
 
 14 个页面全部可用，交互接通，mock 与真实服务端共用同一套契约，103 个单元测试覆盖数据通道与状态机。

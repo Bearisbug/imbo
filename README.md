@@ -168,6 +168,26 @@ speaks English and Chinese.
 </p>
 <br clear="left">
 
+## Android app
+
+`android/` is a native Android client (Kotlin, Jetpack Compose, minSdk 26).
+It talks to the same App API as the iPhone app and the web app, and gets its
+notifications from a self-hosted [ntfy](https://ntfy.sh) instance instead of
+FCM, so it works on networks where Google's push service is unreachable.
+
+The build carries no server address by default: pass `-Pimbo.baseUrl` (and
+optionally `-Pimbo.ntfyUrl`) when building, or leave them empty and set the
+server on the login screen — the same APK can point at any deployment.
+
+```sh
+cd android
+./gradlew :app:assembleDebug -Pimbo.useMock=false -Pimbo.baseUrl=https://imbo.example.com
+./scripts/release.ps1 -BaseUrl https://imbo.example.com -NtfyUrl https://ntfy.example.com
+```
+
+See [`android/README.md`](android/README.md) for the build flags, the ntfy
+setup, the test suite and the verification checklist, and
+[`deploy/docker`](deploy/docker) for a one-command server + ntfy stack.
 ## Pricing
 
 The central server at imbo.dev is free for 30 days, then $2 a month or $20 a
@@ -187,6 +207,8 @@ run in a terminal end with a one-line hint. Versions before 0.2.11 don't have
 ## Self-hosting
 
 `imbo-server` is one binary. Without `DATABASE_URL` it runs a bundled
+
+deploy/docker/setup.sh starts the server together with an ntfy instance for Android push (see [deploy/docker/README.md](deploy/docker/README.md)).
 PostgreSQL in its data directory.
 
 ```sh
