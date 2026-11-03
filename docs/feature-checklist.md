@@ -45,7 +45,7 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 | --- | --- | --- | --- |
 | 18 | Create a group, pick which of my sessions receive it | ✅ | new-group screen lists my sessions and sends the checked ids; `picker-test` came back with `sessions=d2012d` |
 | 19 | Invite contacts only | ✅ | server rejects non-contacts; the error is surfaced |
-| 20 | Invitee joins the group | ✅ | alice invited bob (`kind=group` request #4); `POST /v1/requests/4/accept` as bob; his group list then shows `invite-test` with members alice,bob |
+| 20 | Invitee joins the group | ✅ | on the phone as bob: 「邀请你加入「invite-ui-test」」 → 接受; server members alice,bob; alice's message then appeared in bob's chat |
 | 21 | A group message reaches every selected session of every member | ✅ | two Codex sessions in group 4229147: send returned `"recipients":2`; both TUIs showed message #144 |
 | 22 | Replies reach every session in the group | ✅ | session `1a3cb5` posted #147 (`Sender.agent = Acknowledge phone hello`); the other session saw it |
 | 23 | Rename, remove member, transfer owner, dissolve, leave | ✅ | |
