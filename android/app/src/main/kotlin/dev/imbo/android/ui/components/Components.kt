@@ -899,11 +899,11 @@ fun UnreadDivider() {
 }
 
 /** 同一标题出现多次时，给会话发送者补上短 id，否则两个同名会话在群里分不清。 */
+/** 同一标题出现多次时补短 id；会话发言总是带上工具名，方便分清 codex / dsh。 */
 fun senderLabel(message: Message, duplicatedSenders: Set<String>): String {
     val short = message.senderAgentShort
-    return if (short != null && message.senderName in duplicatedSenders) {
-        message.senderName + " · " + short
-    } else {
-        message.senderName
-    }
+    if (short == null) return message.senderName
+    val tool = message.senderAgentTool?.takeIf { it.isNotBlank() }
+    val base = if (tool != null) message.senderName + " · " + tool else message.senderName
+    return if (message.senderName in duplicatedSenders) base + " · " + short else base
 }

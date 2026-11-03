@@ -87,6 +87,8 @@ data class Message(
     val attachments: List<Attachment> = emptyList(),
     /** 消息从哪来：app / web / terminal / agent（服务端 MessageView 的 via）。 */
     val via: String? = null,
+    /** 会话用的工具（codex / dsh / …），聊天里标出发言的是哪种 agent。 */
+    val senderAgentTool: String? = null,
     /** 会话的短 id；同名会话在聊天里靠它区分。 */
     val senderAgentShort: String? = null,
     /** 服务端投递状态：pending / pushed / delivered / canceled。 */
