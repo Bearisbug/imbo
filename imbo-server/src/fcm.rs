@@ -78,7 +78,13 @@ impl Sender {
                     "notification": { "channel_id": "imbo", "sound": "default" },
                 },
             }});
-            match http.post(&url).bearer_auth(&access).json(&body).send().await {
+            match http
+                .post(&url)
+                .bearer_auth(&access)
+                .json(&body)
+                .send()
+                .await
+            {
                 Ok(res) if res.status().is_success() => sent += 1,
                 Ok(res) if res.status() == reqwest::StatusCode::NOT_FOUND => {
                     // UNREGISTERED：App 被卸载或令牌轮换，服务端把它清掉
@@ -199,7 +205,6 @@ fn collapse_key(data: &Value) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,7 +229,10 @@ mod tests {
 
     #[test]
     fn notifications_for_one_conversation_share_a_collapse_key() {
-        assert_eq!(collapse_key(&json!({ "conversation_id": 42 })), "conversation-42");
+        assert_eq!(
+            collapse_key(&json!({ "conversation_id": 42 })),
+            "conversation-42"
+        );
         assert_eq!(collapse_key(&json!({})), "imbo");
     }
 }

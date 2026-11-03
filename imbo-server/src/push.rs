@@ -194,9 +194,7 @@ async fn send(
         .partition(|(_, t)| t.starts_with("ExponentPushToken["));
 
     // ntfy 令牌形如 `ntfy:<话题>`，走自建实例的 HTTP 发布接口。
-    let (ntfy, fcm): (Vec<_>, Vec<_>) = rest
-        .into_iter()
-        .partition(|(_, t)| t.starts_with("ntfy:"));
+    let (ntfy, fcm): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(_, t)| t.starts_with("ntfy:"));
     if !ntfy.is_empty() {
         send_ntfy(st, message, account, &ntfy, n).await?;
     }
@@ -324,8 +322,6 @@ async fn send_expo(
     );
     Ok(())
 }
-
-
 
 /// Tokens Expo answered `DeviceNotRegistered` for; tickets come back in
 /// the order the messages were sent.

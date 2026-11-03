@@ -434,8 +434,9 @@ fn fcm_from_env() -> anyhow::Result<Option<Fcm>> {
             names.join(", ")
         );
     }
-    let key = pem_der(vals[2].as_deref().unwrap_or_default())
-        .context("IMBO_FCM_PRIVATE_KEY is not a service-account key (the JSON's private_key PEM)")?;
+    let key = pem_der(vals[2].as_deref().unwrap_or_default()).context(
+        "IMBO_FCM_PRIVATE_KEY is not a service-account key (the JSON's private_key PEM)",
+    )?;
     Ok(Some(Fcm {
         project_id: vals[0].clone().unwrap_or_default(),
         client_email: vals[1].clone().unwrap_or_default(),

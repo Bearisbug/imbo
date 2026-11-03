@@ -78,13 +78,13 @@ pub async fn health(State(st): State<St>) -> ApiResult<Json<Health>> {
         disk_free_pct: disk_free_pct(&st.cfg.data_dir),
         ack_p95_ms: p95.map(|v| v.round()),
         oldest_open_report_h,
-            // 部署自检看这个：ntfy 没配时手机收不到推送，可服务端其它指标都「正常」
+        // 部署自检看这个：ntfy 没配时手机收不到推送，可服务端其它指标都「正常」
         push: Some(PushChannels {
             expo: true,
             fcm: st.fcm.is_some(),
             ntfy: st.cfg.ntfy.is_some(),
         }),
-}))
+    }))
 }
 
 /// How long one count of API-074 is served.

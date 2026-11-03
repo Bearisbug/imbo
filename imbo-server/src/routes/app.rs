@@ -28,14 +28,14 @@ fn valid_push_token(token: &str) -> bool {
     if token.starts_with("ExponentPushToken[") {
         return token.ends_with(']');
     }
-        // ntfy 话题：只允许 1..=64 个 [A-Za-z0-9_-]，不把任意 URL 片段写进令牌。
+    // ntfy 话题：只允许 1..=64 个 [A-Za-z0-9_-]，不把任意 URL 片段写进令牌。
     if let Some(topic) = token.strip_prefix("ntfy:") {
         return !topic.is_empty()
             && topic.len() <= 64
             && topic
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    }// FCM tokens are opaque: `[A-Za-z0-9_-]` plus `:` for the topics form.
+    } // FCM tokens are opaque: `[A-Za-z0-9_-]` plus `:` for the topics form.
     token
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.')
