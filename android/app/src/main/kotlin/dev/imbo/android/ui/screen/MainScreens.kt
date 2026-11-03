@@ -3,6 +3,7 @@ package dev.imbo.android.ui.screen
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -364,17 +365,35 @@ class ContactsViewModel @Inject constructor(private val api: ImboApi) : ViewMode
     private val _share = MutableStateFlow<dev.imbo.android.data.ContactShare?>(null)
     val share: StateFlow<dev.imbo.android.data.ContactShare?> = _share.asStateFlow()
 
+    /** 拉共享策略 + 我的全部会话，合并成「候选 + 是否选中」，对话框才能多选。 */
     fun loadShare(id: String) {
         viewModelScope.launch {
-            _share.value = runCatching { api.contactShare(id) }.getOrNull()
+            val share = runCatching { api.contactShare(id) }.getOrNull() ?: return@launch
+            val agents = runCatching { api.agents() }.getOrDefault(emptyList())
+            val chosen = share.sessions.map { it.id }.toSet()
+            _share.value = share.copy(
+                sessions = agents.map { a ->
+                    dev.imbo.android.data.SharedSession(
+                        id = a.id,
+                        shortId = a.id.take(6),
+                        title = a.title,
+                        tool = a.tool,
+                        deviceId = a.deviceName,
+                        online = a.online,
+                        selected = a.id in chosen,
+                    )
+                },
+            )
         }
     }
 
     fun setShare(id: String, mode: String, sessions: List<String> = emptyList()) {
         viewModelScope.launch {
-            _share.value = runCatching { api.setContactShare(id, mode, sessions = sessions) }.getOrNull()
+            runCatching { api.setContactShare(id, mode, sessions = sessions) }
+            loadShare(id)
         }
     }
+
     /** 解除联系人关系，历史消息仍在（服务端只删 contacts 行）。 */
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
@@ -506,6 +525,16 @@ fun ContactsScreen(
                                         Text(it, color = ImboColor.Tertiary, fontFamily = ImboMono, fontSize = 12.sp)
                                     }
                                 }
+                                Text(
+                                    text = stringResource(R.string.share_button),
+                                    color = ImboColor.Tertiary,
+                                    fontFamily = ImboMono,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.clickable {
+                                        shareTarget = contact
+                                        viewModel.loadShare(contact.id)
+                                    },
+                                )
                             }
                         }
                     }
@@ -518,9 +547,11 @@ fun ContactsScreen(
         shareState?.let { share ->
             dev.imbo.android.ui.components.ContactShareDialog(
                 share = share,
-                onMode = { mode -> viewModel.setShare(target.id, mode) },
+                onMode = { mode ->
+                    viewModel.setShare(target.id, mode, share.sessions.filter { it.selected }.map { it.id })
+                },
                 onToggleSession = { sessionId, on ->
-                    val current = share.sessions.map { it.id }
+                    val current = share.sessions.filter { it.selected }.map { it.id }
                     val next = if (on) current + sessionId else current - sessionId
                     viewModel.setShare(target.id, "chosen", next)
                 },

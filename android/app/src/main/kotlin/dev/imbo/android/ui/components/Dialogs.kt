@@ -467,6 +467,15 @@ fun ContactShareDialog(
                         onClick = { onMode(mode) },
                     )
                 }
+            if (chosen) {
+                share.sessions.forEach { session ->
+                    ActionRow(
+                        text = (if (session.selected) "✓ " else "　") + session.title,
+                        color = if (session.selected) ImboColor.OnBackground else ImboColor.Tertiary,
+                        onClick = { onToggleSession(session.id, !session.selected) },
+                    )
+                }
+            }
             Hairline(vertical = false)
             ActionRow(stringResource(R.string.cancel), ImboColor.Tertiary, onDismiss)
         }

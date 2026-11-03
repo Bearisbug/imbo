@@ -194,4 +194,6 @@ data class SharedSession(
     val tool: String,
     val deviceId: String? = null,
     val online: Boolean = false,
+    /** chosen 模式下这个会话是否被勾中；由客户端合并候选列表时填。 */
+    val selected: Boolean = false,
 )
