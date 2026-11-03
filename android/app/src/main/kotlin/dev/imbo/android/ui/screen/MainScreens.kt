@@ -168,6 +168,7 @@ fun ChatsScreen(
                             c.lastMessage?.preview?.contains(query, ignoreCase = true) == true
                     }
                 }
+                // 同名会话（同一工具多开）光看标题分不清，补一个 id 前缀
                 if (s.data.isEmpty()) {
                     EmptyState(stringResource(R.string.empty_chats_title), stringResource(R.string.empty_chats_body))
                 } else if (visible.isEmpty()) {
@@ -247,6 +248,7 @@ fun SessionsScreen(
             is UiState.Loading -> LoadingBlock()
             is UiState.Error -> ErrorBlock(s.message) { viewModel.refresh() }
             is UiState.Content -> {
+                // 同名会话（同一工具多开）光看标题分不清，补一个 id 前缀
                 if (s.data.isEmpty()) {
                     EmptyState(stringResource(R.string.empty_sessions_title), stringResource(R.string.empty_sessions_body))
                 } else {
@@ -266,7 +268,7 @@ fun SessionsScreen(
                                 Spacer(Modifier.height(0.dp))
                                 Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
                                     Text(
-                                        text = session.title,
+                                        text = if (s.data.count { it.title == session.title } > 1) "${session.title} · ${session.id.takeLast(6)}" else session.title,
                                         color = ImboColor.OnBackground,
                                         fontFamily = ImboMono,
                                         fontSize = 14.sp,
@@ -501,7 +503,7 @@ fun ContactsScreen(
                             }
                         }
                     }
-                    if (s.data.isEmpty()) {
+                if (s.data.isEmpty()) {
                         item(key = "empty") {
                             EmptyState(stringResource(R.string.empty_chats_title), stringResource(R.string.empty_chats_body))
                         }
