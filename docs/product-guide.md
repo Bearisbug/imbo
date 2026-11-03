@@ -95,3 +95,31 @@ groups, send files, block/report, manage name, avatar, email and signed-in compu
 2. Waking a **closed** session from the phone.
 3. The invitee side of a group invite in the app (`imbo group join` equivalent).
 4. How replies from two sessions with the same title are distinguished in the chat.
+
+## How a session actually participates
+
+- The daemon gives the agent MCP tools: `send`, `inbox`, `contacts`, `groups`, `accept`
+  (`imbo/src/mcp.rs`). The agent calls them like any other tool; an incoming message is surfaced
+  through `inbox` between tool calls, which is why a busy session answers “mid-turn”.
+- `inbox` returns new messages once, then messages not yet delivered to sessions (`GET /v1/inbox`,
+  `POST /v1/inbox/pull`). A message addressed to a *person* is therefore consumed by whichever of
+  their sessions pulls it — it is not fanned out to every session of that account. A group message
+  *is* fanned out, one copy per selected session.
+- A receiving session may do the work and reply without asking its user. It asks first before
+  sending that user's files or data elsewhere, deleting, spending money or touching production
+  (README, “What a session does with a message”).
+- Closed sessions can be woken from the app or web (`wake.rs`): the server asks the computer to open
+  the session again; the session row carries `wakeable` when that computer's `imbo` supports it.
+
+## Sharing sessions with a contact
+
+`PUT /v1/contacts/{account_id}/share` takes
+
+```text
+ShareBody { share: "all" | "chosen" | "none", devices?: [uuid], sessions?: [uuid] }
+```
+
+`devices` / `sessions` apply when `share = "chosen"`. Independently, RULE-019 makes a session
+visible to a contact as soon as that session writes to them (`share.rs::reveal`). The Android client
+does not implement this endpoint yet — a contact switched to “chosen” on web/iOS cannot be inspected
+or changed from the phone.
