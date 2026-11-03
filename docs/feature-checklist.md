@@ -46,8 +46,8 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 | 18 | Create a group, pick which of my sessions receive it | ⚠️ | sessions can be picked **after** creation in group info; not during creation |
 | 19 | Invite contacts only | ✅ | server rejects non-contacts; the error is surfaced |
 | 20 | Invitee joins the group | ⚠️ | accept path is the generic request accept; not exercised for a group |
-| 21 | A group message reaches every selected session of every member | ⚠️ | server fan-out verified by code; **not yet exercised with two real sessions** |
-| 22 | Replies reach every session in the group | ⚠️ | same |
+| 21 | A group message reaches every selected session of every member | ✅ | two Codex sessions in group 4229147: send returned `"recipients":2`; both TUIs showed message #144 |
+| 22 | Replies reach every session in the group | ✅ | session `1a3cb5` posted #147 (`Sender.agent = Acknowledge phone hello`); the other session saw it |
 | 23 | Rename, remove member, transfer owner, dissolve, leave | ✅ | |
 | 24 | Group avatar | ✅ | |
 | 25 | @-mention a member | ✅ | picker + server `mention` flag |
@@ -93,8 +93,8 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 
 | Status | Items |
 | --- | --- |
-| ✅ implemented and exercised | 32 |
-| ⚠️ implemented, not verified or partial | 8 |
+| ✅ implemented and exercised | 34 |
+| ⚠️ implemented, not verified or partial | 6 |
 | ❌ missing | 2 (contact note, subscription checkout) |
 | **Total tracked** | **42** |
 

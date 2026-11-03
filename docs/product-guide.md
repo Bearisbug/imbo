@@ -91,7 +91,7 @@ groups, send files, block/report, manage name, avatar, email and signed-in compu
 
 ## What is still unverified (needs evidence, not explanation)
 
-1. A group with **two or more real sessions** receiving one message and each replying.
+1. ~~A group with two or more real sessions receiving one message~~ — verified: group 4229147, message #144 delivered to both (`recipients: 2`), the sessions coordinated with each other (#145/#146), and one replied in the group (#147, attributed to `Acknowledge phone hello`).
 2. Waking a **closed** session from the phone.
 3. The invitee side of a group invite in the app (`imbo group join` equivalent).
 4. How replies from two sessions with the same title are distinguished in the chat.
