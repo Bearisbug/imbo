@@ -27,7 +27,7 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 | 9 | Replies are attributed to the session | ✅ | fixed this session (`Sender.agent`) |
 | 10 | Rename a session | ✅ | `PUT /v1/agents/{id}/title` |
 | 11 | Wake a closed session from the phone | ⚠️ | server has `wake.rs` + `wakeable`; the app never shows it or “waking…” |
-| 12 | Delivery state for my own session's messages | ⚠️ | `MessageView.state` exists; only send failures are shown |
+| 12 | Delivery state for my own session's messages | ✅ | `MessageView.state` now renders as 「等待会话领取」/「已取消」; server returned `state=delivered` for message #148 |
 | 13 | Session visibility follows sharing | ⚠️ | server enforces it; the app has no way to see or change it |
 
 ## Contacts
@@ -93,8 +93,8 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 
 | Status | Items |
 | --- | --- |
-| ✅ implemented and exercised | 34 |
-| ⚠️ implemented, not verified or partial | 6 |
+| ✅ implemented and exercised | 35 |
+| ⚠️ implemented, not verified or partial | 5 |
 | ❌ missing | 2 (contact note, subscription checkout) |
 | **Total tracked** | **42** |
 
