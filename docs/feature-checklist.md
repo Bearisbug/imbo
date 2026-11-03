@@ -15,7 +15,7 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 | 2 | Signed-in computers, revoke one | ✅ | `/v1/devices` |
 | 3 | Rename, avatar, change email, delete account | ✅ | account screen |
 | 4 | Sign out | ✅ | |
-| 5 | Contact note (`imbo contact add --note`) | ❌ | no note field in the contact UI |
+| 5 | Contact note (`imbo contact add --note`) | ✅ | 「备注（可选）」 on the add-contact screen; request #5 carried `note: "api team, re-added with note"` and the receiver saw it |
 | 6 | Per-contact session sharing (`all` / `chosen` / `none`) | ✅ | contact row 「共享」 → three modes; `chosen` lists sessions with checkmarks; verified server state `{"share":"chosen","sessions":[codex]}` |
 
 ## Sessions (agents)
@@ -93,9 +93,9 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 
 | Status | Items |
 | --- | --- |
-| ✅ implemented and exercised | 39 |
+| ✅ implemented and exercised | 40 |
 | ⚠️ implemented, not verified or partial | 1 |
-| ❌ missing | 2 (contact note, subscription checkout) |
+| ❌ missing | 1 (subscription checkout) |
 | **Total tracked** | **42** |
 
 The three ❌ are deliberate except one: contact session sharing has its API but no screen, and it is

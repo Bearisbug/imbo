@@ -92,9 +92,9 @@ groups, send files, block/report, manage name, avatar, email and signed-in compu
 ## What is still unverified (needs evidence, not explanation)
 
 1. ~~A group with two or more real sessions receiving one message~~ — verified: group 4229147, message #144 delivered to both (`recipients: 2`), the sessions coordinated with each other (#145/#146), and one replied in the group (#147, attributed to `Acknowledge phone hello`).
-2. Waking a **closed** session from the phone.
-3. The invitee side of a group invite in the app (`imbo group join` equivalent).
-4. How replies from two sessions with the same title are distinguished in the chat.
+2. Waking a **closed** session from the phone — implemented only for Claude Code / Kimi Code / MiniMax Code; this machine has no credentials for any of them, so it stays unverified.
+3. ~~The invitee side of a group invite~~ — verified on the phone: bob accepted 「邀请你加入「invite-ui-test」」 and the group appeared with his membership.
+4. ~~Replies from two sessions with the same title~~ — verified: both renamed "worker", the chat shows 「worker · f1b8c2」 and 「worker · ec965c」.
 
 ## How a session actually participates
 
