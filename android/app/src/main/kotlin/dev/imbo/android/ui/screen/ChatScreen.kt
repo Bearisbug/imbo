@@ -161,11 +161,8 @@ class ChatViewModel @Inject constructor(
                 }.getOrNull() ?: conversation?.pending ?: 0
                 _unreadAtOpen.value = pendingNow
             }
-            // agent 会话按会话 id 标已读；单聊和群等消息加载完再标（服务端要 up_to）
+            // agent 会话的回复同样要标已读，服务端要求带 up_to
             val agentId = conversation?.agentId
-            if (agentId != null) {
-                runCatching { api.markRead(agentId) }
-            }
             // 群聊才需要成员列表（@ 提及）；拿不到就留空，输入 @ 时只是没有候选
             if (conversation?.isGroup == true) {
                 val groupId = conversation.group?.id
@@ -176,11 +173,13 @@ class ChatViewModel @Inject constructor(
             refresh()
             // 消息到手后按「最后一条」标已读：服务端要求 up_to，不带的话一直是未读。
             // 这里直接取一页，别依赖 refresh()——它是异步的，读 _state 时可能还是空的
-            if (id > 0) {
-                val newest = runCatching { api.messages(id, limit = PAGE_SIZE).messages.lastOrNull()?.id }
-                    .getOrNull()
-                if (newest != null && newest > 0) {
+            val newest = runCatching { api.messages(id, limit = PAGE_SIZE).messages.lastOrNull()?.id }
+                .getOrNull()
+            if (newest != null && newest > 0) {
+                if (id > 0) {
                     runCatching { api.markConversationRead(id, newest) }
+                } else if (agentId != null) {
+                    runCatching { api.markRead(agentId, newest) }
                 }
             }
         }

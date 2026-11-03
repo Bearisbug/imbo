@@ -61,7 +61,7 @@ android {
 
     buildTypes {
         debug {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
         }
         release {
             // 发布包开混淆与资源压缩；keep 规则见 proguard-rules.pro

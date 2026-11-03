@@ -325,8 +325,10 @@ class RemoteImboApi @Inject constructor(
         )
     }
 
-    override suspend fun markRead(agentId: String) {
-        http.postUnit("/v1/agents/$agentId/read")
+    /** 服务端要求 up_to；不带会 400，未读就永远清不掉。 */
+    override suspend fun markRead(agentId: String, upTo: Long) {
+        val payload = json.encodeToString(ReadBodyDto.serializer(), ReadBodyDto(upTo))
+        http.postUnit("/v1/agents/$agentId/read", payload)
     }
 
     /** 服务端要求带上读到哪一条：`up_to` 是消息 id，缺了会 400。 */

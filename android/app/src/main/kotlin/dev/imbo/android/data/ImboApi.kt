@@ -83,7 +83,7 @@ interface ImboApi {
     /** POST /v1/conversations/{id}/read：打开单聊或群聊时把未读清零。 */
     suspend fun markConversationRead(conversationId: Long, upTo: Long)
 
-    suspend fun markRead(agentId: String)
+    suspend fun markRead(agentId: String, upTo: Long)
     suspend fun agents(): List<AgentSession>
     suspend fun contacts(): List<Contact>
     suspend fun requests(): List<ContactRequest>

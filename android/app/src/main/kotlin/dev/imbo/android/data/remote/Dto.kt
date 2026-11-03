@@ -361,3 +361,6 @@ data class ShareResponseDto(
     val devices: List<ShareDeviceDto> = emptyList(),
     val sessions: List<ShareSessionDto> = emptyList(),
 )
+
+@Serializable
+data class ReadBodyDto(@SerialName("up_to") val upTo: Long)

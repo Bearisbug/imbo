@@ -76,6 +76,10 @@ class ChatsViewModel @Inject constructor(
     private val _state = MutableStateFlow<UiState<List<Conversation>>>(UiState.Loading)
     val state: StateFlow<UiState<List<Conversation>>> = _state.asStateFlow()
 
+    /** 会话（agent）里还有多少条没被领取；对话页的「会话」tab 也要显示。 */
+    private val _sessionsPending = MutableStateFlow(0)
+    val sessionsPending: StateFlow<Int> = _sessionsPending.asStateFlow()
+
     init {
         refresh()
         viewModelScope.launch { api.changes.collect { refresh() } }
@@ -83,8 +87,10 @@ class ChatsViewModel @Inject constructor(
         viewModelScope.launch { push.register() }
     }
 
+
     fun refresh() {
         viewModelScope.launch {
+            _sessionsPending.value = runCatching { api.agents().sumOf { it.pending } }.getOrDefault(0)
             _state.value = try {
                 UiState.Content(api.conversations())
             } catch (e: Exception) {
@@ -104,6 +110,7 @@ fun ChatsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val conversations = (state as? UiState.Content)?.data.orEmpty()
+    val sessionsPending by viewModel.sessionsPending.collectAsStateWithLifecycle()
 
     // 会话列表的本地搜索：标题 + 最后一条消息预览
     var searching by remember { mutableStateOf(false) }
@@ -126,7 +133,7 @@ fun ChatsScreen(
         ImboTabs(
             active = "chats",
             chatsUnread = conversations.sumOf { it.pending },
-            sessionsUnread = 0,
+            sessionsUnread = sessionsPending,
             onSelect = { if (it != "chats") onTab(it) },
         )
         Row(
@@ -190,13 +197,19 @@ class SessionsViewModel @Inject constructor(private val api: ImboApi) : ViewMode
     private val _state = MutableStateFlow<UiState<List<AgentSession>>>(UiState.Loading)
     val state: StateFlow<UiState<List<AgentSession>>> = _state.asStateFlow()
 
+    private val _chatsPending = MutableStateFlow(0)
+    val chatsPending: StateFlow<Int> = _chatsPending.asStateFlow()
     init {
+
         refresh()
         viewModelScope.launch { api.changes.collect { refresh() } }
     }
 
+    /** 对话里还有多少条未读；会话页的「对话」tab 也要显示。 */
+
     fun refresh() {
         viewModelScope.launch {
+            _chatsPending.value = runCatching { api.conversations().sumOf { it.pending } }.getOrDefault(0)
             _state.value = try {
                 UiState.Content(api.agents())
             } catch (e: Exception) {
@@ -232,6 +245,7 @@ fun SessionsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val sessions = (state as? UiState.Content)?.data.orEmpty()
+    val chatsPending by viewModel.chatsPending.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     // 长按会话改名，和联系人页的删除一样用长按承载次要动作
     var renameTarget by remember { mutableStateOf<AgentSession?>(null) }
@@ -240,7 +254,7 @@ fun SessionsScreen(
         BrandBar(onSubscribe = onAccount, onAccount = onAccount)
         ImboTabs(
             active = "sessions",
-            chatsUnread = 0,
+            chatsUnread = chatsPending,
             sessionsUnread = sessions.sumOf { it.pending },
             onSelect = { if (it != "sessions") onTab(it) },
         )
@@ -279,7 +293,9 @@ fun SessionsScreen(
                                         text = listOfNotNull(
                                             session.tool,
                                             session.deviceName?.takeIf { it.isNotBlank() },
-                                            if (session.online) {
+                                            if (session.pending > 0) {
+                                                stringResource(R.string.session_pending, session.pending)
+                                            } else if (session.online) {
                                                 stringResource(R.string.session_online)
                                             } else if (session.wakeable) {
                                                 stringResource(R.string.session_offline_wakeable)

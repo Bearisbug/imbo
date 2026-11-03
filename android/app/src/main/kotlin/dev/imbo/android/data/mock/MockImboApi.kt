@@ -391,7 +391,7 @@ class MockImboApi(
     /** mock 里附件本来就带着本地路径，不需要下载。 */
     override suspend fun downloadAttachment(id: String, name: String): String? = null
 
-    override suspend fun markRead(agentId: String) = gate {
+    override suspend fun markRead(agentId: String, upTo: Long) = gate {
         var changed = false
         val idx = chats.indexOfFirst { it.agentId == agentId }
         if (idx >= 0 && chats[idx].pending != 0) {
