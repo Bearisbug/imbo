@@ -59,3 +59,6 @@ workable path is WSL, which is what the verification used.
 2. Should a group of people ever contain *another person's* sessions directly, or is “sessions join
    through their owner” the intended model? The server says the latter; the client currently makes
    that implicit.
+## Decided not to do
+
+- **Delete or hide a session from the phone.** The server already omits sessions that have been offline for more than 7 days (me.rs list query: online OR last_online_at > now() - interval '7 days'), so stale entries disappear on their own. A DELETE /v1/agents/{id} (or hidden_at) was considered and dropped: it would have to reconcile message history, member_sessions and deliveries for a case the 7-day window already covers.
