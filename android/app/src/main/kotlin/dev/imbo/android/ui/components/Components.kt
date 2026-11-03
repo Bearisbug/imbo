@@ -580,6 +580,20 @@ fun MessageRow(
                         fontSize = 11.sp,
                     )
                 }
+                // 发给自己会话的消息：还没被会话领取时讲清楚，别看起来像已送达
+                if (message.serverState == "pending" || message.serverState == "pushed" || message.serverState == "canceled") {
+                    Hairline()
+                    Text(
+                        text = if (message.serverState == "canceled") {
+                            stringResource(R.string.message_state_canceled)
+                        } else {
+                            stringResource(R.string.message_state_waiting)
+                        },
+                        color = ImboColor.Tertiary,
+                        fontFamily = ImboMono,
+                        fontSize = 11.sp,
+                    )
+                }
             }
             Spacer(Modifier.height(4.dp))
             Box(

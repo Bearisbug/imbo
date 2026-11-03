@@ -82,6 +82,9 @@
     <string name="edit">修改</string>
     <string name="change">更换</string>
     <string name="account_id">账号 ID</string>
+    <string name="message_state_waiting">等待会话领取</string>
+    <string name="message_state_canceled">已取消</string>
+    <string name="session_offline_wakeable">离线（可唤醒）</string>
     <string name="share_button">共享</string>
     <string name="share_title">对方能看到的会话</string>
     <string name="share_all">全部会话</string>

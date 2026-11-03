@@ -279,6 +279,8 @@ fun SessionsScreen(
                                             session.deviceName?.takeIf { it.isNotBlank() },
                                             if (session.online) {
                                                 stringResource(R.string.session_online)
+                                            } else if (session.wakeable) {
+                                                stringResource(R.string.session_offline_wakeable)
                                             } else {
                                                 session.lastOnlineAt
                                                     ?.let { stringResource(R.string.session_last_seen, relativeTime(it)) }

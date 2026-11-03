@@ -106,6 +106,7 @@ object Mapper {
         delivery = dev.imbo.android.data.Delivery.Sent,
         attachments = dto.files.map { attachment(it) },
         via = dto.from.via,
+        serverState = dto.state,
     )
 
     /** 服务端的 FileView 不含 MIME 类型时，按文件名扩展名推断，图片判断才不会误判。 */

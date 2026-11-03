@@ -82,6 +82,9 @@
     <string name="edit">Edit</string>
     <string name="change">Change</string>
     <string name="account_id">Account ID</string>
+    <string name="message_state_waiting">Waiting for the session</string>
+    <string name="message_state_canceled">Canceled</string>
+    <string name="session_offline_wakeable">Offline (can wake)</string>
     <string name="share_button">Share</string>
     <string name="share_title">Sessions they can see</string>
     <string name="share_all">All sessions</string>

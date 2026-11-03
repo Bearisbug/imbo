@@ -87,6 +87,8 @@ data class Message(
     val attachments: List<Attachment> = emptyList(),
     /** 消息从哪来：app / web / terminal / agent（服务端 MessageView 的 via）。 */
     val via: String? = null,
+    /** 服务端投递状态：pending / pushed / delivered / canceled。 */
+    val serverState: String? = null,
 )
 
 enum class Delivery { Sending, Sent, Failed }
