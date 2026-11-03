@@ -17,7 +17,29 @@ use crate::error::{ApiResult, err};
 use crate::state::St;
 use crate::{avatar, delivery, pay, push, safety};
 
-const MAX_PUSH_TOKEN: usize = 200;
+const MAX_PUSH_TOKEN: usize = 4096;
+
+/// Either an Expo token (iOS / Expo-written App) or an FCM registration token
+/// (the native Android App). Both fit in `app_sessions.push_token`.
+fn valid_push_token(token: &str) -> bool {
+    if token.is_empty() || token.len() > MAX_PUSH_TOKEN {
+        return false;
+    }
+    if token.starts_with("ExponentPushToken[") {
+        return token.ends_with(']');
+    }
+        // ntfy 话题：只允许 1..=64 个 [A-Za-z0-9_-]，不把任意 URL 片段写进令牌。
+    if let Some(topic) = token.strip_prefix("ntfy:") {
+        return !topic.is_empty()
+            && topic.len() <= 64
+            && topic
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    }// FCM tokens are opaque: `[A-Za-z0-9_-]` plus `:` for the topics form.
+    token
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.')
+}
 
 /// API-049–051 change only the App sign-in the request came with.
 fn app_only(c: &Caller) -> ApiResult<Uuid> {
@@ -50,12 +72,10 @@ pub async fn register_push(
 ) -> ApiResult<StatusCode> {
     let app = app_only(&c)?;
     let token = req.push_token.trim();
-    if !(token.starts_with("ExponentPushToken[") && token.ends_with(']'))
-        || token.len() > MAX_PUSH_TOKEN
-    {
+    if !valid_push_token(token) {
         return Err(err(
             ErrorCode::InvalidRequest,
-            "push_token must be an Expo push token, ExponentPushToken[…].",
+            "push_token must be an Expo token (ExponentPushToken[…]) or an FCM registration token.",
         ));
     }
     if req
@@ -307,4 +327,30 @@ pub(crate) async fn delete_now(st: &St, me: i32, why: &str) -> ApiResult<()> {
         "account deleted"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_push_token;
+
+    #[test]
+    fn expo_tokens_still_validate() {
+        assert!(valid_push_token("ExponentPushToken[abcDEF123]"));
+        assert!(!valid_push_token("ExponentPushToken[abcDEF123"));
+    }
+
+    #[test]
+    fn fcm_registration_tokens_validate() {
+        assert!(valid_push_token("dQw4w9WgXcQ:APA91bH-abc_123.xyz"));
+        assert!(!valid_push_token("has space"));
+        assert!(!valid_push_token(""));
+    }
+
+    #[test]
+    fn ntfy_topics_validate() {
+        assert!(valid_push_token("ntfy:imbo-abc_123"));
+        assert!(!valid_push_token("ntfy:"));
+        assert!(!valid_push_token("ntfy:has/slash"));
+        assert!(!valid_push_token(&format!("ntfy:{}", "a".repeat(65))));
+    }
 }
