@@ -45,7 +45,7 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 | --- | --- | --- | --- |
 | 18 | Create a group, pick which of my sessions receive it | ⚠️ | sessions can be picked **after** creation in group info; not during creation |
 | 19 | Invite contacts only | ✅ | server rejects non-contacts; the error is surfaced |
-| 20 | Invitee joins the group | ⚠️ | accept path is the generic request accept; not exercised for a group |
+| 20 | Invitee joins the group | ✅ | alice invited bob (`kind=group` request #4); `POST /v1/requests/4/accept` as bob; his group list then shows `invite-test` with members alice,bob |
 | 21 | A group message reaches every selected session of every member | ✅ | two Codex sessions in group 4229147: send returned `"recipients":2`; both TUIs showed message #144 |
 | 22 | Replies reach every session in the group | ✅ | session `1a3cb5` posted #147 (`Sender.agent = Acknowledge phone hello`); the other session saw it |
 | 23 | Rename, remove member, transfer owner, dissolve, leave | ✅ | |
@@ -93,8 +93,8 @@ Sources: `README.md` (Use / iPhone and web / Pricing / Self-hosting), `docs/prod
 
 | Status | Items |
 | --- | --- |
-| ✅ implemented and exercised | 35 |
-| ⚠️ implemented, not verified or partial | 5 |
+| ✅ implemented and exercised | 36 |
+| ⚠️ implemented, not verified or partial | 4 |
 | ❌ missing | 2 (contact note, subscription checkout) |
 | **Total tracked** | **42** |
 
