@@ -1065,7 +1065,7 @@ class AddContactViewModel @Inject constructor(private val api: ImboApi) : ViewMo
     private val _state = MutableStateFlow<AddContactState>(AddContactState.Idle)
     val state: StateFlow<AddContactState> = _state.asStateFlow()
 
-    fun submit(accountId: String, note: String?) {
+    fun submit(accountId: String, note: String? = null) {
         if (_state.value == AddContactState.Working) return
         _state.value = AddContactState.Working
         viewModelScope.launch {
@@ -1079,7 +1079,7 @@ class AddContactViewModel @Inject constructor(private val api: ImboApi) : ViewMo
     }
 
     /** 邮箱和账号 ID 走同一条「发请求→对方接受」的流程，服务端按正文里的字段区分。 */
-    fun submitByEmail(email: String, note: String?) {
+    fun submitByEmail(email: String, note: String? = null) {
         if (_state.value == AddContactState.Working) return
         _state.value = AddContactState.Working
         viewModelScope.launch {

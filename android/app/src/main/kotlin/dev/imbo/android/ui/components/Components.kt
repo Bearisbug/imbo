@@ -528,6 +528,7 @@ fun MessageRow(
     onClick: () -> Unit = {},
     onLongPress: (Message) -> Unit = {},
     onOpenAttachment: (Attachment) -> Unit = {},
+    duplicatedSenders: Set<String> = emptySet(),
 ) {
     Row(
         modifier = Modifier
@@ -557,7 +558,7 @@ fun MessageRow(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     // 自己的消息统一显示「我」，别一半是账号名一半是 me
-                    text = if (message.mine) stringResource(R.string.message_mine) else message.senderName,
+                    text = if (message.mine) stringResource(R.string.message_mine) else senderLabel(message, duplicatedSenders),
                     color = if (message.mine) ImboColor.OnBackground else ImboColor.Tertiary,
                     fontFamily = ImboMono,
                     fontSize = 14.sp,
@@ -894,5 +895,15 @@ fun UnreadDivider() {
             modifier = Modifier.padding(horizontal = 8.dp),
         )
         Box(Modifier.weight(1f).height(1.dp).background(ImboColor.OutlineVariant))
+    }
+}
+
+/** 同一标题出现多次时，给会话发送者补上短 id，否则两个同名会话在群里分不清。 */
+fun senderLabel(message: Message, duplicatedSenders: Set<String>): String {
+    val short = message.senderAgentShort
+    return if (short != null && message.senderName in duplicatedSenders) {
+        message.senderName + " · " + short
+    } else {
+        message.senderName
     }
 }

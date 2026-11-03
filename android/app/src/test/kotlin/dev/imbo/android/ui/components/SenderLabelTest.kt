@@ -1,0 +1,32 @@
+package dev.imbo.android.ui.components
+
+import dev.imbo.android.data.Message
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class SenderLabelTest {
+    private fun message(name: String, short: String?) = Message(
+        id = 1,
+        conversationId = 1,
+        body = "",
+        senderName = name,
+        mine = false,
+        createdAt = 0,
+        senderAgentShort = short,
+    )
+
+    @Test
+    fun `unique title stays bare`() {
+        assertEquals("codex", senderLabel(message("codex", "1a3cb5"), emptySet()))
+    }
+
+    @Test
+    fun `duplicate title gets a short id`() {
+        assertEquals("codex · 1a3cb5", senderLabel(message("codex", "1a3cb5"), setOf("codex")))
+    }
+
+    @Test
+    fun `a person never gets a suffix`() {
+        assertEquals("bob", senderLabel(message("bob", null), setOf("bob")))
+    }
+}

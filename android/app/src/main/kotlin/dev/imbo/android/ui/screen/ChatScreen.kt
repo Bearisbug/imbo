@@ -508,6 +508,8 @@ fun ChatScreen(
     var scrollAnchor by remember { mutableStateOf<ScrollAnchor?>(null) }
     val listState = rememberLazyListState()
     val messages = (state as? UiState.Content)?.data.orEmpty()
+    // 同名会话（同工具多开）在群里各说各话时，靠短 id 区分
+    val duplicatedSenders = messages.filterNot { it.mine }.groupBy { it.senderName }.filterValues { it.size > 1 }.keys
     val clipboard = LocalClipboardManager.current
 
     val visible = if (query.isBlank()) {
@@ -678,6 +680,7 @@ fun ChatScreen(
                                     MessageRow(
                                         message = message,
                                         group = group,
+                                        duplicatedSenders = duplicatedSenders,
                                         selected = selecting && picked.contains(message.id),
                                         onClick = {
                                             when {
