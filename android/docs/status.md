@@ -69,3 +69,9 @@ MIUI 关掉了「USB 安装」，`adb install` 一律 `INSTALL_FAILED_USER_RESTR
 - 产物：AAB 4.36 MB，sha256 04f624dbb1b68b25fa9f733872c2dc02c30dd906590ce77b61cfc4966c5bebaa
 - 校验：证书 e2eb1a90…，dex 内含 https://desktop-cl5gdeg.tail2dc296.ts.net，versionCode 2 / versionName 1.0.0
 - 说明：该构建早于联系人备注与同名会话区分的代码，安装前需重新出包
+## 最终构建（含最新修复）
+
+- 源码：main @ 3884545（联系人备注、同名会话聊天内区分）
+- APK 2.06 MB，sha256 426e34efeb99a6607d700330fb3cb51561bcf6edb1a397618ee13473e661ac15
+- AAB 4.36 MB，sha256 d887c78ba84b1b0a42cd09acda37388c4333fbc07d1b30bebc3d455f3d15e23a
+- 校验：证书 e2eb1a90…，dex 内含 https://desktop-cl5gdeg.tail2dc296.ts.net，versionCode 2 / versionName 1.0.0
