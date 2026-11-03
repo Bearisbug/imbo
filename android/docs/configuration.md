@@ -265,6 +265,7 @@ sha256   e0639489fa856be3072efd83b41c2c03e4293dc833b717ab0eab3ad5c4267f7f
 | 容器反复重启，日志 `set IMBO_SMTP_URL ... or IMBO_MAIL_LOG_ONLY=1` | `.env` 两个都没配；先设 `IMBO_MAIL_LOG_ONLY=1` |
 | App 登录「连不上服务器」 | 服务器地址是否 https；手机能否打开 `https://地址/v1/health`；Tailscale/Clash 是否互相顶掉 |
 | 能登录但收不到通知 | `/v1/health` 的 `push.ntfy` 是否为 true；ntfy 客户端是否订阅了**本机当前**话题；服务端日志是否有 `push: ntfy unreachable` |
+| 通知完全收不到，但 ntfy 服务端显示已发布 | 手机上的 ntfy 客户端被系统清掉了（`ps -A` 看不到 `io.heckel.ntfy`）。启动 ntfy 应用，并在系统设置里允许它后台运行、关闭电池优化 |
 | 通知内容是一串 JSON | ntfy 版本对「根路径 JSON 发布」的解析不同；确认服务端发到 `{base}` 且带 `topic` 字段 |
 | ntfy 客户端显示「连接错误」 | 订阅地址是否还能访问（换过端口/域名/隧道）；Tailscale 是否在线 |
 | 点通知打不开 App | 手机上点一次允许「ntfy 想要打开 Imbo」；或 `adb shell am start -a android.intent.action.VIEW -d imbo://chat/1` 验证深链 |
