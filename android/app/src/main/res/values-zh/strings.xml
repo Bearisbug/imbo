@@ -176,7 +176,7 @@
     <string name="via_terminal">电脑终端</string>
     <string name="group_my_sessions">我的会话</string>
     <string name="attach_camera">拍照</string>
-    <string name="session_pending">%1$d 条待领取</string>
+    <string name="session_pending">%1$d 条未读</string>
     <string name="session_online">在线</string>
     <string name="session_offline">离线</string>
     <string name="mention_picker_title">提醒谁</string>

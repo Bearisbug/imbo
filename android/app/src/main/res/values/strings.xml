@@ -176,7 +176,7 @@
     <string name="via_terminal">Terminal</string>
     <string name="group_my_sessions">My sessions</string>
     <string name="attach_camera">Take a photo</string>
-    <string name="session_pending">%1$d waiting</string>
+    <string name="session_pending">%1$d unread</string>
     <string name="session_online">online</string>
     <string name="session_offline">offline</string>
     <string name="mention_picker_title">Mention someone</string>
