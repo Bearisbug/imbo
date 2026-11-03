@@ -15,6 +15,9 @@ with "server not configured" and asks for the address on the login screen; the
 ntfy URL can be changed later on the account page. Notifications come from a
 self-hosted ntfy instance (see [`deploy/docker`](../deploy/docker)), not FCM.
 
+Full configuration walkthrough (server, ntfy, public https, signing, CI):
+[`docs/configuration.md`](docs/configuration.md). Build flags, the test suite and
+the verification record follow below.
 The rest of this file is the detailed (Chinese) guide: build flags, features,
 tests, verification records and known gaps.
 
@@ -252,7 +255,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run-tests.ps1
 | ntfy 话题注册 | 通过，App 生成 `imbo-bhcyohg2p01q` 并注册成功（日志 `register ntfy topic=imbo-bhc… ok=true`） |
 | ntfy 到手机 | 通过，手机装 ntfy 客户端并订阅话题后，服务端发消息 → 通知栏出现 `bob · 标题正文都对了`；群聊 @ 的通知正文是 `bob @了你：…` |
 | 账号页「检查连接」 | 通过，点一下显示「连接正常 · 服务端 0.2.17」；失败会显示原因，方便自建用户排障 |
-| Tailscale 公网链路 | 通过，手机与电脑同 tailnet，App 指向 `https://desktop-cl5gdeg.tail2dc296.ts.net`；发出消息（id 137）、通知栏收到「走 Tailscale 的通知」、点通知进会话 |
+| Tailscale 公网链路 | 通过，手机与电脑同 tailnet，App 指向 `https://imbo.<tailnet>.ts.net`；发出消息（id 137）、通知栏收到「走 Tailscale 的通知」、点通知进会话 |
 | 点通知进会话 | 通过，ntfy 载荷带 `"click":"imbo://chat/1"`；点通知时系统提示「ntfy 想要打开 Imbo」，允许后直接落到与 bob 的会话 |
 | 重装后话题不变 | 通过，清数据重装后话题仍由 `ANDROID_ID` 派生，通知栏照样收到 `bob · 稳定话题的通知` |
 | 去掉 Firebase 后回归 | 通过，APK 18.65 → 17.79 MB、release 2.5 → 2.05 MB；装机启动正常，注册话题与通知照旧 |

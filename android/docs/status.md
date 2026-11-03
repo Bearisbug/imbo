@@ -46,9 +46,9 @@
 | Docker compose（imbo + ntfy） | 已验证 | 本机冒烟：两个 `/v1/health` 均 ok |
 | 一键出包脚本 | 已验证 | `scripts/release.ps1` 产出 APK+AAB 并打印 sha256 |
 | 部署自检脚本 | 已验证 | `scripts/check-deployment.ps1` 三项全过，手机收到自检通知；服务端 `/v1/health` 现在会报 `"push":{"expo":…,"fcm":…,"ntfy":…}`，脚本会断言 ntfy 已配置 |
-| Tailscale 公网访问 | 已验证 | 本机已装 Tailscale（`desktop-cl5gdeg.tail2dc296.ts.net`），`tailscale serve` 暴露 imbo 与 ntfy(:8443)；手机与电脑同 tailnet |
-| 手机走公网收发 | 已验证 | 手机 Tailscale 连上后，App 服务器改为 `https://desktop-cl5gdeg.tail2dc296.ts.net`：消息发出（id 137）、通知栏收到「走 Tailscale 的通知」、点通知进会话 |
-| 正式地址 release 包 | 已验证（构建） | `release.ps1 -BaseUrl https://desktop-cl5gdeg.tail2dc296.ts.net -NtfyUrl …:8443`，APK 2.05 MB、sha256 `e0639489…`，dex 内已核对地址、签名证书 `e2eb1a90…` |
+| Tailscale 公网访问 | 已验证 | 本机已装 Tailscale（`imbo.<tailnet>.ts.net`），`tailscale serve` 暴露 imbo 与 ntfy(:8443)；手机与电脑同 tailnet |
+| 手机走公网收发 | 已验证 | 手机 Tailscale 连上后，App 服务器改为 `https://imbo.<tailnet>.ts.net`：消息发出（id 137）、通知栏收到「走 Tailscale 的通知」、点通知进会话 |
+| 正式地址 release 包 | 已验证（构建） | `release.ps1 -BaseUrl https://imbo.<tailnet>.ts.net -NtfyUrl …:8443`，APK 2.05 MB、sha256 `e0639489…`，dex 内已核对地址、签名证书 `e2eb1a90…` |
 | CI tag | **待授权** | 仓库改动未提交，推 tag 前需要先提交并推送；属发布动作，等用户确认 |
 
 ## 当前阻塞（一条）

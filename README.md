@@ -185,7 +185,7 @@ cd android
 ./scripts/release.ps1 -BaseUrl https://imbo.example.com -NtfyUrl https://ntfy.example.com
 ```
 
-See [`android/README.md`](android/README.md) for the build flags, the ntfy
+See [`android/docs/configuration.md`](android/docs/configuration.md) for the\nend-to-end setup (server, ntfy, public https, signing, CI) and\n[`android/README.md`](android/README.md) for the build flags, the ntfy
 setup, the test suite and the verification checklist, and
 [`deploy/docker`](deploy/docker) for a one-command server + ntfy stack.
 ## Pricing
