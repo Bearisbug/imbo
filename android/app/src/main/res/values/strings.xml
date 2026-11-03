@@ -165,6 +165,8 @@
     <string name="server_current">Server · %1$s</string>
 
     <!-- add contact -->
+    <string name="add_contact_note">Note (optional)</string>
+    <string name="add_contact_note_hint">Only they see it; use it to remember who this is.</string>
     <string name="add_contact_hint">The 8-digit Account ID from their account page, or their sign-in email.</string>
     <string name="add_contact_invalid">Use an 8-digit Account ID, or an email address.</string>
     <string name="add_contact_sent">Request sent. They\'ll see it in Contacts.</string>

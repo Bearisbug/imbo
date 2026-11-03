@@ -165,6 +165,8 @@
     <string name="server_current">服务器 · %1$s</string>
 
     <!-- add contact -->
+    <string name="add_contact_note">备注（可选）</string>
+    <string name="add_contact_note_hint">只有对方能看到，用来记「这是谁」。</string>
     <string name="add_contact_hint">填对方账号页上的 8 位账号 ID，或对方的登录邮箱。</string>
     <string name="add_contact_invalid">账号 ID 是 8 位数字，或者填邮箱。</string>
     <string name="add_contact_sent">请求已发出，对方会在「联系人」里看到。</string>

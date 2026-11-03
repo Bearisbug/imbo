@@ -89,10 +89,10 @@ interface ImboApi {
     suspend fun requests(): List<ContactRequest>
     suspend fun acceptRequest(id: String)
     suspend fun declineRequest(id: String)
-    suspend fun addContact(accountId: String)
+    suspend fun addContact(accountId: String, note: String? = null)
 
     /** 按邮箱加联系人：服务端会用邮箱找到账号，再走同一条请求流程。 */
-    suspend fun addContactByEmail(email: String)
+    suspend fun addContactByEmail(email: String, note: String? = null)
 
     /** DELETE /v1/contacts/{account_id}：只解除联系人关系，历史消息保留。 */
     suspend fun removeContact(accountId: String)

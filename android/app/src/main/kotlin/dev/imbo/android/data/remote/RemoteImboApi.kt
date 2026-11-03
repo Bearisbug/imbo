@@ -367,21 +367,21 @@ class RemoteImboApi @Inject constructor(
         http.postUnit("/v1/requests/$id/decline")
     }
 
-    override suspend fun addContact(accountId: String) {
+    override suspend fun addContact(accountId: String, note: String?) {
         val numeric = accountId.toIntOrNull()
             ?: throw ImboApiException(400, "invalid", "Account IDs are numbers.")
         val payload = json.encodeToString(
             ContactRequestDto.serializer(),
-            ContactRequestDto(accountId = numeric),
+            ContactRequestDto(accountId = numeric, note = note?.trim()?.takeIf { it.isNotEmpty() }),
         )
         http.postUnit("/v1/contacts/requests", payload)
     }
 
     /** 服务端两种定位方式二选一：正文里给 account_id 或 email（API-008）。 */
-    override suspend fun addContactByEmail(email: String) {
+    override suspend fun addContactByEmail(email: String, note: String?) {
         val payload = json.encodeToString(
             ContactRequestDto.serializer(),
-            ContactRequestDto(email = email.trim()),
+            ContactRequestDto(email = email.trim(), note = note?.trim()?.takeIf { it.isNotEmpty() }),
         )
         http.postUnit("/v1/contacts/requests", payload)
     }

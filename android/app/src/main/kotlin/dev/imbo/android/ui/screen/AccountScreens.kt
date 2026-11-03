@@ -1065,12 +1065,12 @@ class AddContactViewModel @Inject constructor(private val api: ImboApi) : ViewMo
     private val _state = MutableStateFlow<AddContactState>(AddContactState.Idle)
     val state: StateFlow<AddContactState> = _state.asStateFlow()
 
-    fun submit(accountId: String) {
+    fun submit(accountId: String, note: String?) {
         if (_state.value == AddContactState.Working) return
         _state.value = AddContactState.Working
         viewModelScope.launch {
             _state.value = try {
-                api.addContact(accountId)
+                api.addContact(accountId, note)
                 AddContactState.Sent
             } catch (e: Exception) {
                 AddContactState.Failed(e.message ?: "error")
@@ -1079,12 +1079,12 @@ class AddContactViewModel @Inject constructor(private val api: ImboApi) : ViewMo
     }
 
     /** 邮箱和账号 ID 走同一条「发请求→对方接受」的流程，服务端按正文里的字段区分。 */
-    fun submitByEmail(email: String) {
+    fun submitByEmail(email: String, note: String?) {
         if (_state.value == AddContactState.Working) return
         _state.value = AddContactState.Working
         viewModelScope.launch {
             _state.value = try {
-                api.addContactByEmail(email)
+                api.addContactByEmail(email, note)
                 AddContactState.Sent
             } catch (e: Exception) {
                 AddContactState.Failed(e.message ?: "error")
@@ -1100,6 +1100,7 @@ fun AddContactScreen(
     viewModel: AddContactViewModel = hiltViewModel(),
 ) {
     var value by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     ScreenRoot {
@@ -1134,6 +1135,14 @@ fun AddContactScreen(
                 hint = stringResource(R.string.add_contact_hint),
                 keyboardType = if (value.contains('@')) KeyboardType.Email else KeyboardType.Number,
             )
+            InsetField(
+                label = stringResource(R.string.add_contact_note),
+                value = note,
+                placeholder = "bob, api team",
+                onValueChange = { note = it.take(120) },
+                hint = stringResource(R.string.add_contact_note_hint),
+            )
+
             when (val s = state) {
                 is AddContactState.Sent -> Text(
                     text = stringResource(R.string.add_contact_sent),
@@ -1151,7 +1160,7 @@ fun AddContactScreen(
             }
             PrimaryButton(
                 text = if (state == AddContactState.Working) stringResource(R.string.sending) else stringResource(R.string.add_contact),
-                onClick = { if (value.contains('@')) viewModel.submitByEmail(value) else viewModel.submit(value) },
+                onClick = { if (value.contains('@')) viewModel.submitByEmail(value, note) else viewModel.submit(value, note) },
                 enabled = (value.length == 8 && value.all { it.isDigit() } || value.contains('@')) &&
                     state != AddContactState.Working,
                 modifier = Modifier.fillMaxWidth(),

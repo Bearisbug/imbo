@@ -442,10 +442,10 @@ class MockImboApi(
         changeFlow.emit(ChangeArea.Requests)
     }
 
-    override suspend fun addContact(accountId: String) = gate { Unit }
+    override suspend fun addContact(accountId: String, note: String?) = gate { Unit }
 
     /** 按邮箱加人：mock 里直接用 @ 前面的部分当名字，走同一条待接受请求。 */
-    override suspend fun addContactByEmail(email: String) = gate {
+    override suspend fun addContactByEmail(email: String, note: String?) = gate {
         val target = email.trim()
         if (!target.contains('@') || target.endsWith("@")) {
             throw MockException("Enter a valid email address")

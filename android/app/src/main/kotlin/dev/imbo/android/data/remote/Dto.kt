@@ -309,7 +309,11 @@ data class PushTokenDto(
 data class RenameDto(val name: String)
 
 @Serializable
-data class ContactRequestDto(@SerialName("account_id") val accountId: Int? = null, val email: String? = null)
+data class ContactRequestDto(
+    @SerialName("account_id") val accountId: Int? = null,
+    val email: String? = null,
+    val note: String? = null,
+)
 
 /** RFC 7807，服务端所有错误的形状。 */
 @Serializable
