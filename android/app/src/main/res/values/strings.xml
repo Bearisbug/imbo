@@ -216,6 +216,8 @@
     <string name="checking">Checking…</string>
 
     <!-- new group -->
+    <string name="new_group_sessions">My sessions (receive this group)</string>
+    <string name="new_group_no_sessions">No sessions on this computer yet</string>
     <string name="new_group_members">Members</string>
     <string name="new_group_no_contacts">Add a contact before creating a group.</string>
     <string name="new_group_invite_hint">Invited people join after they accept in Contacts.</string>

@@ -216,6 +216,8 @@
     <string name="checking">检查中…</string>
 
     <!-- new group -->
+    <string name="new_group_sessions">我的会话（接收这个群）</string>
+    <string name="new_group_no_sessions">这台电脑还没有会话</string>
     <string name="new_group_members">成员</string>
     <string name="new_group_no_contacts">先添加联系人，才能建群。</string>
     <string name="new_group_invite_hint">被邀请的人接受后才会进群。</string>

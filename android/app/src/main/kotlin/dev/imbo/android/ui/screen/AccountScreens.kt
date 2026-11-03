@@ -1192,6 +1192,7 @@ class NewGroupViewModel @Inject constructor(private val api: ImboApi) : ViewMode
             } catch (e: Exception) {
                 UiState.Error(e.message ?: "error")
             }
+            _agents.value = runCatching { api.agents() }.getOrDefault(emptyList())
         }
     }
 
@@ -1199,12 +1200,23 @@ class NewGroupViewModel @Inject constructor(private val api: ImboApi) : ViewMode
         _selected.value = if (_selected.value.contains(id)) _selected.value - id else _selected.value + id
     }
 
+    private val _agents = MutableStateFlow<List<dev.imbo.android.data.AgentSession>>(emptyList())
+    val agents: StateFlow<List<dev.imbo.android.data.AgentSession>> = _agents.asStateFlow()
+
+    private val _selectedSessions = MutableStateFlow<Set<String>>(emptySet())
+    val selectedSessions: StateFlow<Set<String>> = _selectedSessions.asStateFlow()
+
+    fun toggleSession(id: String) {
+        val current = _selectedSessions.value
+        _selectedSessions.value = if (current.contains(id)) current - id else current + id
+    }
+
     fun create(name: String) {
         if (_state.value == NewGroupState.Working) return
         _state.value = NewGroupState.Working
         viewModelScope.launch {
             _state.value = try {
-                NewGroupState.Created(api.createGroup(name, _selected.value.toList()).id)
+                NewGroupState.Created(api.createGroup(name, _selected.value.toList(), _selectedSessions.value.toList()).id)
             } catch (e: Exception) {
                 NewGroupState.Failed(e.message ?: "error")
             }
@@ -1221,6 +1233,8 @@ fun NewGroupScreen(
     var name by remember { mutableStateOf("") }
     val contactsState by viewModel.contacts.collectAsStateWithLifecycle()
     val selected by viewModel.selected.collectAsStateWithLifecycle()
+    val agents by viewModel.agents.collectAsStateWithLifecycle()
+    val selectedSessions by viewModel.selectedSessions.collectAsStateWithLifecycle()
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     ScreenRoot {
@@ -1305,6 +1319,46 @@ fun NewGroupScreen(
                     }
                 }
             }
+            SectionLabel(stringResource(R.string.new_group_sessions))
+            if (agents.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.new_group_no_sessions),
+                    color = ImboColor.Tertiary,
+                    fontFamily = ImboMono,
+                    fontSize = 12.sp,
+                )
+            } else {
+                agents.forEach { session ->
+                    val active = selectedSessions.contains(session.id)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.toggleSession(session.id) }
+                            .padding(horizontal = ImboDimen.Gutter, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                            if (active) Text("✓", color = ImboColor.OnBackground, fontFamily = ImboMono, fontSize = 14.sp)
+                        }
+                        Spacer(Modifier.size(12.dp))
+                        Column {
+                            Text(
+                                text = session.title,
+                                color = if (active) ImboColor.OnBackground else ImboColor.Tertiary,
+                                fontFamily = ImboMono,
+                                fontSize = 14.sp,
+                            )
+                            Text(
+                                text = listOfNotNull(session.tool, session.deviceName).joinToString(" · "),
+                                color = ImboColor.Tertiary,
+                                fontFamily = ImboMono,
+                                fontSize = 11.sp,
+                            )
+                        }
+                    }
+                }
+            }
+
             if (state is NewGroupState.Failed) {
                 Text(
                     text = (state as NewGroupState.Failed).message,
