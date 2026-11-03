@@ -352,4 +352,15 @@ class MockImboApiTest {
         }
         assertTrue(refused)
     }
+@Test
+    fun `contact session sharing defaults to all and can be narrowed`() = runTest {
+        val api = api()
+        val bobId = api.contacts().first().id
+        assertEquals("all", api.contactShare(bobId).share)
+
+        val chosen = api.setContactShare(bobId, "chosen", sessions = listOf("agent-checkout"))
+        assertEquals("chosen", chosen.share)
+        assertEquals(listOf("agent-checkout"), chosen.sessions.map { it.id })
+        assertEquals("chosen", api.contactShare(bobId).share)
+    }
 }

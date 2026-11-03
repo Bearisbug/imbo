@@ -331,3 +331,29 @@ data class OwnerBodyDto(@SerialName("account_id") val accountId: Int)
 
 @Serializable
 data class AgentResponseDto(val agent: AgentDto)
+@Serializable
+data class ShareBodyDto(
+    val share: String,
+    val devices: List<String>? = null,
+    val sessions: List<String>? = null,
+)
+
+@Serializable
+data class ShareDeviceDto(val id: String, val name: String)
+
+@Serializable
+data class ShareSessionDto(
+    val id: String,
+    @SerialName("short_id") val shortId: String,
+    val title: String,
+    val tool: String,
+    @SerialName("device_id") val deviceId: String? = null,
+    val online: Boolean = false,
+)
+
+@Serializable
+data class ShareResponseDto(
+    val share: String,
+    val devices: List<ShareDeviceDto> = emptyList(),
+    val sessions: List<ShareSessionDto> = emptyList(),
+)

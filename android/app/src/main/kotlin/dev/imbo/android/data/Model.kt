@@ -178,3 +178,20 @@ data class MockConfig(
 )
 
 enum class ForceError { Unauthorized, ServerError, Timeout }
+/** 一个联系人的会话共享设置（服务端 contacts.share）。 */
+data class ContactShare(
+    val share: String,
+    val devices: List<SharedDevice> = emptyList(),
+    val sessions: List<SharedSession> = emptyList(),
+)
+
+data class SharedDevice(val id: String, val name: String)
+
+data class SharedSession(
+    val id: String,
+    val shortId: String,
+    val title: String,
+    val tool: String,
+    val deviceId: String? = null,
+    val online: Boolean = false,
+)

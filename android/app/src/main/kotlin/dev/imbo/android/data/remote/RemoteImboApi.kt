@@ -1,5 +1,6 @@
 package dev.imbo.android.data.remote
 
+import dev.imbo.android.data.ContactShare
 import dev.imbo.android.data.Account
 import dev.imbo.android.data.AgentSession
 import dev.imbo.android.data.Attachment
@@ -52,6 +53,23 @@ class RemoteImboApi @Inject constructor(
 
     // ------------------------------------------------------------ auth
 
+    override suspend fun contactShare(accountId: String): ContactShare =
+        Mapper.contactShare(http.get("/v1/contacts/$accountId/share", ShareResponseDto.serializer()))
+
+    override suspend fun setContactShare(
+        accountId: String,
+        share: String,
+        devices: List<String>,
+        sessions: List<String>,
+    ): ContactShare {
+        val payload = json.encodeToString(
+            ShareBodyDto.serializer(),
+            ShareBodyDto(share, devices.ifEmpty { null }, sessions.ifEmpty { null }),
+        )
+        return Mapper.contactShare(
+            http.put("/v1/contacts/$accountId/share", payload, ShareResponseDto.serializer()),
+        )
+    }
     override suspend fun health(): String = http.getUnit("/v1/health")
     override suspend fun requestCode(email: String) {
         http.post(

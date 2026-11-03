@@ -7,6 +7,16 @@ import kotlinx.coroutines.flow.Flow
  */
 interface ImboApi {
     /** POST /v1/auth/code */
+    /** 某个联系人的会话共享设置：all / chosen / none。 */
+    suspend fun contactShare(accountId: String): ContactShare
+
+    /** 改共享设置；chosen 时用 devices / sessions 指定可见范围。 */
+    suspend fun setContactShare(
+        accountId: String,
+        share: String,
+        devices: List<String> = emptyList(),
+        sessions: List<String> = emptyList(),
+    ): ContactShare
     /** 自检用：拿服务端的 /v1/health 原文，失败抛异常。 */
     suspend fun health(): String
     suspend fun requestCode(email: String)

@@ -1,5 +1,8 @@
 package dev.imbo.android.data.remote
 
+import dev.imbo.android.data.ContactShare
+import dev.imbo.android.data.SharedDevice
+import dev.imbo.android.data.SharedSession
 import dev.imbo.android.data.Access
 import dev.imbo.android.data.Account
 import dev.imbo.android.data.AgentSession
@@ -221,4 +224,12 @@ object Mapper {
             plansEnabled = dto.enabled,
         )
     }
+
+    fun contactShare(dto: ShareResponseDto): ContactShare = ContactShare(
+        share = dto.share,
+        devices = dto.devices.map { SharedDevice(it.id, it.name) },
+        sessions = dto.sessions.map {
+            SharedSession(it.id, it.shortId, it.title, it.tool, it.deviceId, it.online)
+        },
+    )
 }

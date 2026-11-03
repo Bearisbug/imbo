@@ -1,5 +1,7 @@
 package dev.imbo.android.data.mock
 
+import dev.imbo.android.data.ContactShare
+import dev.imbo.android.data.SharedSession
 import dev.imbo.android.data.Access
 import dev.imbo.android.data.Account
 import dev.imbo.android.data.AgentSession
@@ -191,6 +193,29 @@ class MockImboApi(
 
     override suspend fun me(): Account = gate { me }
 
+    private val contactShareModes = mutableMapOf<String, String>()
+
+    override suspend fun contactShare(accountId: String): ContactShare = gate {
+        ContactShare(
+            share = contactShareModes[accountId] ?: "all",
+            sessions = sessions.map { SharedSession(it.id, it.id.take(6), it.title, it.tool) },
+        )
+    }
+
+    override suspend fun setContactShare(
+        accountId: String,
+        share: String,
+        devices: List<String>,
+        sessions: List<String>,
+    ): ContactShare = gate {
+        contactShareModes[accountId] = share
+        ContactShare(
+            share = share,
+            sessions = this.sessions
+                .filter { sessions.isEmpty() || it.id in sessions }
+                .map { SharedSession(it.id, it.id.take(6), it.title, it.tool) },
+        )
+    }
     // 走 gate，才会受 forceError / latency 影响，测试里能造出失败
     override suspend fun health(): String = gate { """{"status":"ok","name":"imbo-server","version":"mock","db":"ok"}""" }
     override suspend fun requestCode(email: String) = gate {
