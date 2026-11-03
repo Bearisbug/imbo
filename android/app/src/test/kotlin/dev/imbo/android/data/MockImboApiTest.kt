@@ -38,7 +38,7 @@ class MockImboApiTest {
     fun `opening an agent session clears its unread`() = runTest {
         val api = api()
         assertEquals(1, api.agents().first { it.id == "agent-checkout" }.pending)
-        api.markRead("agent-checkout")
+        api.markRead("agent-checkout", 42)
         assertEquals(0, api.agents().first { it.id == "agent-checkout" }.pending)
     }
 
