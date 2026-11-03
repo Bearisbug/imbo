@@ -75,3 +75,7 @@ MIUI 关掉了「USB 安装」，`adb install` 一律 `INSTALL_FAILED_USER_RESTR
 - APK 2.06 MB，sha256 426e34efeb99a6607d700330fb3cb51561bcf6edb1a397618ee13473e661ac15
 - AAB 4.36 MB，sha256 d887c78ba84b1b0a42cd09acda37388c4333fbc07d1b30bebc3d455f3d15e23a
 - 校验：证书 e2eb1a90…，dex 内含 https://desktop-cl5gdeg.tail2dc296.ts.net，versionCode 2 / versionName 1.0.0
+
+## dist 与源码一致性
+
+用 aapt2 检查 dist/imbo-release-signed.apk 的资源字符串，确认包含本轮新增的文案：备注（可选）、等待会话领取、对方能看到的会话（%1 / %2）。说明 dist 里的包是当前 main 构建的，不是旧产物。
