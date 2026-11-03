@@ -47,7 +47,7 @@ cd imbo/android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-发布签名从 `android/keystore.properties` 读（`storeFile` / `storePassword` / `keyAlias` / `keyPassword`），这个文件已 gitignore；没有它时 release 仍可构建，只是不签名，方便别人 fork 后直接跑。CI 见 `.github/workflows/android-release.yml`：打 `android-v*` tag 触发，需要的 secrets 写在该文件开头。
+发布签名从 `android/keystore.properties` 读（`storeFile` / `storePassword` / `keyAlias` / `keyPassword`），这个文件已 gitignore；没有它时 release 仍可构建，只是不签名，方便别人 fork 后直接跑。CI 见 `.github/workflows/android-ci.yml`：打 `android-v*` tag 触发，需要的 secrets 写在该文件开头。
 
 仓库根目录 `dist/` 放了两份已构建好的：`imbo-real-server-debug.apk`（连 `http://10.100.135.176:8080`）和 `imbo-mock-demo-debug.apk`（mock 数据，装上即可走完所有页面）。
 

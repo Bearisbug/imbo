@@ -73,55 +73,20 @@ docker run -d --name imbo-local -p 8080:8080 -v imbo:/data \
 | 多选分享图 | 纯 Canvas 绘制，没有单测 | 改排版时只能靠人眼看 |
 | 群会话选择 | 只在账号真有 agent 会话时出现 | 纯手机账号看不到这一节 |
 
-## 6. CI 发布（可选）
+## 6. 发布与 CI
 
-`.github/workflows/android-release.yml`：打 `android-v*` tag 或手动触发。
+发布包在开发机上出（`scripts/release.ps1`），签名密钥不进仓库也不进 CI。仓库里的
+`.github/workflows/android-ci.yml` 只做两件事：跑单测、构建未签名的 debug APK。
 
-仓库需要配置：
+```bash
+cd android
+./scripts/release.ps1 -BaseUrl https://imbo.example.com -NtfyUrl https://ntfy.example.com
+./scripts/verify-apk.ps1 ../dist/imbo-release-signed.apk -BaseUrl https://imbo.example.com
+```
 
-| 类型 | 名称 | 内容 |
-| --- | --- | --- |
-| secret | `IMBO_KEYSTORE_BASE64` | `base64 -w0 imbo-release.jks` |
-| secret | `IMBO_KEYSTORE_PASSWORD` | store 口令 |
-| secret | `IMBO_KEY_PASSWORD` | key 口令（通常同上） |
+复现清单（工具链版本、期望输出）见 [`configuration.md`](configuration.md) 的「6b. 复现清单」。
 
-| variable | `IMBO_BASE_URL` | 发布包内置的服务端地址 |
-| variable | `IMBO_NTFY_URL` | 可选，ntfy 实例地址；不配则账号页只显示话题不显示订阅链接 |
-
-产物在 workflow 的 artifacts 里：APK、AAB、`checksums.txt`。
-
-## 7. 排障速查
-
-| 现象 | 先查什么 |
-| --- | --- |
-| 登录时「连不上服务器」 | 手机浏览器打开 `http://服务器:8080/v1/health`，应返回 `{"status":"ok"}`；VPN/代理是否劫持了局域网 |
-| 验证码收不到 | 服务端是否配了 SMTP；本地开发看 `docker logs` 里的 `mail-log-only code=…` |
-| 发出去的消息对方没收到 | 双方是否联系人；服务端 `/v1/messages` 是否 201 |
-| 收不到实时消息 | `/v1/events` 的 WebSocket 是否被反代/隧道断开 |
-| 通知不弹 | 系统是否允许通知；推送通道是否配好（见第 5 节） |
-| App 闪退 | `adb logcat | grep AndroidRuntime`；release 包看混淆后的类名是否缺 keep 规则 |
-## 8. 验收截图索引
-
-真机（Xiaomi 23113RKC6C / Android 16）截图都在 `../shots/delivery/`：
-
-| 截图 | 证明的事 |
-| --- | --- |
-| `02-login` / `03-email` / `04-code` | 登录三步，中文界面，验证码页面 |
-| `07-group-info` / `08-group-avatar` | 群信息页与群头像上传结果 |
-| `10-remove-contact` / `11-contact-removed` | 联系人长按删除与删除后的列表 |
-| `12-email-step1` / `13-email-step2` / `14-email-changed` | 换邮箱两步与换完后的账号页 |
-| `15-delete-dialog` / `16-after-delete` | 删除账号确认与回登录页 |
-| `17-signout` / `18-account` | 退出账号、账号页访问状态 |
-| `19-group-info-clean` | 群信息页顶栏不再重复群名 |
-| `20-server-dialog` | 服务器地址修改对话框 |
-| `21-group-sessions` / `38-group-info-scroll` / `42-session-toggle` | 「我的会话」一节与勾选效果 |
-| `22-attach-menu` / `34-camera` / `37-camera-sent` | 拍照入口、系统相机、拍照发出的图片消息 |
-| `29-multiselect` / `30-share-sheet` | 多选消息与分享为图片的系统面板 |
-| `31-mention-sent` | @ 提及的发送结果 |
-| `43-retry-failed` / `45-net-error` | 发送失败的重试提示与网络错误中文化 |
-| `46-sessions-lastseen` | 会话列表「在线 / 最后在线 HH:mm」 |
-| `47-image-viewer` | 图片全屏查看 |
-| `28-release-launch` / `32-release-latest` | R8 + 正式签名的 release 包能正常启动 |
+> 如果以后确实要 CI 出包，需要把 keystore 放进 GitHub secrets，并按 `configuration.md` 第 6 节改回 release workflow——默认不这么做，因为等于把签名密钥交给第三方保管。
 ## 9. 推送（ntfy）
 
 FCM 在国内到不了 Google，当前实现改走自建 ntfy。部署与排障见 [`push-ntfy.md`](push-ntfy.md)：起 ntfy 容器 → 服务端带 `IMBO_NTFY_URL` → App 账号页复制订阅链接 → 手机 ntfy 客户端订阅。

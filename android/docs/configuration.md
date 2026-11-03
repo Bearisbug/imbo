@@ -172,44 +172,79 @@ cd android
 
 ---
 
-## 6. CI 出包（可选）
+## 6. CI 只跑测试，发布在本地
 
-仓库自带的 `.github/workflows/android-release.yml` 在打 `android-v*` tag 或手动触发时构建签名包。
+`.github/workflows/android-ci.yml` 在 PR 和 `main` 的 `android/**` 变更时运行：单元测试 + 一次 debug 构建，产物是未签名的 debug APK。**它不做 release 包，也不持有任何密钥。**
 
-### 仓库 Secrets
+正式包在开发机上出，`keystore.properties` 留在本机（已 gitignore）：
 
-| Secret | 内容 |
-| --- | --- |
-| `IMBO_KEYSTORE_BASE64` | `base64 -w0 imbo-release.jks` |
-| `IMBO_KEYSTORE_PASSWORD` | store 口令 |
-| `IMBO_KEY_PASSWORD` | key 口令 |
+```bash
+cd android
+./scripts/release.ps1 -BaseUrl https://imbo.example.com -NtfyUrl https://ntfy.example.com
+# macOS / Linux 没有 PowerShell 时：
+./gradlew :app:assembleRelease :app:bundleRelease \
+  -Pimbo.useMock=false \
+  -Pimbo.baseUrl=https://imbo.example.com \
+  -Pimbo.ntfyUrl=https://ntfy.example.com
+```
 
-### 仓库 Variables
+`release.ps1` 做三件事：构建 APK + AAB、打印 sha256、把产物拷到 `dist/`。
 
-| Variable | 内容 |
-| --- | --- |
-| `IMBO_BASE_URL` | 发布包内置的服务端地址 |
-| `IMBO_NTFY_URL` | 可选，ntfy 地址；不配则账号页只显示话题、不给订阅链接 |
+### 如果确实想让 CI 出 release 包（不推荐）
 
-配置命令（需要 `repo` + `workflow` 权限的 token）：
+那就得把签名密钥放进 GitHub secrets，等于把 keystore 交给 GitHub 保管。真要这么做：
 
 ```bash
 gh secret set IMBO_KEYSTORE_BASE64 --repo <owner>/<repo> --body "$(base64 -w0 imbo-release.jks)"
 gh secret set IMBO_KEYSTORE_PASSWORD --repo <owner>/<repo> --body '<store 口令>'
 gh secret set IMBO_KEY_PASSWORD --repo <owner>/<repo> --body '<key 口令>'
 gh variable set IMBO_BASE_URL --repo <owner>/<repo> --body 'https://imbo.example.com'
-gh variable set IMBO_NTFY_URL --repo <owner>/<repo> --body 'https://ntfy.example.com'
-
-git tag android-v0.1.0 && git push origin android-v0.1.0
-gh run watch --repo <owner>/<repo>
 ```
 
-产物在 Actions 的 `imbo-android-release` artifact 里：APK、AAB、`checksums.txt`。
-
-> 如果不希望签名密钥存在 GitHub 上：不要配这三个 secret，改为本地用 `keystore.properties` 出包，CI 只跑测试。
+并把 workflow 改回「解 keystore → assembleRelease → upload artifact」。默认不这么做。
 
 ---
 
+## 6b. 复现清单
+
+别人要在自己的机器上得到同样的包，按这张表对版本，然后跑三条命令。
+
+| 组件 | 版本 | 位置 |
+| --- | --- | --- |
+| JDK | 17 | `JAVA_HOME` |
+| Gradle | 由 wrapper 固定（`android/gradle/wrapper/gradle-wrapper.properties`） | 仓库内 |
+| AGP | 8.7.3 | `android/gradle/libs.versions.toml` / build.gradle |
+| Kotlin | 2.0.21 | 同上 |
+| compileSdk / targetSdk | 35 | `android/app/build.gradle.kts` |
+| minSdk | 26 | 同上 |
+| Android build-tools | 36.0.0（本机验证用） | `ANDROID_HOME/build-tools` |
+
+```bash
+# 1) 测试
+cd android && ./gradlew :app:testDebugUnitTest        # 期望：103 个测试全绿
+
+# 2) 出包（签名）
+./scripts/release.ps1 -BaseUrl https://你的地址 -NtfyUrl https://你的ntfy地址
+
+# 3) 校验产物
+./scripts/verify-apk.ps1 ../dist/imbo-release-signed.apk -BaseUrl https://你的地址
+```
+
+`verify-apk.ps1` 会打印：文件大小、sha256、签名证书 DN 与 SHA-256、versionCode/versionName、以及 dex 里是否真的包含你传入的地址。期望输出示例：
+
+```
+大小     2.05 MB
+sha256   e0639489fa856be3072efd83b41c2c03e4293dc833b717ab0eab3ad5c4267f7f
+签名证书：
+  Signer #1 certificate DN: CN=Imbo Android, ...
+  Signer #1 certificate SHA-256 digest: e2eb1a90...
+包信息：
+  package: name='dev.imbo.android' versionCode='2' versionName='1.0.0' compileSdkVersion='35'
+内置地址检查：
+  baseUrl https://...: True
+```
+
+同一份源码在不同机器上构建，sha256 通常**不会**相同（构建时间戳、签名时间），但版本号、证书、内置地址必须一致。核对这三点就够了。
 ## 7. 部署自检
 
 ```powershell
