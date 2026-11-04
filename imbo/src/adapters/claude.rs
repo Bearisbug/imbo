@@ -441,9 +441,11 @@ fn switch(
     for to in moved.values_mut().filter(|to| *to == before) {
         *to = now.into();
     }
-    moved.insert(before.into(), now.into());
     moved.remove(now);
-    info!(before, now, "the window switched sessions");
+    // The tool process re-registers as `before` every heartbeat.
+    if moved.insert(before.into(), now.into()).as_deref() != Some(now) {
+        info!(before, now, "the window switched sessions");
+    }
 }
 
 /// Process ID of a running session, found from `~/.claude/sessions/*.json`.
