@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use tracing::{info, warn};
 
-use super::{Begun, Channel, Ctx, Outcome, Stopper, provider_failed};
+use super::{Channel, Ctx, Outcome, Stopper, provider_failed};
 use crate::billing::{self, SubRow, revoke, warn_if_duplicate};
 use crate::config::{Waffo, rsa_key_pair};
 use crate::error::{ApiError, ApiResult, err};
@@ -43,7 +43,7 @@ impl Channel for Adapter<'_> {
         Stopper::Server
     }
 
-    async fn begin(&self, ctx: &Ctx<'_>, account: i32, plan: &str) -> ApiResult<Begun> {
+    async fn begin(&self, ctx: &Ctx<'_>, account: i32, plan: &str) -> ApiResult<String> {
         let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
             .bind(account)
             .fetch_one(ctx.db)
@@ -61,7 +61,7 @@ impl Channel for Adapter<'_> {
             mode = self.0.mode(),
             "checkout created"
         );
-        Ok(Begun::Pay(url))
+        Ok(url)
     }
 
     async fn portal(&self, ctx: &Ctx<'_>, account: i32) -> ApiResult<Option<String>> {

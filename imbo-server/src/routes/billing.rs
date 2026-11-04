@@ -1,7 +1,8 @@
 //! API-032 getBilling, API-033 createCheckout, API-034 openPortal,
 //! API-035 waffoWebhook, API-071 submitAppStoreTransaction,
-//! API-072 appStoreNotification, API-080 buyAlipayPack. Each channel's own
-//! endpoints are bound to its adapter here; the rest goes through `pay`.
+//! API-072 appStoreNotification, API-080 buyAlipayPack, API-083
+//! alipayNotify, API-084 checkAlipayOrder. Each channel's own endpoints are
+//! bound to its adapter here; the rest goes through `pay`.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -9,17 +10,18 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::{Extension, Json};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    AlipayPackResponse, AppStoreTransactionRequest, AppStoreTransactionResponse, AppStoreView,
-    BillingResponse, CheckoutRequest, CheckoutResponse, PortalResponse,
+    AlipayCheckRequest, AlipayCheckResponse, AlipayPackResponse, AppStoreTransactionRequest,
+    AppStoreTransactionResponse, AppStoreView, BillingResponse, CheckoutRequest, CheckoutResponse,
+    PortalResponse,
 };
 use tracing::{info, warn};
 
 use super::Body;
 use crate::auth::Caller;
 use crate::billing;
-use crate::config::{Apple, Waffo, Watcha};
+use crate::config::{Alipay, Apple, Waffo};
 use crate::error::{ApiResult, err};
-use crate::pay::{self, Begun, alipay, apple, waffo as waffo_channel};
+use crate::pay::{self, alipay, apple, waffo as waffo_channel};
 use crate::state::St;
 
 fn waffo(st: &St) -> ApiResult<&Waffo> {
@@ -29,12 +31,30 @@ fn waffo(st: &St) -> ApiResult<&Waffo> {
         .ok_or_else(|| err(ErrorCode::NotFound, "This server does not take payments."))
 }
 
-fn watcha(st: &St) -> ApiResult<&Watcha> {
+/// Alipay and the app that sells to this caller (API-032): the web app, or the
+/// Android App. The iPhone App keeps to the App Store (ADR-063).
+async fn alipay<'a>(st: &'a St, c: &Caller) -> ApiResult<(&'a Alipay, &'a str)> {
+    let iphone = match c.app {
+        Some(id) => {
+            sqlx::query_scalar::<_, String>("SELECT platform FROM app_sessions WHERE id = $1")
+                .bind(id)
+                .fetch_one(&st.db)
+                .await?
+                != "android"
+        }
+        None => false,
+    };
     st.cfg
-        .watcha
+        .alipay
         .as_ref()
-        .filter(|_| st.cfg.billing_on())
-        .ok_or_else(|| err(ErrorCode::NotFound, "This server does not sell time packs."))
+        .filter(|_| st.cfg.billing_on() && !iphone)
+        .and_then(|a| Some((a, a.seller(c.app.is_some())?)))
+        .ok_or_else(|| {
+            err(
+                ErrorCode::NotFound,
+                "This server does not sell time packs here.",
+            )
+        })
 }
 
 fn app_store(st: &St) -> ApiResult<&Apple> {
@@ -51,8 +71,6 @@ pub async fn get(
     Extension(c): Extension<Caller>,
 ) -> ApiResult<Json<BillingResponse>> {
     c.require_person()?;
-    // A time pack bought moments ago is not recorded yet (ADR-061).
-    pay::refresh(&st, c.account_id, pay::When::Page).await;
     let access = billing::access(&st.db, &st.cfg, c.account_id).await?;
     let created_at: chrono::DateTime<chrono::Utc> =
         sqlx::query_scalar("SELECT created_at FROM accounts WHERE id = $1")
@@ -84,38 +102,86 @@ pub async fn get(
             product_yearly: a.product_yearly.clone(),
             account_token: apple::account_token(c.account_id).to_string(),
         }),
-        alipay: st.cfg.watcha.is_some() && st.cfg.billing_on(),
+        alipay: alipay(&st, &c).await.is_ok(),
     }))
 }
 
-/// API-080: only the web app buys a time pack; the App may not sell one.
+/// API-080: a cashier page for the web app, an order string for the App.
 pub async fn alipay_pack(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
+    Body(req): Body<CheckoutRequest>,
 ) -> ApiResult<Json<AlipayPackResponse>> {
-    if c.app.is_some() {
+    let (alipay, _) = alipay(&st, &c).await?;
+    if req.plan != "monthly" && req.plan != "yearly" {
         return Err(err(
-            ErrorCode::Forbidden,
-            "Time packs are bought in the Imbo web app.",
+            ErrorCode::InvalidRequest,
+            "plan must be monthly or yearly.",
         ));
     }
-    let watcha = watcha(&st)?;
-    let ch = alipay::Adapter(watcha);
-    Ok(Json(
-        match pay::begin(&st, &ch, c.account_id, "", ("alipay", 30)).await? {
-            Begun::Granted(paid_until) => AlipayPackResponse {
-                status: "granted".into(),
-                paid_until: Some(paid_until),
-                purchase_url: None,
-            },
-            // The link carries a one-time ticket, so it is never logged.
-            Begun::Pay(url) => AlipayPackResponse {
-                status: "purchase_required".into(),
-                paid_until: None,
-                purchase_url: Some(url),
-            },
-        },
-    ))
+    let app = c.app.is_some();
+    let ch = alipay::Adapter { alipay, app };
+    let signed = pay::begin(&st, &ch, c.account_id, &req.plan, ("alipay", 30)).await?;
+    Ok(Json(if app {
+        AlipayPackResponse {
+            purchase_url: None,
+            order_string: Some(signed),
+        }
+    } else {
+        AlipayPackResponse {
+            purchase_url: Some(signed),
+            order_string: None,
+        }
+    }))
+}
+
+/// API-084: the buyer is back from paying and hands in the order number.
+pub async fn alipay_check(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Body(req): Body<AlipayCheckRequest>,
+) -> ApiResult<Json<AlipayCheckResponse>> {
+    let (alipay, app_id) = alipay(&st, &c).await?;
+    let paid_until = alipay::check(&st, alipay, app_id, c.account_id, &req.out_trade_no).await?;
+    Ok(Json(AlipayCheckResponse {
+        status: if paid_until.is_some() {
+            "granted"
+        } else {
+            "unpaid"
+        }
+        .into(),
+        paid_until,
+    }))
+}
+
+/// API-083: only Alipay calls this; the signature is the only credential
+/// (ROLE-Alipay). Alipay stops retrying once it reads `success`.
+pub async fn alipay_notify(State(st): State<St>, body: Bytes) -> ApiResult<&'static str> {
+    let alipay = st
+        .cfg
+        .alipay
+        .as_ref()
+        .ok_or_else(|| err(ErrorCode::NotFound, "This server does not sell time packs."))?;
+    match alipay::notify(&st, alipay, &body).await {
+        Ok(n) => {
+            info!(
+                event = "billing_event",
+                event_id = %n.notify_id,
+                r#type = %n.kind,
+                subscription_id = %n.out_trade_no,
+                outcome = n.outcome.as_str(),
+                "alipay notification"
+            );
+            Ok("success")
+        }
+        Err(e) => {
+            st.note_webhook_error();
+            if e.0.code() == Some(ErrorCode::Unauthorized) {
+                warn!("alipay notification that does not verify");
+            }
+            Err(e)
+        }
+    }
 }
 
 pub async fn checkout(
@@ -131,10 +197,8 @@ pub async fn checkout(
         ));
     }
     let ch = waffo_channel::Adapter(waffo);
-    match pay::begin(&st, &ch, c.account_id, &req.plan, ("checkout", 10)).await? {
-        Begun::Pay(checkout_url) => Ok(Json(CheckoutResponse { checkout_url })),
-        Begun::Granted(_) => Err(pay::already_subscribed()),
-    }
+    let checkout_url = pay::begin(&st, &ch, c.account_id, &req.plan, ("checkout", 10)).await?;
+    Ok(Json(CheckoutResponse { checkout_url }))
 }
 
 pub async fn portal(

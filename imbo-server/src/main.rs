@@ -213,7 +213,9 @@ async fn billing_pull(id: &str) -> anyhow::Result<()> {
     };
     let result = match pay::owner(&cfg, id) {
         Some(ch) => ch.pull(&ctx, id).await.map(|line| println!("{line}")),
-        None => Err(anyhow::anyhow!("An order ID looks like ORD_…")),
+        None => Err(anyhow::anyhow!(
+            "An order ID looks like ORD_… and a time pack like ALIPAY_…"
+        )),
     };
     database.close().await;
     result

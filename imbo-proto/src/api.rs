@@ -588,7 +588,7 @@ pub struct SubscriptionView {
     pub status: String,
     pub paid_until: DateTime<Utc>,
     /// `waffo` or `apple`: where it is managed; `alipay` for a time pack
-    /// bought in the web app (API-080); `gift` when ops gave it (ADR-060).
+    /// bought with Alipay (API-080); `gift` when ops gave it (ADR-060).
     pub provider: String,
 }
 
@@ -615,7 +615,8 @@ pub struct BillingResponse {
     /// Only when the server sells App Store subscriptions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_store: Option<AppStoreView>,
-    /// The web app may sell an Alipay time pack (API-080).
+    /// This caller may buy an Alipay time pack (API-080): the web app, or
+    /// the App when the server has the mobile app.
     #[serde(default)]
     pub alipay: bool,
 }
@@ -632,6 +633,7 @@ pub struct AppStoreTransactionResponse {
     pub subscription: SubscriptionView,
 }
 
+/// API-033, API-080: `monthly` or `yearly`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckoutRequest {
     pub plan: String,
@@ -647,14 +649,28 @@ pub struct PortalResponse {
     pub portal_url: String,
 }
 
-/// API-080. `granted` carries `paid_until`, `purchase_required` the link.
+/// API-080: the cashier page for the web app, the order string for the
+/// App's Alipay SDK.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlipayPackResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchase_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_string: Option<String>,
+}
+
+/// API-084.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlipayCheckRequest {
+    pub out_trade_no: String,
+}
+
+/// API-084: `granted` with `paid_until`, or `unpaid`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlipayCheckResponse {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paid_until: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purchase_url: Option<String>,
 }
 
 // ---- groups ----

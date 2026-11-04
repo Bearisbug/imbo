@@ -36,8 +36,8 @@ pub struct Config {
     pub waffo: Option<Waffo>,
     /// App Store subscriptions; only with Waffo, whose mode they follow (ADR-043).
     pub apple: Option<Apple>,
-    /// Alipay time packs; only with Waffo, whose mode they follow (ADR-061).
-    pub watcha: Option<Watcha>,
+    /// Alipay time packs; only with Waffo, whose mode they follow (ADR-063).
+    pub alipay: Option<Alipay>,
     /// First day of charging; unset means everyone is free (RULE-007).
     pub billing_start: Option<DateTime<Utc>>,
     /// The web app's origin, the only one allowed cross-origin with cookies (ADR-023).
@@ -54,30 +54,64 @@ pub struct Config {
     pub review: Option<Review>,
 }
 
-/// Watcha, the Alipay collection kit behind the time packs (ADR-061).
+/// Alipay, which sells the time packs (ADR-063).
 #[derive(Clone)]
-pub struct Watcha {
-    /// The server API key; its environment decides which SKU answers.
-    pub api_key: String,
-    /// The time pack's entitlement, not the SKU.
-    pub entitlement_id: String,
-    /// A fake Watcha for local tests, with IMBO_DEV=1.
+pub struct Alipay {
+    /// The web app's APPID: computer cashier pages.
+    pub app_id: String,
+    /// The mobile app's APPID: order strings for the Android App, which
+    /// sells nothing without it.
+    pub mobile_app_id: Option<String>,
+    /// The app private key (PKCS#8 or PKCS#1 DER) both apps sign with,
+    /// checked at startup.
+    pub key: Vec<u8>,
+    /// Alipay's public key (RSAPublicKey DER) that notifications are
+    /// verified with.
+    pub alipay_key: Vec<u8>,
+    /// Follows Waffo: live, or the sandbox.
+    pub live: bool,
+    /// A fake gateway for local tests, with IMBO_DEV=1.
     pub api_url: Option<String>,
 }
 
-impl std::fmt::Debug for Watcha {
+impl std::fmt::Debug for Alipay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Watcha({})", self.entitlement_id)
+        write!(f, "Alipay({})", self.app_id)
     }
 }
 
-impl Watcha {
-    pub fn api_url(&self) -> &str {
-        self.api_url.as_deref().unwrap_or(WATCHA_API)
+impl Alipay {
+    pub fn gateway(&self) -> &str {
+        match &self.api_url {
+            Some(url) => url,
+            None if self.live => ALIPAY_GATEWAY,
+            None => ALIPAY_SANDBOX_GATEWAY,
+        }
+    }
+
+    /// `test` or `live`, as stored on subscriptions.
+    pub fn mode(&self) -> &'static str {
+        if self.live { "live" } else { "test" }
+    }
+
+    /// The app that sells to a caller: the web app, or the mobile app to the
+    /// App.
+    pub fn seller(&self, app: bool) -> Option<&str> {
+        if app {
+            self.mobile_app_id.as_deref()
+        } else {
+            Some(&self.app_id)
+        }
+    }
+
+    /// Whether a notification's `app_id` is one of this server's apps.
+    pub fn ours(&self, app_id: &str) -> bool {
+        app_id == self.app_id || self.mobile_app_id.as_deref() == Some(app_id)
     }
 }
 
-const WATCHA_API: &str = "https://pay.watcha.cn";
+const ALIPAY_GATEWAY: &str = "https://openapi.alipay.com/gateway.do";
+const ALIPAY_SANDBOX_GATEWAY: &str = "https://openapi-sandbox.dl.alipaydev.com/gateway.do";
 
 /// Codes asked for `email` are `code` and no mail is sent (API-001).
 #[derive(Clone)]
@@ -228,8 +262,14 @@ fn apple_from_env(dev: bool) -> anyhow::Result<Option<Apple>> {
     }))
 }
 
-fn watcha_from_env(dev: bool) -> anyhow::Result<Option<Watcha>> {
-    let names = ["IMBO_WATCHA_API_KEY", "IMBO_WATCHA_ENTITLEMENT_ID"];
+/// All three IMBO_ALIPAY_* or none; IMBO_ALIPAY_MOBILE_APP_ID is optional.
+/// IMBO_ALIPAY_API_URL counts only with IMBO_DEV=1.
+fn alipay_from_env(dev: bool, live: bool) -> anyhow::Result<Option<Alipay>> {
+    let names = [
+        "IMBO_ALIPAY_APP_ID",
+        "IMBO_ALIPAY_PRIVATE_KEY",
+        "IMBO_ALIPAY_PUBLIC_KEY",
+    ];
     let vals: Vec<Option<String>> = names.iter().map(|n| var(n)).collect();
     if vals.iter().all(Option::is_none) {
         return Ok(None);
@@ -243,12 +283,20 @@ fn watcha_from_env(dev: bool) -> anyhow::Result<Option<Watcha>> {
     }
     let mut v = vals.into_iter().map(Option::unwrap_or_default);
     let mut next = || v.next().unwrap_or_default();
-    Ok(Some(Watcha {
-        api_key: next(),
-        entitlement_id: next(),
-        api_url: var("IMBO_WATCHA_API_URL")
-            .filter(|_| dev)
-            .map(|u| u.trim_end_matches('/').to_string()),
+    let app_id = next();
+    let key = pem_der(&next())
+        .filter(|der| rsa_key_pair(der).is_some())
+        .context("IMBO_ALIPAY_PRIVATE_KEY is not an RSA private key (PEM or base64)")?;
+    let alipay_key = pem_der(&next())
+        .and_then(|der| spki_rsa(&der))
+        .context("IMBO_ALIPAY_PUBLIC_KEY is not Alipay's RSA public key (PEM or base64)")?;
+    Ok(Some(Alipay {
+        app_id,
+        mobile_app_id: var("IMBO_ALIPAY_MOBILE_APP_ID"),
+        key,
+        alipay_key,
+        live,
+        api_url: var("IMBO_ALIPAY_API_URL").filter(|_| dev),
     }))
 }
 
@@ -445,7 +493,10 @@ impl Config {
         let dev = flag("IMBO_DEV");
         let waffo = waffo_from_env()?;
         let apple = apple_from_env(dev)?.filter(|_| waffo.is_some());
-        let watcha = watcha_from_env(dev)?.filter(|_| waffo.is_some());
+        let alipay = match &waffo {
+            Some(w) => alipay_from_env(dev, w.live)?,
+            None => None,
+        };
         Ok(Self {
             domain,
             tls,
@@ -463,7 +514,7 @@ impl Config {
             backup_stamp: var("IMBO_BACKUP_STAMP").map(PathBuf::from),
             min_client_version: var("IMBO_MIN_CLIENT_VERSION").unwrap_or_else(|| "0.1.0".into()),
             waffo,
-            watcha,
+            alipay,
             apple,
             billing_start: billing_start_from_env()?,
             web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),

@@ -178,12 +178,6 @@ pub async fn require_active(st: &St, account: i32, endpoint: &str) -> ApiResult<
     if !st.cfg.billing_on() || access(&st.db, &st.cfg, account).await?.active() {
         return Ok(());
     }
-    // A channel without notifications may have been paid since: look once
-    // more before refusing (ADR-061).
-    crate::pay::refresh(st, account, crate::pay::When::Send).await;
-    if access(&st.db, &st.cfg, account).await?.active() {
-        return Ok(());
-    }
     info!(
         event = "subscription_required",
         account_id = account,

@@ -23,7 +23,7 @@ start_daemon() {
   [ "$1" = bob ] && ch=$CODEX_HOME
   mkdir -p "$ch"
   # The payment keys are for the server only.
-  env -u IMBO_WAFFO_PRIVATE_KEY CODEX_HOME=$ch IMBO_HOME=$L/$1 \
+  env -u IMBO_WAFFO_PRIVATE_KEY -u IMBO_ALIPAY_PRIVATE_KEY CODEX_HOME=$ch IMBO_HOME=$L/$1 \
     nohup "$I" daemon >> "$L/$1/daemon.log" 2>&1 &
 }
 
@@ -65,8 +65,8 @@ case "${1:-}" in
     tmux -L imbo-test kill-server 2>/dev/null
     # The fake App Store of apple-env.sh.
     [ -s "$L/apple/serve.pid" ] && kill "$(cat "$L/apple/serve.pid")" 2>/dev/null
-    # The fake Watcha of watcha-env.sh.
-    [ -s "$L/watcha/serve.pid" ] && kill "$(cat "$L/watcha/serve.pid")" 2>/dev/null
+    # The fake Alipay of alipay-env.sh.
+    [ -s "$L/alipay/serve.pid" ] && kill "$(cat "$L/alipay/serve.pid")" 2>/dev/null
     pkill -f "$I daemon"; pkill -f "$I mcp"; pkill -f "$I hook"; pkill -f "$I wait"; pkill -f "^$S"
     # The server drains connections for up to 5 s; deleting its database
     # under it leaves it hung on the port.

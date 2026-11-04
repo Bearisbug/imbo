@@ -87,6 +87,7 @@ pub fn router(st: St) -> Router {
         .route("/v1/billing/checkout", post(billing::checkout))
         .route("/v1/billing/portal", post(billing::portal))
         .route("/v1/billing/alipay", post(billing::alipay_pack))
+        .route("/v1/billing/alipay/check", post(billing::alipay_check))
         .route(
             "/v1/billing/apple/transactions",
             post(billing::app_store_transaction),
@@ -139,6 +140,7 @@ pub fn router(st: St) -> Router {
         .route("/v1/web/session", post(auth::web_login))
         .route("/v1/app/session", post(auth::app_login))
         .route("/v1/billing/waffo/webhook", post(billing::webhook))
+        .route("/v1/billing/alipay/notify", post(billing::alipay_notify))
         .route(
             "/v1/billing/apple/notifications",
             post(billing::app_store_notification),

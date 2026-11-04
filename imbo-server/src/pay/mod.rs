@@ -2,9 +2,9 @@
 //! through `Channel`, picked by a subscription's `provider` or by the shape
 //! of its ID, never by name; Waffo, the App Store, Alipay time packs and
 //! gifts are its adapters. What every channel needs alike — the 409 on a
-//! second purchase, purchase limits, when to ask a channel, stopping renewals
-//! on deletion and bans — is done here once. A channel's own endpoints
-//! (API-035, API-071, API-072) are bound to its adapter in the router.
+//! second purchase, purchase limits, stopping renewals on deletion and bans
+//! — is done here once. A channel's own endpoints (API-035, API-071,
+//! API-072, API-083, API-084) are bound to its adapter in the router.
 
 pub mod alipay;
 pub mod apple;
@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use imbo_proto::ErrorCode;
 use sqlx::PgPool;
-use tracing::warn;
 
 use crate::billing::{self, SubRow};
 use crate::config::Config;
@@ -25,10 +24,6 @@ use crate::state::St;
 
 /// A call to a channel gives up after this, unless the channel sets less.
 const TIMEOUT: Duration = Duration::from_secs(10);
-/// The account page asks the channels at most this often per account.
-const PAGE_EVERY: Duration = Duration::from_secs(5);
-/// Before refusing a send, at most this often per account.
-const SEND_EVERY: Duration = Duration::from_secs(60);
 
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -57,14 +52,6 @@ pub struct Ctx<'a> {
     pub db: &'a PgPool,
     pub cfg: &'a Config,
     pub http: &'a reqwest::Client,
-}
-
-/// What starting a purchase gave.
-pub enum Begun {
-    /// Send the buyer to this page. It signs them in, so it is never logged.
-    Pay(String),
-    /// Paid already, through this date.
-    Granted(DateTime<Utc>),
 }
 
 /// Who can stop a subscription renewing.
@@ -132,19 +119,15 @@ pub trait Channel: Send + Sync {
         Stopper::Nobody
     }
 
-    /// Where to buy; `plan` is Waffo's, a time pack is picked on its page.
-    async fn begin(&self, _ctx: &Ctx<'_>, _account: i32, _plan: &str) -> ApiResult<Begun> {
+    /// Where to buy `plan`, `monthly` or `yearly`: a page that signs the
+    /// buyer in, or an order for a payment SDK, so it is never logged.
+    async fn begin(&self, _ctx: &Ctx<'_>, _account: i32, _plan: &str) -> ApiResult<String> {
         Err(err(ErrorCode::NotFound, "Nothing is sold here."))
     }
 
     /// The account's page for managing what it bought there, if there is one.
     async fn portal(&self, _ctx: &Ctx<'_>, _account: i32) -> ApiResult<Option<String>> {
         Ok(None)
-    }
-
-    /// Ask the channel what the account has now and record it.
-    async fn refresh(&self, _ctx: &Ctx<'_>, _account: i32) -> ApiResult<()> {
-        Ok(())
     }
 
     /// `imbo-server billing pull`: record what the channel has under this
@@ -192,8 +175,11 @@ pub fn channels(cfg: &Config) -> Vec<Box<dyn Channel + '_>> {
     if let Some(a) = &cfg.apple {
         all.push(Box::new(apple::Adapter(a)));
     }
-    if let Some(w) = &cfg.watcha {
-        all.push(Box::new(alipay::Adapter(w)));
+    if let Some(a) = &cfg.alipay {
+        all.push(Box::new(alipay::Adapter {
+            alipay: a,
+            app: false,
+        }));
     }
     all.push(Box::new(Gift));
     all
@@ -228,7 +214,7 @@ pub async fn begin(
     account: i32,
     plan: &str,
     (scope, per_hour): (&str, usize),
-) -> ApiResult<Begun> {
+) -> ApiResult<String> {
     if let Err(wait) = st.limiter.hit(
         &format!("{scope}:{account}"),
         per_hour,
@@ -264,56 +250,6 @@ pub async fn portal(st: &St, account: i32) -> ApiResult<String> {
         ErrorCode::NotFound,
         "You have no subscription to manage here. App Store subscriptions are managed in Settings on your iPhone.",
     ))
-}
-
-/// What a refresh comes before.
-#[derive(Clone, Copy)]
-pub enum When {
-    /// Answering the account page (API-032).
-    Page,
-    /// Refusing a send (RULE-008).
-    Send,
-}
-
-/// Ask every channel what the account has now and record it. Skipped when
-/// billing is off, while a subscription it paid for grants access, or when
-/// it asked moments ago; a channel that fails only logs, and the caller
-/// answers from what is recorded.
-pub async fn refresh(st: &St, account: i32, when: When) {
-    if !st.cfg.billing_on() {
-        return;
-    }
-    let (key, every) = match when {
-        When::Page => ("refresh-page", PAGE_EVERY),
-        When::Send => ("refresh-send", SEND_EVERY),
-    };
-    if st
-        .limiter
-        .hit(&format!("{key}:{account}"), 1, every)
-        .is_err()
-    {
-        return;
-    }
-    let now = Utc::now();
-    match billing::subscriptions(&st.db, &st.cfg, &[account]).await {
-        Ok(subs) if subs.iter().any(|s| paid_grant(&st.cfg, s, now)) => return,
-        Ok(_) => {}
-        Err(e) => {
-            warn!(account_id = account, "cannot read subscriptions: {e}");
-            return;
-        }
-    }
-    let ctx = st.pay();
-    for ch in channels(&st.cfg) {
-        if let Err(e) = ch.refresh(&ctx, account).await {
-            warn!(
-                account_id = account,
-                channel = ch.name(),
-                error = %e.0.detail,
-                "refresh failed"
-            );
-        }
-    }
 }
 
 /// The account's subscriptions that renew as recorded, with their channels.
