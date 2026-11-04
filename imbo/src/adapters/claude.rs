@@ -97,15 +97,19 @@ impl Adapter for Claude {
     }
 
     fn announce(&self) -> Option<Registration> {
-        let session_id = self.session(&[])?;
-        let pid = pid_for(&session_id).unwrap_or_else(|| unsafe { libc::getppid() } as u32);
-        Some(Registration {
-            session_id,
-            messaging_socket: env("CLAUDE_CODE_MESSAGING_SOCKET"),
-            messaging_token: env("CLAUDE_CODE_MESSAGING_TOKEN"),
-            pid,
-            config_dir: Some(config_dir().to_string_lossy().into_owned()),
-        })
+        if one_off() {
+            return None;
+        }
+        Some(registration(self.session(&[])?))
+    }
+
+    /// A one-off run only becomes a session when it uses Imbo (API-LOCAL-001).
+    fn announce_call(&self, session_id: &str) -> Option<Registration> {
+        if one_off() {
+            Some(registration(session_id.into()))
+        } else {
+            None
+        }
     }
 
     /// Failures in a row are kept while the same process re-registers the
@@ -900,6 +904,22 @@ fn revert_inbound(home: &Home) {
     };
 }
 
+fn registration(session_id: String) -> Registration {
+    let pid = pid_for(&session_id).unwrap_or_else(|| unsafe { libc::getppid() } as u32);
+    Registration {
+        session_id,
+        messaging_socket: env("CLAUDE_CODE_MESSAGING_SOCKET"),
+        messaging_token: env("CLAUDE_CODE_MESSAGING_TOKEN"),
+        pid,
+        config_dir: Some(config_dir().to_string_lossy().into_owned()),
+    }
+}
+
+/// `claude -p` and Agent SDK runs: one-off, not sessions (API-LOCAL-001).
+fn one_off() -> bool {
+    env("CLAUDE_CODE_ENTRYPOINT").is_some_and(|e| e.starts_with("sdk-"))
+}
+
 /// `imbo hook prompt`: Claude Code's UserPromptSubmit hook (API-LOCAL-003).
 /// Hands unread messages to the session as additional context when live
 /// insertion isn't working. Never blocks the prompt: any failure exits 0
@@ -918,6 +938,9 @@ pub async fn prompt_hook(event: String) -> anyhow::Result<()> {
             .iter()
             .any(|v| env(v).is_some())
     {
+        return Ok(());
+    }
+    if one_off() {
         return Ok(());
     }
     let session_id = input["session_id"]
