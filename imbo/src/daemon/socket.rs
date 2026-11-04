@@ -104,6 +104,7 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             ..
         } => match read_picture(&picture) {
             Ok((bytes, kind)) => {
+                let actor = actor.as_deref().map(adapters::current_actor);
                 call_with(d, &method, &path, Payload::Picture(bytes, kind), actor).await
             }
             Err(p) => LocalResponse::err(p),
@@ -115,6 +116,7 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             actor,
             picture: None,
         } => {
+            let actor = actor.as_deref().map(adapters::current_actor);
             // Files that went out with a message can't be reused for the next.
             let sent: Vec<uuid::Uuid> = if method == "POST" && path == "/v1/messages" {
                 body.as_ref()

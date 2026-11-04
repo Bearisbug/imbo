@@ -28,6 +28,7 @@ use crate::{render, ui};
 
 pub static CLAUDE: Claude = Claude {
     sessions: Mutex::new(BTreeMap::new()),
+    moved: Mutex::new(BTreeMap::new()),
 };
 
 /// Inserts that may fail in a row before a session falls back to the
@@ -35,8 +36,13 @@ pub static CLAUDE: Claude = Claude {
 const MAX_INJECT_FAILURES: u32 = 3;
 
 pub struct Claude {
-    /// Sessions the daemon knows of, by session ID.
+    /// Sessions the daemon knows of, by session ID; one per Claude Code
+    /// process.
     sessions: Mutex<BTreeMap<String, Session>>,
+    /// Session IDs windows switched away from with /resume, /clear or
+    /// /branch, to the one each has open now: the window's tool process
+    /// keeps the ID it started with.
+    moved: Mutex<BTreeMap<String, String>>,
 }
 
 /// What the session's tool process registered: its Claude Code process,
@@ -114,8 +120,22 @@ impl Adapter for Claude {
 
     /// Failures in a row are kept while the same process re-registers the
     /// same socket.
-    fn register(&self, r: Registration) -> Option<Found> {
+    fn register(&self, mut r: Registration) -> Option<Found> {
+        let dir = r
+            .config_dir
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(config_dir);
         let mut map = self.sessions.lock().unwrap();
+        if let Some(now) = current(r.pid, &dir).filter(|now| *now != r.session_id) {
+            switch(
+                &mut map,
+                &mut self.moved.lock().unwrap(),
+                &r.session_id,
+                &now,
+            );
+            r.session_id = now;
+        }
         let failures = match map.get(&r.session_id) {
             Some(s)
                 if s.pid == r.pid
@@ -128,7 +148,7 @@ impl Adapter for Claude {
         };
         let session = Session {
             pid: r.pid,
-            dir: r.config_dir.map(PathBuf::from).unwrap_or_else(config_dir),
+            dir,
             socket: r.messaging_socket,
             token: r.messaging_token,
             failures,
@@ -146,14 +166,29 @@ impl Adapter for Claude {
     fn adopt(&self, session_id: &str) -> Option<Found> {
         let mut map = self.sessions.lock().unwrap();
         if !map.contains_key(session_id) {
-            let session = Session {
-                pid: pid_for(session_id)?,
-                dir: config_dir(),
-                socket: None,
-                token: None,
-                failures: 0,
-            };
-            map.insert(session_id.into(), session);
+            let pid = pid_for(session_id)?;
+            match map
+                .iter()
+                .find(|(_, s)| s.pid == pid)
+                .map(|(id, _)| id.clone())
+            {
+                Some(before) => switch(
+                    &mut map,
+                    &mut self.moved.lock().unwrap(),
+                    &before,
+                    session_id,
+                ),
+                None => {
+                    let session = Session {
+                        pid,
+                        dir: config_dir(),
+                        socket: None,
+                        token: None,
+                        failures: 0,
+                    };
+                    map.insert(session_id.into(), session);
+                }
+            }
         }
         let s = &map[session_id];
         Some(found(session_id, s.pid, &s.dir))
@@ -168,8 +203,21 @@ impl Adapter for Claude {
     fn discover(&self) -> BoxFuture<'_, Result<Vec<Found>, String>> {
         let mut map = self.sessions.lock().unwrap();
         map.retain(|_, s| alive(s.pid));
+        let switched: Vec<(String, String)> = map
+            .iter()
+            .filter_map(|(id, s)| {
+                Some((id.clone(), current(s.pid, &s.dir).filter(|now| now != id)?))
+            })
+            .collect();
+        for (before, now) in switched {
+            switch(&mut map, &mut self.moved.lock().unwrap(), &before, &now);
+        }
         let list = map.iter().map(|(id, s)| found(id, s.pid, &s.dir)).collect();
         Box::pin(std::future::ready(Ok(list)))
+    }
+
+    fn current_id(&self, session_id: &str) -> Option<String> {
+        self.moved.lock().unwrap().get(session_id).cloned()
     }
 
     fn channel(&self, session_id: &str) -> &'static str {
@@ -358,11 +406,44 @@ fn read(path: &std::path::Path) -> Option<SessionFile> {
 }
 
 /// Session title for a running Claude Code process, from its config
-/// directory `dir`. After /clear or /resume the process holds another
-/// session ID than the one registered; the title is still the window's.
+/// directory `dir`.
 fn title(pid: u32, dir: &Path) -> Option<String> {
     let f = read(&dir.join("sessions").join(format!("{pid}.json")))?;
     f.name.filter(|n| !n.trim().is_empty())
+}
+
+/// The session a Claude Code process has open now, from its session file:
+/// /resume, /clear and /branch change it without restarting the process or
+/// its tool process.
+fn current(pid: u32, dir: &Path) -> Option<String> {
+    read(&dir.join("sessions").join(format!("{pid}.json")))?
+        .session_id
+        .filter(|s| !s.is_empty())
+}
+
+/// The window behind session `before` now has `now` open: its entry,
+/// with the socket to insert through, goes to `now`, and `before` is
+/// left out of discovery so it goes offline. Calls still made as `before`
+/// or as an ID switched away from earlier stand for `now`.
+fn switch(
+    map: &mut BTreeMap<String, Session>,
+    moved: &mut BTreeMap<String, String>,
+    before: &str,
+    now: &str,
+) {
+    if let Some(s) = map.remove(before)
+        && !map
+            .get(now)
+            .is_some_and(|n| n.socket.is_some() && s.socket.is_none())
+    {
+        map.insert(now.into(), s);
+    }
+    for to in moved.values_mut().filter(|to| *to == before) {
+        *to = now.into();
+    }
+    moved.insert(before.into(), now.into());
+    moved.remove(now);
+    info!(before, now, "the window switched sessions");
 }
 
 /// Process ID of a running session, found from `~/.claude/sessions/*.json`.
@@ -989,6 +1070,61 @@ mod tests {
 
     fn image(data: &[u8], media_type: &str) -> Value {
         json!({ "type": "image", "source": { "type": "base64", "media_type": media_type, "data": b64(data) } })
+    }
+
+    fn window(socket: Option<&str>) -> Session {
+        Session {
+            pid: 7,
+            dir: PathBuf::from("/c"),
+            socket: socket.map(String::from),
+            token: socket.map(String::from),
+            failures: 0,
+        }
+    }
+
+    #[test]
+    fn a_window_that_switches_sessions_stays_one_session() {
+        let (mut map, mut moved) = (BTreeMap::new(), BTreeMap::new());
+        map.insert("x".to_string(), window(Some("sock")));
+        switch(&mut map, &mut moved, "x", "y");
+        assert_eq!(map.keys().collect::<Vec<_>>(), ["y"]);
+        assert_eq!(map["y"].socket.as_deref(), Some("sock"));
+        assert_eq!(moved.get("x").map(String::as_str), Some("y"));
+
+        // Switched again: calls made as either earlier ID stand for the last.
+        switch(&mut map, &mut moved, "y", "z");
+        assert_eq!(map.keys().collect::<Vec<_>>(), ["z"]);
+        assert_eq!(moved.get("x").map(String::as_str), Some("z"));
+        assert_eq!(moved.get("y").map(String::as_str), Some("z"));
+
+        // Back to the first: it is a session again, not a stand-in.
+        switch(&mut map, &mut moved, "z", "x");
+        assert_eq!(map.keys().collect::<Vec<_>>(), ["x"]);
+        assert!(!moved.contains_key("x"));
+        assert_eq!(moved.get("z").map(String::as_str), Some("x"));
+    }
+
+    #[test]
+    fn the_prompt_hook_doesnt_take_the_socket_away() {
+        let (mut map, mut moved) = (BTreeMap::new(), BTreeMap::new());
+        map.insert("y".to_string(), window(Some("sock")));
+        map.insert("x".to_string(), window(None));
+        switch(&mut map, &mut moved, "x", "y");
+        assert_eq!(map.keys().collect::<Vec<_>>(), ["y"]);
+        assert_eq!(map["y"].socket.as_deref(), Some("sock"));
+    }
+
+    #[test]
+    fn the_session_file_names_the_session_open_now() {
+        let dir = std::env::temp_dir().join(format!("imbo-claude-current-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        let file = dir.join("sessions").join("41.json");
+        std::fs::write(&file, r#"{"pid":41,"sessionId":"y","name":"Winbox"}"#).unwrap();
+        assert_eq!(current(41, &dir).as_deref(), Some("y"));
+        assert_eq!(current(42, &dir), None);
+        std::fs::write(&file, r#"{"pid":41,"sessionId":""}"#).unwrap();
+        assert_eq!(current(41, &dir), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -52,6 +52,15 @@ pub fn get(id: &str) -> Option<&'static dyn Adapter> {
     ALL.iter().copied().find(|a| a.id() == id)
 }
 
+/// An actor `tool:session` as the session its window has open now
+/// (`Adapter::current_id`).
+pub fn current_actor(actor: &str) -> String {
+    actor
+        .split_once(':')
+        .and_then(|(tool, sid)| Some(format!("{tool}:{}", get(tool)?.current_id(sid)?)))
+        .unwrap_or_else(|| actor.into())
+}
+
 /// Who runs an `imbo mcp` process (ADR-018).
 pub enum Host {
     Tool(&'static dyn Adapter),
@@ -229,6 +238,12 @@ pub trait Adapter: Send + Sync {
     /// A session that called the daemon before discovery found it; `None`
     /// when the session can't be found.
     fn adopt(&self, session_id: &str) -> Option<Found>;
+
+    /// The session a caller's ID stands for now, when the window behind it
+    /// switched sessions; `None` keeps the ID.
+    fn current_id(&self, _session_id: &str) -> Option<String> {
+        None
+    }
 
     /// How often the daemon runs `discover`.
     fn poll_every(&self) -> Duration;
