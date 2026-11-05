@@ -577,6 +577,21 @@ pub struct ConversationItem {
     pub last_message: Option<LastMessage>,
     /// Messages to me here not yet in a session or read in the terminal.
     pub pending: i64,
+    /// My own settings for it (API-085), left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marked_unread: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
+}
+
+/// API-085: my settings for a conversation after the change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationPrefs {
+    pub pinned: bool,
+    pub marked_unread: bool,
+    pub muted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -144,6 +144,10 @@ pub(crate) async fn delete_now(st: &St, me: i32, why: &str) -> ApiResult<()> {
         .bind(me)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("DELETE FROM conversation_prefs WHERE account_id = $1")
+        .bind(me)
+        .execute(&mut *tx)
+        .await?;
 
     // Groups, under each group's lock in ID order; owned ones are dissolved
     // as API-039 does.

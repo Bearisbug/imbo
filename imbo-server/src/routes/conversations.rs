@@ -1,13 +1,14 @@
 //! API-030 listConversations, API-031 listConversationMessages,
-//! API-036 listAgentMessages, API-078 markConversationRead: reading
+//! API-036 listAgentMessages, API-078 markConversationRead,
+//! API-085 setConversationPrefs, API-086 searchConversation: reading
 //! history, for the web app and the App.
 
 use axum::extract::{Path, Query, State};
 use axum::{Extension, Json};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    ConversationItem, ConversationsResponse, FileView, LastMessage, MessageView, MessagesPage,
-    Profile, ReadResponse,
+    ConversationItem, ConversationPrefs, ConversationsResponse, FileView, LastMessage, MessageView,
+    MessagesPage, Profile, ReadResponse,
 };
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -46,6 +47,9 @@ struct ConvRow {
     peer_name: Option<String>,
     last_id: Option<i64>,
     pending: i64,
+    pinned: bool,
+    marked_unread: bool,
+    muted: bool,
 }
 
 pub async fn list(
@@ -70,10 +74,13 @@ pub async fn list(
                 (SELECT count(*) FROM deliveries d JOIN messages m ON m.id = d.message_id
                  JOIN agents t ON t.id = d.agent_id
                  WHERE m.conversation_id = mine.id AND d.account_id = $1 AND t.tool = 'terminal'
-                   AND d.state IN ('pending', 'pushed')) AS pending
+                   AND d.state IN ('pending', 'pushed')) AS pending,
+                coalesce(cp.pinned, false) AS pinned, coalesce(cp.marked_unread, false) AS marked_unread,
+                coalesce(cp.muted, false) AS muted
          FROM mine
          LEFT JOIN chat_groups g ON g.id = mine.group_id
-         LEFT JOIN accounts p ON p.id = mine.peer_id",
+         LEFT JOIN accounts p ON p.id = mine.peer_id
+         LEFT JOIN conversation_prefs cp ON cp.account_id = $1 AND cp.conversation_id = mine.id",
     )
     .bind(c.account_id)
     .fetch_all(&st.db)
@@ -82,8 +89,13 @@ pub async fn list(
         .into_iter()
         .filter(|r| r.kind == "group" || r.last_id.is_some())
         .collect();
-    // Newest last message first; message ids grow with time.
-    rows.sort_by(|a, b| b.last_id.cmp(&a.last_id).then(b.id.cmp(&a.id)));
+    // Pinned first, then newest last message first; message ids grow with
+    // time.
+    rows.sort_by(|a, b| {
+        (b.pinned, b.last_id)
+            .cmp(&(a.pinned, a.last_id))
+            .then(b.id.cmp(&a.id))
+    });
     rows.truncate(200);
     let last_ids: Vec<i64> = rows.iter().filter_map(|r| r.last_id).collect();
     let mut last = views::messages(&st.db, &last_ids, c.account_id).await?;
@@ -123,6 +135,9 @@ pub async fn list(
                 kind: r.kind,
                 last_message,
                 pending: r.pending,
+                pinned: r.pinned,
+                marked_unread: r.marked_unread,
+                muted: r.muted,
             }
         })
         .collect();
@@ -267,7 +282,125 @@ pub async fn mark_read(
     .execute(&st.db)
     .await?
     .rows_affected();
+    sqlx::query(
+        "UPDATE conversation_prefs SET marked_unread = false
+         WHERE account_id = $1 AND conversation_id = $2 AND marked_unread",
+    )
+    .bind(c.account_id)
+    .bind(id)
+    .execute(&st.db)
+    .await?;
     Ok(Json(ReadResponse { marked }))
+}
+
+#[derive(Deserialize)]
+pub struct PrefsIn {
+    pinned: Option<bool>,
+    marked_unread: Option<bool>,
+    muted: Option<bool>,
+}
+
+/// API-085: my own pin, unread mark and mute for a conversation in my list;
+/// only what the request gives changes.
+pub async fn prefs(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+    Body(req): Body<PrefsIn>,
+) -> ApiResult<Json<ConversationPrefs>> {
+    c.require_person()?;
+    if req.pinned.is_none() && req.marked_unread.is_none() && req.muted.is_none() {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "Give pinned, marked_unread or muted.",
+        ));
+    }
+    // The conversations API-030 lists: not the one with myself.
+    let listed: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM conversations cv WHERE cv.id = $1 AND (
+           (cv.kind = 'direct' AND $2 IN (cv.account_lo, cv.account_hi) AND cv.account_lo <> cv.account_hi)
+           OR EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = cv.group_id AND gm.account_id = $2)))",
+    )
+    .bind(id)
+    .bind(c.account_id)
+    .fetch_one(&st.db)
+    .await?;
+    if !listed {
+        return Err(err(ErrorCode::NotFound, format!("No conversation {id}.")));
+    }
+    let (pinned, marked_unread, muted) = sqlx::query_as(
+        "INSERT INTO conversation_prefs (account_id, conversation_id, pinned, marked_unread, muted)
+         VALUES ($1, $2, coalesce($3, false), coalesce($4, false), coalesce($5, false))
+         ON CONFLICT (account_id, conversation_id) DO UPDATE SET
+           pinned = coalesce($3, conversation_prefs.pinned),
+           marked_unread = coalesce($4, conversation_prefs.marked_unread),
+           muted = coalesce($5, conversation_prefs.muted)
+         RETURNING pinned, marked_unread, muted",
+    )
+    .bind(c.account_id)
+    .bind(id)
+    .bind(req.pinned)
+    .bind(req.marked_unread)
+    .bind(req.muted)
+    .fetch_one(&st.db)
+    .await?;
+    Ok(Json(ConversationPrefs {
+        pinned,
+        marked_unread,
+        muted,
+    }))
+}
+
+/// What API-086 returns at most.
+const FOUND: i64 = 50;
+
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    q: Option<String>,
+}
+
+/// API-086: messages here whose body has `q` in it, any case, newest first;
+/// in a group not the ones from people I block, as API-031.
+pub async fn search(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+    Query(q): Query<SearchQuery>,
+) -> ApiResult<Json<MessagesPage>> {
+    c.require_person()?;
+    let q = q.q.unwrap_or_default();
+    if q.trim().is_empty() || q.chars().count() > 100 {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "q must be 1 to 100 characters.",
+        ));
+    }
+    let kind = kind_of(&st, id, c.account_id).await?;
+    let hide = (kind == "group").then_some(c.account_id);
+    let like = format!(
+        "%{}%",
+        q.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let mut ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT m.id FROM messages m
+         WHERE m.conversation_id = $1 AND m.body ILIKE $2
+           AND ($3::integer IS NULL OR m.from_account NOT IN
+                (SELECT blocked_id FROM blocks WHERE account_id = $3))
+         ORDER BY m.id DESC LIMIT $4",
+    )
+    .bind(id)
+    .bind(like)
+    .bind(hide)
+    .bind(FOUND + 1)
+    .fetch_all(&st.db)
+    .await?;
+    let has_more = ids.len() as i64 > FOUND;
+    ids.truncate(FOUND as usize);
+    let mut messages = views::messages(&st.db, &ids, c.account_id).await?;
+    messages.reverse();
+    Ok(Json(MessagesPage { messages, has_more }))
 }
 
 pub async fn agent_messages(

@@ -77,6 +77,8 @@ pub fn router(st: St) -> Router {
             "/v1/conversations/{id}/read",
             post(conversations::mark_read),
         )
+        .route("/v1/conversations/{id}/prefs", post(conversations::prefs))
+        .route("/v1/conversations/{id}/search", get(conversations::search))
         .route(
             "/v1/agents/{id}/messages",
             get(conversations::agent_messages).post(messages::send_to_agent),

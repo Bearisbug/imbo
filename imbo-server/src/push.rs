@@ -51,7 +51,8 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
     // member (ADR-046), minus what the person sent themselves from a
     // terminal, the web or the App and what someone they block sent. A
     // group message lands in an inbox when its `@` named that member, who
-    // gets that one notification instead of the group's (ADR-057).
+    // gets that one notification instead of the group's (ADR-057). Nothing
+    // for a conversation the person muted, but for that `@` (API-085).
     let recipients: Vec<Recipient> = sqlx::query_as(
         "SELECT d.account_id, m.from_account, fa.name AS from_name, m.body, m.conversation_id,
                 m.from_agent_id AS session, coalesce(ag.custom_title, ag.title) AS session_title, dv.name AS computer,
@@ -66,6 +67,8 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
          LEFT JOIN devices dv ON dv.id = ag.device_id
          WHERE d.message_id = $1
            AND NOT (m.from_account = d.account_id AND m.from_agent_id IS NULL)
+           AND (g.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM conversation_prefs cp
+                WHERE cp.account_id = d.account_id AND cp.conversation_id = m.conversation_id AND cp.muted))
          UNION ALL
          SELECT gm.account_id, m.from_account, fa.name, m.body, m.conversation_id,
                 m.from_agent_id, coalesce(ag.custom_title, ag.title), dv.name, g.name, false
@@ -80,7 +83,9 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
            AND NOT (m.from_account = gm.account_id AND m.from_agent_id IS NULL)
            AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.account_id = gm.account_id AND b.blocked_id = m.from_account)
            AND NOT EXISTS (SELECT 1 FROM deliveries d JOIN agents t ON t.id = d.agent_id AND t.tool = 'terminal'
-                           WHERE d.message_id = m.id AND d.account_id = gm.account_id)",
+                           WHERE d.message_id = m.id AND d.account_id = gm.account_id)
+           AND NOT EXISTS (SELECT 1 FROM conversation_prefs cp
+                           WHERE cp.account_id = gm.account_id AND cp.conversation_id = m.conversation_id AND cp.muted)",
     )
     .bind(id)
     .fetch_all(&st.db)
