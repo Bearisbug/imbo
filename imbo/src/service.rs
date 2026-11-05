@@ -118,11 +118,13 @@ pub fn install(home: &Home) -> anyhow::Result<&'static str> {
         );
         std::fs::write(&plist, body)?;
         let target = format!("gui/{}", uid());
+        let service = format!("{target}/{}", home.label());
         let _ = Command::new("launchctl")
-            .args(["bootout", &format!("{target}/{}", home.label())])
+            .args(["bootout", &service])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        wait_unloaded(&service);
         stop_running(home);
         let out = Command::new("launchctl")
             .args(["bootstrap", &target, &plist.to_string_lossy()])
@@ -201,6 +203,23 @@ pub fn uninstall(home: &Home) {
             .output();
     }
     stop_running(home);
+}
+
+/// `bootout` returns while the old daemon may still be exiting, and until
+/// launchd lets go of it `bootstrap` fails with error 5. Waits up to 10 s.
+fn wait_unloaded(service: &str) {
+    for _ in 0..100 {
+        let loaded = Command::new("launchctl")
+            .args(["print", service])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !loaded {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// Ask a running daemon (if any) to exit and wait briefly for it.
