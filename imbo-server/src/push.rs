@@ -40,10 +40,10 @@ struct Recipient {
 }
 
 #[derive(Debug, PartialEq)]
-struct Note {
-    title: String,
-    body: String,
-    data: Value,
+pub struct Note {
+    pub title: String,
+    pub body: String,
+    pub data: Value,
 }
 
 async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
@@ -156,6 +156,10 @@ fn note(r: &Recipient, files: &[String], locale: Option<&str>) -> Note {
         _ => r.from_name.clone(),
     };
     let mut data = json!({ "conversation_id": r.conversation_id });
+    // 被 @ 的人给更高优先级：ntfy 那条会走 heads-up，其它消息保持普通优先级
+    if r.mention {
+        data["mention"] = json!(true);
+    }
     if own_session && let Some(s) = r.session {
         data["agent_id"] = json!(s);
     }
@@ -183,6 +187,96 @@ async fn send(
         );
         return Ok(());
     }
+    // 令牌类型靠前缀区分：Expo 的老路径不动，其余当原生安卓的 FCM 令牌。
+    let (expo, rest): (Vec<_>, Vec<_>) = phones
+        .iter()
+        .cloned()
+        .partition(|(_, t)| t.starts_with("ExponentPushToken["));
+
+    // ntfy 令牌形如 `ntfy:<话题>`，走自建实例的 HTTP 发布接口。
+    let (ntfy, fcm): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(_, t)| t.starts_with("ntfy:"));
+    if !ntfy.is_empty() {
+        send_ntfy(st, message, account, &ntfy, n).await?;
+    }
+    if !expo.is_empty() {
+        send_expo(st, message, account, &expo, n).await?;
+    }
+    if !fcm.is_empty() {
+        match &st.fcm {
+            Some(sender) => {
+                sender
+                    .send(&st.http, &st.db, message, account, &fcm, n)
+                    .await?
+            }
+            // 注册了 FCM 令牌但服务端没配 FCM：只可能是运维漏配，记下来别静默丢
+            None => warn!(
+                message_id = message,
+                tokens = fcm.len(),
+                "push: FCM tokens registered but IMBO_FCM_* isn't configured"
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// ntfy 发布：一个令牌对应一个话题，POST 到根路径并带 topic，不需要注册。
+async fn send_ntfy(
+    st: &St,
+    message: i64,
+    account: i32,
+    phones: &[(Uuid, String)],
+    n: &Note,
+) -> Result<(), sqlx::Error> {
+    let Some(cfg) = &st.cfg.ntfy else {
+        warn!(
+            message_id = message,
+            tokens = phones.len(),
+            "push: ntfy tokens registered but IMBO_NTFY_URL isn't configured"
+        );
+        return Ok(());
+    };
+    for (_, token) in phones {
+        let Some(topic) = token.strip_prefix("ntfy:") else {
+            continue;
+        };
+        // 注意：JSON 发布必须打到根路径并带 topic 字段；打到 /{topic} 时 ntfy 会把 JSON 当正文
+        let mut req = st.http.post(&cfg.url).json(&json!({
+            "topic": topic,
+            "title": n.title,
+            "message": n.body,
+            "priority": if n.data["mention"] == json!(true) { 4 } else { 3 },
+            // 点通知直接落到会话：App 注册了 imbo://chat/<id> 的 intent-filter
+            "click": format!("imbo://chat/{}", n.data["conversation_id"].as_i64().unwrap_or(0)),
+            "tags": ["speech_balloon"],
+        }));
+        if let Some(t) = &cfg.token {
+            req = req.bearer_auth(t);
+        }
+        // 一次、10 秒；消息本身已经在 App 里，通知失败只记日志。
+        match req.send().await {
+            Ok(r) if r.status().is_success() => info!(
+                event = "push_sent",
+                provider = "ntfy",
+                message_id = message,
+                account_id = account,
+                tokens = 1,
+                "push"
+            ),
+            Ok(r) => warn!(status = %r.status(), message_id = message, "push: ntfy refused"),
+            Err(e) => warn!(error = %e, message_id = message, "push: ntfy unreachable"),
+        }
+    }
+    Ok(())
+}
+
+/// Expo 的批量接口；iOS 与 Expo App 走的还是这一条。
+async fn send_expo(
+    st: &St,
+    message: i64,
+    account: i32,
+    phones: &[(Uuid, String)],
+    n: &Note,
+) -> Result<(), sqlx::Error> {
     let batch: Vec<Value> = phones
         .iter()
         .map(|(_, to)| {

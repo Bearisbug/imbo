@@ -1,0 +1,72 @@
+name: android
+
+# Tests and a debug build for the Android client.
+#
+# Release packages are signed locally (`android/scripts/release.ps1`) so the
+# signing key never has to live in GitHub secrets. This workflow only proves the
+# code compiles and the unit tests pass on a clean machine.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-ci.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ubuntu-latest ships the Android SDK; setup-android@v3 fails on current
+      # runners because it tries to install the removed "tools" package.
+      - name: Accept Android SDK licenses
+        run: |
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Unit tests
+        working-directory: android
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      # A debug build catches resource, manifest and R8-free compile problems
+      # that unit tests alone would miss.
+      - name: Assemble debug
+        working-directory: android
+        run: ./gradlew --no-daemon :app:assembleDebug "-Pimbo.useMock=false" "-Pimbo.baseUrl=https://imbo.example.com"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: imbo-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: warn
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-report
+          path: android/app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore

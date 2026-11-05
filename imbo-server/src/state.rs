@@ -21,6 +21,8 @@ pub struct AppState {
     pub limiter: Limiter,
     /// For the payment channels' APIs.
     pub http: reqwest::Client,
+    /// Android push; `None` when IMBO_FCM_* isn't configured (Expo still works).
+    pub fcm: Option<crate::fcm::Sender>,
     /// Payment webhooks that failed the signature or processing (API-025).
     webhook_errors: Mutex<VecDeque<Instant>>,
     /// Serialises pushes per receiving agent so frames leave in message order.
@@ -36,6 +38,10 @@ pub type St = Arc<AppState>;
 impl AppState {
     pub fn new(cfg: Config, db: PgPool) -> anyhow::Result<Self> {
         let mailer = Mailer::new(&cfg)?;
+        let fcm = match &cfg.fcm {
+            Some(c) => Some(crate::fcm::Sender::new(c)?),
+            None => None,
+        };
         Ok(Self {
             cfg,
             db,
@@ -44,6 +50,7 @@ impl AppState {
             mailer,
             limiter: Limiter::default(),
             http: crate::pay::http_client(),
+            fcm,
             webhook_errors: Mutex::new(VecDeque::new()),
             push_locks: Mutex::new(HashMap::new()),
             stats: Mutex::new(None),

@@ -9,6 +9,7 @@ mod delivery;
 mod dev;
 mod error;
 mod events;
+mod fcm;
 mod hub;
 mod limits;
 mod mail;

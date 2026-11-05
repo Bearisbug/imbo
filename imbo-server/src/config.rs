@@ -44,6 +44,11 @@ pub struct Config {
     pub web_origin: Option<String>,
     /// Sent with every Expo push request when the project requires it (ADR-034).
     pub expo_access_token: Option<String>,
+    /// Android push through FCM HTTP v1; unset means native Android gets no
+    /// notifications (Expo's path above is unchanged).
+    pub fcm: Option<Fcm>,
+    /// 通知走 ntfy（自建或公共实例）；只在 IMBO_NTFY_URL 配了时启用。
+    pub ntfy: Option<Ntfy>,
     /// Log the notifications instead of calling Expo, for local tests.
     pub push_log_only: bool,
     /// Lower-case emails whose web sign-in is ROLE-Admin (ADR-040).
@@ -126,6 +131,24 @@ impl std::fmt::Debug for Review {
     }
 }
 
+/// Firebase Cloud Messaging, for notifications in the native Android app.
+/// Absent means only Expo's path exists (iOS and Expo-written apps).
+#[derive(Clone, Debug)]
+pub struct Fcm {
+    pub project_id: String,
+    pub client_email: String,
+    /// The service account's PKCS#8 private key, already parsed from PEM.
+    pub key: Vec<u8>,
+}
+
+/// ntfy 发布地址与可选访问令牌（`IMBO_NTFY_URL` / `IMBO_NTFY_TOKEN`）。
+#[derive(Clone, Debug)]
+pub struct Ntfy {
+    /// 例如 `https://ntfy.example.com`，不带结尾斜杠。
+    pub url: String,
+    /// 自建实例开了访问控制时用；公共实例一般留空。
+    pub token: Option<String>,
+}
 /// Waffo, the payment platform (ADR-042).
 #[derive(Clone)]
 pub struct Waffo {
@@ -432,6 +455,43 @@ fn review_from_env() -> anyhow::Result<Option<Review>> {
     }))
 }
 
+/// All three IMBO_FCM_* values, or no FCM. Partial configuration is a startup
+/// error: silently pushing nothing is worse than refusing to start.
+fn ntfy_from_env() -> Option<Ntfy> {
+    let url = var("IMBO_NTFY_URL")?;
+    Some(Ntfy {
+        url: url.trim_end_matches('/').to_string(),
+        token: var("IMBO_NTFY_TOKEN"),
+    })
+}
+
+fn fcm_from_env() -> anyhow::Result<Option<Fcm>> {
+    let names = [
+        "IMBO_FCM_PROJECT_ID",
+        "IMBO_FCM_CLIENT_EMAIL",
+        "IMBO_FCM_PRIVATE_KEY",
+    ];
+    let vals: Vec<Option<String>> = names.iter().map(|n| var(n)).collect();
+    if vals.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    if let Some(i) = vals.iter().position(Option::is_none) {
+        bail!(
+            "{} is not set; set all of {} or none",
+            names[i],
+            names.join(", ")
+        );
+    }
+    let key = pem_der(vals[2].as_deref().unwrap_or_default()).context(
+        "IMBO_FCM_PRIVATE_KEY is not a service-account key (the JSON's private_key PEM)",
+    )?;
+    Ok(Some(Fcm {
+        project_id: vals[0].clone().unwrap_or_default(),
+        client_email: vals[1].clone().unwrap_or_default(),
+        key,
+    }))
+}
+
 /// `2026-11-01` (midnight UTC) or an RFC 3339 time.
 fn billing_start_from_env() -> anyhow::Result<Option<DateTime<Utc>>> {
     let Some(raw) = var("IMBO_BILLING_START") else {
@@ -519,6 +579,8 @@ impl Config {
             billing_start: billing_start_from_env()?,
             web_origin: var("IMBO_WEB_ORIGIN").map(|o| o.trim_end_matches('/').to_string()),
             expo_access_token: var("IMBO_EXPO_ACCESS_TOKEN"),
+            fcm: fcm_from_env()?,
+            ntfy: ntfy_from_env(),
             push_log_only: flag("IMBO_PUSH_LOG_ONLY"),
             admin_emails: var("IMBO_ADMIN_EMAILS")
                 .map(|v| {

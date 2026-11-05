@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Imbo</string>
+
+    <!-- tabs -->
+    <string name="tab_chats">Chats</string>
+    <string name="tab_sessions">Sessions</string>
+    <string name="tab_contacts">Contacts</string>
+
+    <!-- brand bar -->
+    <string name="trial_days_left">Trial: %1$d days left</string>
+    <string name="subscribed">Subscribed</string>
+    <string name="subscribe">Subscribe</string>
+
+    <!-- auth -->
+    <string name="sign_in_title">Sign in to Imbo</string>
+    <string name="sign_in_body">We\'ll email you a 6-digit code.</string>
+    <string name="email_label">Email</string>
+    <string name="email_placeholder">you@example.com</string>
+    <string name="continue_action">Continue</string>
+    <string name="first_time">First time on Imbo?</string>
+    <string name="create_account">Create an account</string>
+    <string name="check_email_title">Check your email</string>
+    <string name="check_email_body">We sent a 6-digit code to %1$s.</string>
+    <string name="code_label">Code</string>
+    <string name="verify_action">Verify</string>
+    <string name="resend_code">Send a new code</string>
+    <string name="register_title">Create your account</string>
+    <string name="register_body">Pick the name your contacts will see.</string>
+    <string name="name_label">Name</string>
+    <string name="have_account">Already on Imbo?</string>
+    <string name="sign_in_link">Sign in</string>
+    <string name="welcome_title">You\'re in, %1$s.</string>
+    <string name="welcome_body">Your 30-day free trial has started. Add a contact, or connect an agent session on your computer, to send your first message.</string>
+    <string name="open_imbo">Open Imbo</string>
+
+    <!-- chats list -->
+    <string name="new_group">New group</string>
+    <string name="empty_chats_title">No chats yet</string>
+    <string name="empty_chats_body">Messages you send to a contact or an agent session land here.</string>
+
+    <!-- sessions -->
+    <string name="empty_sessions_title">No sessions yet</string>
+    <string name="empty_sessions_body">Run imbo login on a computer and its agent sessions show up here.</string>
+
+    <!-- contacts -->
+    <string name="add_contact">Add contact</string>
+    <string name="requests">Requests</string>
+    <string name="group_invite_request">Invited you to %1$s</string>
+    <string name="request_pending">Wants to connect</string>
+    <string name="accept">Accept</string>
+    <string name="decline">Decline</string>
+
+    <!-- chat -->
+    <string name="message_placeholder">Message</string>
+    <string name="attach">Add attachment</string>
+    <string name="attach_unavailable">Attachments aren\'t wired up yet. Sending text works.</string>
+    <string name="attach_picker_title">Add attachment</string>
+    <string name="attach_photo">Photo</string>
+    <string name="attach_file">File</string>
+    <string name="attach_default_name">Attachment</string>
+    <string name="send">Send</string>
+    <string name="online">Online</string>
+    <string name="seen_minutes_ago">Seen %1$d min ago</string>
+    <string name="members_count">%1$d members</string>
+    <string name="chat_loading_earlier">Loading earlier messages…</string>
+    <string name="chat_copy">Copy</string>
+    <string name="chat_quote">Quote</string>
+    <string name="chat_no_body">(attachment)</string>
+
+    <!-- account -->
+    <string name="account_title">Account</string>
+    <string name="picture">Picture</string>
+    <string name="change_picture">Change picture</string>
+    <string name="remove_picture">Remove picture</string>
+    <string name="avatar_uploading">Uploading…</string>
+    <string name="avatar_removing">Removing…</string>
+    <string name="avatar_upload_failed">Couldn\'t update your picture. Try again.</string>
+    <string name="picture_formats">JPEG or PNG · up to 5 MB</string>
+    <string name="picture_unavailable">Uploading a picture isn\'t wired up yet, so this build shows your first letter.</string>
+    <string name="picture_hint">JPEG or PNG, up to 5 MB. Imbo crops it to a square, and your contacts and group members see it.</string>
+    <string name="edit">Edit</string>
+    <string name="change">Change</string>
+    <string name="account_id">Account ID</string>
+    <string name="message_state_waiting">Waiting for the session</string>
+    <string name="message_state_canceled">Canceled</string>
+    <string name="session_offline_wakeable">Offline (can wake)</string>
+    <string name="share_button">Share</string>
+    <string name="share_title_counts">Sessions they can see (%1$d / %2$d)</string>
+    <string name="share_title">Sessions they can see</string>
+    <string name="share_all">All sessions</string>
+    <string name="share_chosen">Only selected sessions</string>
+    <string name="share_none">Nothing</string>
+    <string name="account_id_hint">People add you as a contact with this ID.</string>
+    <string name="free_trial_days">Free trial, %1$d days left</string>
+    <string name="subscribe_hint">Subscribe now and the first charge comes in 30 days.</string>
+    <string name="plan_yearly">$20 a year</string>
+    <string name="plan_monthly">$2 a month</string>
+    <string name="taxes_note">Taxes are added at checkout. Cancel any time.</string>
+    <string name="language">Language</string>
+    <string name="language_english">English</string>
+    <string name="language_chinese">简体中文</string>
+    <string name="language_system">Follow system</string>
+    <string name="language_system_hint">Follow system uses your phone\'s language.</string>
+    <string name="devices">Devices</string>
+    <string name="device_seen_now">Online just now</string>
+    <string name="device_seen_minutes">Last seen %1$d min ago</string>
+    <string name="device_seen_hours">Last seen %1$d hr ago</string>
+    <string name="device_seen_days">Last seen %1$d days ago</string>
+    <string name="device_online_minutes">Last seen %1$d min ago</string>
+    <string name="sign_out">Sign out</string>
+    <string name="devices_hint">Every computer where you ran imbo login. Signing one out stops its sessions until you sign in there again.</string>
+    <string name="blocked">Blocked</string>
+    <string name="manage">Manage</string>
+    <string name="blocked_hint">Blocked accounts can\'t send you messages, requests or invites.</string>
+    <string name="unblock">Unblock</string>
+    <string name="delete_account">Delete account…</string>
+
+    <!-- common -->
+    <string name="back">Back</string>
+    <string name="retry">Retry</string>
+    <string name="loading">Loading</string>
+    <string name="error_generic">Something went wrong. Check your connection and try again.</string>
+
+    <!-- auth states -->
+    <string name="sending">Sending…</string>
+    <string name="verifying">Verifying…</string>
+    <string name="auth_err_email">Enter a valid email address.</string>
+    <string name="auth_err_code">That code is wrong or expired.</string>
+
+    <!-- dialogs -->
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+    <string name="rename_title">Your name</string>
+    <string name="change_email_title">Change your email</string>
+    <string name="email_change_body">The code goes to the new address. The old one isn\'t told, and your sessions stay signed in.</string>
+    <string name="email_change_code_title">Enter the code</string>
+    <string name="email_change_code_body">Sent to %1$s. Request another if it expired.</string>
+    <string name="email_change_send">Send code</string>
+    <string name="email_change_confirm">Change it</string>
+    <string name="email_change_sent">Code sent to %1$s.</string>
+    <string name="email_change_same">That\'s already your email.</string>
+    <string name="subscribe_title">Subscribe to Imbo</string>
+    <string name="subscribe_unavailable">Subscriptions aren\'t open yet. Your trial keeps running until it ends.</string>
+    <string name="delete_account_title">Delete account</string>
+    <string name="delete_account_body">This deletes your account, contacts, groups and messages for good. It can\'t be undone.</string>
+    <string name="delete_account_failed">The account wasn\'t deleted. Try again.</string>
+    <string name="group_avatar_change">Change group picture</string>
+    <string name="group_avatar_remove">Remove group picture</string>
+    <string name="group_avatar_failed">The picture didn\'t change. Try again.</string>
+    <string name="group_avatar_owner_only">Only the owner can change the group picture.</string>
+    <string name="group_avatar_uploading">Uploading…</string>
+    <string name="sign_out_action">Sign out</string>
+    <string name="sign_out_account">Sign out of this account</string>
+    <string name="access_expired">Your access has ended.</string>
+    <string name="access_free">No trial or subscription on this account.</string>
+    <string name="this_device">This device</string>
+    <string name="server_label">Server</string>
+    <string name="server_address_title">Server address</string>
+    <string name="server_address_hint">Self-hosted? Enter your server, e.g. https://imbo.example.com or https://my-pc.tail1234.ts.net. Leave empty to use the built-in one.</string>
+    <string name="server_address_invalid">That doesn\'t look like an address. Try https://host or host:port.</string>
+    <string name="server_address_https_required">Release builds only connect over https.</string>
+    <string name="server_not_set">Server · not configured (tap to set)</string>
+    <string name="server_using_default">Server · %1$s (default)</string>
+    <string name="server_current">Server · %1$s</string>
+
+    <!-- add contact -->
+    <string name="add_contact_note">Note (optional)</string>
+    <string name="add_contact_note_hint">Only they see it; use it to remember who this is.</string>
+    <string name="add_contact_hint">The 8-digit Account ID from their account page, or their sign-in email.</string>
+    <string name="add_contact_invalid">Use an 8-digit Account ID, or an email address.</string>
+    <string name="add_contact_sent">Request sent. They\'ll see it in Contacts.</string>
+    <string name="account_id_or_email">Account ID or email</string>
+    <string name="via_app">Android app</string>
+    <string name="via_web">Web</string>
+    <string name="via_terminal">Terminal</string>
+    <string name="group_my_sessions">My sessions</string>
+    <string name="attach_camera">Take a photo</string>
+    <string name="session_pending">%1$d unread</string>
+    <string name="session_online">online</string>
+    <string name="session_offline">offline</string>
+    <string name="mention_picker_title">Mention someone</string>
+    <string name="chat_select">Select</string>
+    <string name="share_selected_count">%1$d selected</string>
+    <string name="share_as_image">Share as image</string>
+    <string name="err_already_contact">They\'re already in your contacts.</string>
+    <string name="err_not_contact">That account isn\'t one of your contacts.</string>
+    <string name="err_signed_out">You\'re signed out. Sign in again.</string>
+    <string name="err_push_token">That push token doesn\'t look right.</string>
+    <string name="err_rate_limited">Too many requests. Try again in a moment.</string>
+    <string name="err_group_not_invited">They aren\'t in this group yet. Invite them first.</string>
+    <string name="err_not_owner">Only the owner can do this.</string>
+    <string name="err_empty_value">That can\'t be empty.</string>
+    <string name="chat_failed_tap_retry">Not sent · tap to retry</string>
+    <string name="err_network">Can\'t reach the server. Check your network or the server address.</string>
+    <string name="err_network_timeout">The server didn\'t answer. Try again.</string>
+    <string name="session_last_seen">last seen %1$s</string>
+    <string name="message_mine">me</string>
+    <string name="chat_forward">Forward</string>
+    <string name="forward_title">Forward to</string>
+    <string name="forward_empty">No other chats to forward to yet.</string>
+    <string name="forward_done">Forwarded</string>
+    <string name="search_chats_label">Search chats</string>
+    <string name="search_chats_placeholder">Name or message text</string>
+    <string name="search_empty_title">No matching chats</string>
+    <string name="search_empty_body">Nothing in chat titles or the latest message matches “%1$s”.</string>
+    <string name="resend_code_countdown">Resend code in %1$d s</string>
+    <string name="contact_no_chat_yet">You haven\'t talked yet. Your first message starts the chat.</string>
+    <string name="chat_jump_to_latest">Jump to latest</string>
+    <string name="chat_unread_divider">New messages</string>
+    <string name="push_label">Notifications</string>
+    <string name="push_topic_value">Topic %1$s</string>
+    <string name="push_set_server">Set</string>
+    <string name="push_server_label">ntfy URL</string>
+    <string name="push_server_hint">e.g. https://ntfy.example.com or http://100.x.y.z:8081; leave empty to use the built-in default.</string>
+    <string name="push_topic_only">Topic %1$s (no ntfy URL configured)</string>
+    <string name="check_connection">Check connection</string>
+    <string name="check_ok">Connected · server %1$s</string>
+    <string name="check_failed">Connection failed: %1$s</string>
+    <string name="checking">Checking…</string>
+
+    <!-- new group -->
+    <string name="new_group_sessions">My sessions (receive this group)</string>
+    <string name="new_group_no_sessions">No sessions on this computer yet</string>
+    <string name="new_group_members">Members</string>
+    <string name="new_group_no_contacts">Add a contact before creating a group.</string>
+    <string name="new_group_invite_hint">Invited people join after they accept in Contacts.</string>
+    <string name="new_group_create">Create group</string>
+
+    <!-- group info -->
+    <string name="group_info">Group info</string>
+    <string name="group_members">Members</string>
+    <string name="group_actions">Actions</string>
+    <string name="group_owner">Owner</string>
+    <string name="group_you">You</string>
+    <string name="group_rename">Rename group</string>
+    <string name="group_rename_title">Rename group</string>
+    <string name="group_name_label">Group name</string>
+    <string name="group_invite">Invite contact</string>
+    <string name="group_invite_title">Invite a contact</string>
+    <string name="group_invite_empty">No contacts left to invite.</string>
+    <string name="group_remove">Remove</string>
+    <string name="group_remove_title">Remove member</string>
+    <string name="group_remove_body">%1$s will leave this group. They can be invited back later.</string>
+    <string name="group_leave">Leave group</string>
+    <string name="group_owner_cannot_leave">The owner can\'t leave. Transfer the group or dissolve it first.</string>
+    <string name="group_leave_title">Leave group</string>
+    <string name="group_leave_body">This group disappears from your chats, and you stop getting its messages.</string>
+    <string name="group_dissolve">Dissolve group</string>
+    <string name="group_dissolve_title">Dissolve group</string>
+    <string name="group_dissolve_body">Everyone loses this group, and it can\'t be undone.</string>
+    <string name="group_saving">Saving…</string>
+    <string name="group_inviting">Inviting…</string>
+    <string name="group_removing">Removing…</string>
+    <string name="group_leaving">Leaving…</string>
+    <string name="group_dissolving">Dissolving…</string>
+    <string name="group_renamed">Group name updated.</string>
+    <string name="group_invited">Invited %1$s.</string>
+    <string name="group_removed">Removed %1$s.</string>
+
+    <!-- safety -->
+    <string name="block_action">Block</string>
+    <string name="blocked_toast">%1$s is blocked.</string>
+    <string name="report">Report</string>
+    <string name="report_title">Report this conversation</string>
+    <string name="report_body">Reports go to the Imbo team. The other side isn\'t told.</string>
+    <string name="report_reason_spam">Spam or scams</string>
+    <string name="report_reason_harassment">Harassment</string>
+    <string name="report_reason_other">Something else</string>
+    <string name="report_sent">Report received. Thanks.</string>
+    <string name="report_block_after">Report and block</string>
+    <string name="ai_agent">AI agent</string>
+    <string name="ai_agent_hint">Replies come from %1$s, an AI agent running on your computer.</string>
+    <string name="chat_more">More</string>
+    <string name="search">Search</string>
+    <string name="chat_search_placeholder">Search this chat</string>
+    <string name="chat_search_empty">No matches</string>
+    <string name="chat_search_empty_body">Nothing here contains “%1$s”.</string>
+    <string name="chat_empty_title">No messages yet</string>
+    <string name="chat_empty_body">Send the first message to start this conversation.</string>
+    <string name="chat_empty_group_title">No messages yet</string>
+    <string name="chat_empty_group_body">This group has no conversation history. Your first message starts it.</string>
+    <string name="delete_contact_title">Remove %1$s?</string>
+    <string name="delete_contact_body">They\'re removed from your contacts. Your chats stay.</string>
+    <string name="delete_contact_action">Remove</string>
+    <string name="rename_session_title">Name this session</string>
+    <string name="transfer_owner">Make owner</string>
+    <string name="transfer_owner_title">Hand this group to %1$s?</string>
+    <string name="transfer_owner_body">You\'ll stop being the owner. Only an owner can rename or dissolve the group.</string>
+    <string name="session_name_label">Session name</string>
+    <string name="group_transferring">Handing over…</string>
+    <string name="group_transferred">Now owned by %1$s.</string>
+    <string name="group_transfer_empty">There\'s no one else in this group to hand it to.</string>
+</resources>
