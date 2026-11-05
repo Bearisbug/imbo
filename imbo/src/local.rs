@@ -93,7 +93,10 @@ impl Local {
         req: &LocalRequest,
         wait: Duration,
     ) -> Result<LocalResponse, Problem> {
-        self.exchange(req, wait, Duration::from_secs(15)).await
+        // Longer than a server request at its slowest, a GET that got no
+        // answer twice (net::TOTAL_TIMEOUT), so the caller sees why.
+        self.exchange(req, wait, crate::net::TOTAL_TIMEOUT * 3)
+            .await
     }
 
     /// For uploads and downloads (API-LOCAL-008, 009): the daemon gives up

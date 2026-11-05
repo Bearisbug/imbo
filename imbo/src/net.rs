@@ -20,9 +20,13 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
-/// Through a proxy to the Hong Kong server the TLS handshake often takes 1–2 s.
-pub const TLS_TIMEOUT: Duration = Duration::from_secs(3);
-pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
+/// From China to the Hong Kong server the TLS handshake often takes 1–3 s,
+/// and has taken over 6 s at night.
+pub const TLS_TIMEOUT: Duration = Duration::from_secs(6);
+/// One attempt at a server request, connecting included.
+pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
+/// A call to a tool's service on this computer (DESIGN §17).
+const LOCAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct ApiResponse {
     pub status: u16,
@@ -92,27 +96,43 @@ async fn request_with(
 ) -> Result<ApiResponse, Problem> {
     let method = hyper::Method::from_bytes(method.as_bytes())
         .map_err(|_| Problem::new(ErrorCode::InvalidRequest, "bad method"))?;
-    let attempts = if method == hyper::Method::GET { 2 } else { 1 };
     let request_id = uuid::Uuid::now_v7().to_string();
     let mut why = String::new();
-    for attempt in 1..=attempts {
-        let call = send_once(
-            server,
-            &method,
-            path,
-            &request_id,
-            token,
-            actor,
-            body.clone(),
-        );
-        let got = tokio::time::timeout(total, call)
+    for attempt in 1..=2 {
+        // `open` gives up within CONNECT_TIMEOUT + TLS_TIMEOUT, before
+        // `total` runs out, so a timeout means the request went out.
+        let call = async {
+            let (stream, hostport) = open(server, CONNECT_TIMEOUT)
+                .await
+                .map_err(|e| (false, e))?;
+            send_once(
+                stream,
+                hostport,
+                &method,
+                path,
+                &request_id,
+                token,
+                actor,
+                body.clone(),
+            )
             .await
-            .unwrap_or_else(|_| Err(format!("no answer within {} seconds", total.as_secs())));
+            .map_err(|e| (true, e))
+        };
+        let got = tokio::time::timeout(total, call).await.unwrap_or_else(|_| {
+            Err((
+                true,
+                format!("no answer within {} seconds", total.as_secs()),
+            ))
+        });
         let (status, unread, bytes) = match got {
             Ok(r) => r,
-            Err(e) => {
+            Err((sent, e)) => {
                 tracing::warn!(%method, path, attempt, why = %e, "server request failed");
                 why = e;
+                // The server doesn't drop repeats, so only a GET is sent twice.
+                if sent && method != hyper::Method::GET {
+                    break;
+                }
                 continue;
             }
         };
@@ -141,8 +161,10 @@ async fn request_with(
     Err(unreachable(server, &why))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_once(
-    server: &str,
+    stream: Box<dyn Io>,
+    hostport: String,
     method: &hyper::Method,
     path: &str,
     request_id: &str,
@@ -150,7 +172,6 @@ async fn send_once(
     actor: Option<&str>,
     body: Option<(Bytes, &str)>,
 ) -> Result<(u16, Option<u32>, Bytes), String> {
-    let (stream, hostport) = open(server, CONNECT_TIMEOUT).await?;
     let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .map_err(|e| e.to_string())?;
@@ -234,12 +255,12 @@ pub async fn local_http(
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         ))
     };
-    tokio::time::timeout(TOTAL_TIMEOUT, call)
+    tokio::time::timeout(LOCAL_TIMEOUT, call)
         .await
         .unwrap_or_else(|_| {
             Err(format!(
                 "no answer within {} seconds",
-                TOTAL_TIMEOUT.as_secs()
+                LOCAL_TIMEOUT.as_secs()
             ))
         })
 }
@@ -516,12 +537,7 @@ pub async fn ws_connect(server: &str, token: &str) -> Result<Ws, WsError> {
         HeaderValue::from_str(&format!("Bearer {token}"))
             .map_err(|e| WsError::Other(e.to_string()))?,
     );
-    match tokio::time::timeout(
-        TOTAL_TIMEOUT * 2,
-        tokio_tungstenite::client_async(req, stream),
-    )
-    .await
-    {
+    match tokio::time::timeout(TOTAL_TIMEOUT, tokio_tungstenite::client_async(req, stream)).await {
         Err(_) => Err(WsError::Other("handshake timed out".into())),
         Ok(Ok((ws, _))) => Ok(ws),
         Ok(Err(tokio_tungstenite::tungstenite::Error::Http(res)))
