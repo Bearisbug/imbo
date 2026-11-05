@@ -427,6 +427,24 @@ pub struct MessageView {
     /// talk it over with before replying (ADR-052).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub siblings: Vec<Sibling>,
+    /// The message this one replies to (API-024).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<ReplyRef>,
+}
+
+/// What a reply shows of the message it answers. Only `id` when the reader
+/// can't see that message: it was deleted, or in a group the reader blocked
+/// its sender (INV-035).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplyRef {
+    pub id: MessageId,
+    /// Name of the account that sent it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
+    /// Its first 80 characters with line breaks as spaces, or its first file
+    /// name when it has no text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 /// One of the reader's own sessions, as `siblings` lists it.

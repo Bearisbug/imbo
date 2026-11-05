@@ -54,7 +54,7 @@ enum Cmd {
     /// Groups.
     #[command(subcommand)]
     Group(cli::group::GroupCmd),
-    /// Send a message: imbo send <to> <message> [--file <path>]...
+    /// Send a message: imbo send <to> <message> [--file <path>]... [--reply <message-ID>]
     Send {
         /// name/session, account-ID/session, a group name or #group-ID; a name or account ID alone goes to their inbox.
         to: String,
@@ -63,6 +63,9 @@ enum Cmd {
         /// A file to attach (repeat for more: up to 20, 100 MB together).
         #[arg(long = "file", short = 'f', value_name = "PATH")]
         files: Vec<std::path::PathBuf>,
+        /// Reply to this message, in the same chat or group.
+        #[arg(long = "reply", value_name = "MESSAGE_ID")]
+        reply: Option<i64>,
     },
     /// Download a message's files to ~/.imbo/files/<message-ID>/.
     Get { message_id: i64 },

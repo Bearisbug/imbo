@@ -48,7 +48,12 @@ pub async fn dispatch(cmd: crate::Cmd) -> anyhow::Result<()> {
         Cmd::Device(c) => account::device(c).await,
         Cmd::Contact(c) => contact::run(c).await,
         Cmd::Group(c) => group::run(c).await,
-        Cmd::Send { to, body, files } => messages::send(to, body.join(" "), files).await,
+        Cmd::Send {
+            to,
+            body,
+            files,
+            reply,
+        } => messages::send(to, body.join(" "), files, reply).await,
         Cmd::Get { message_id } => messages::get(message_id).await,
         Cmd::Inbox { message_id, all } => messages::inbox(message_id, all).await,
         Cmd::Status => status::status().await,

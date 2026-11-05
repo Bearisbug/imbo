@@ -76,7 +76,12 @@ async fn upload(paths: &[String]) -> anyhow::Result<Vec<FileView>> {
     Ok(out)
 }
 
-pub async fn send(to: String, body: String, paths: Vec<PathBuf>) -> anyhow::Result<()> {
+pub async fn send(
+    to: String,
+    body: String,
+    paths: Vec<PathBuf>,
+    reply: Option<i64>,
+) -> anyhow::Result<()> {
     let n = body.chars().count();
     if (paths.is_empty() && body.trim().is_empty()) || n > MAX_BODY_CHARS {
         ui::error_line(&format!(
@@ -98,6 +103,9 @@ pub async fn send(to: String, body: String, paths: Vec<PathBuf>) -> anyhow::Resu
         json!({ "to": to, "body": body, "client_msg_id": uuid::Uuid::now_v7().to_string() });
     if !uploaded.is_empty() {
         req["files"] = json!(uploaded.iter().map(|f| f.id).collect::<Vec<_>>());
+    }
+    if let Some(id) = reply {
+        req["in_reply_to"] = json!(id);
     }
     let r: SendResponse = api_as("POST", "/v1/messages", Some(req)).await?;
     let with = match uploaded.len() {

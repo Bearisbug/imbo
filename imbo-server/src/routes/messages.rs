@@ -35,6 +35,7 @@ pub struct SendIn {
     body: Option<String>,
     client_msg_id: Option<String>,
     files: Option<Vec<Uuid>>,
+    in_reply_to: Option<i64>,
 }
 
 #[derive(Clone, sqlx::FromRow)]
@@ -552,6 +553,7 @@ pub async fn send(
             "client_msg_id must be 1 to 64 characters.",
         ));
     }
+    check_reply_id(req.in_reply_to)?;
     if let Some(done) = existing_result(&st, c.account_id, &client_msg_id).await? {
         return Ok((StatusCode::CREATED, Json(done)));
     }
@@ -587,7 +589,16 @@ pub async fn send(
             ),
         ));
     }
-    let done = store(&st, &c, &target, &body, &client_msg_id, &files).await?;
+    let done = store(
+        &st,
+        &c,
+        &target,
+        &body,
+        &client_msg_id,
+        &files,
+        req.in_reply_to,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(done)))
 }
 
@@ -600,6 +611,7 @@ async fn store(
     body: &str,
     client_msg_id: &str,
     files: &[Uuid],
+    in_reply_to: Option<i64>,
 ) -> ApiResult<SendResponse> {
     let from_agent = c.actor.as_ref().map(|a| a.id);
     let from_via = from_agent.is_none().then(|| c.via());
@@ -838,9 +850,13 @@ async fn store(
     if !files.is_empty() {
         check_files(&mut tx, c.account_id, files).await?;
     }
+    if let Some(original) = in_reply_to {
+        let group = matches!(target, Target::Group(_));
+        check_reply(&mut tx, conversation.id, c.account_id, original, group).await?;
+    }
     let message_id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO messages (conversation_id, from_account, from_agent_id, from_via, to_agent_id, body, client_msg_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "INSERT INTO messages (conversation_id, from_account, from_agent_id, from_via, to_agent_id, body, client_msg_id, in_reply_to)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (from_account, client_msg_id) DO NOTHING RETURNING id",
     )
     .bind(conversation.id)
@@ -850,6 +866,7 @@ async fn store(
     .bind(to_agent)
     .bind(body)
     .bind(client_msg_id)
+    .bind(in_reply_to)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(message_id) = message_id else {
@@ -912,6 +929,46 @@ async fn store(
     })
 }
 
+/// `in_reply_to` is a message number (FLOW-REPLY S4).
+fn check_reply_id(in_reply_to: Option<i64>) -> ApiResult<()> {
+    if in_reply_to.is_some_and(|id| id <= 0) {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "in_reply_to must be a message number.",
+        ));
+    }
+    Ok(())
+}
+
+/// The message a reply answers is in the conversation it goes to, and the
+/// sender sees it as API-024 decides: it still exists, and in a group the
+/// sender hasn't blocked whoever sent it (FLOW-REPLY S4, RULE-013).
+async fn check_reply(
+    tx: &mut sqlx::PgConnection,
+    conversation: i64,
+    me: i32,
+    original: i64,
+    group: bool,
+) -> ApiResult<()> {
+    let seen: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM messages m WHERE m.id = $1 AND m.conversation_id = $2
+           AND NOT ($4 AND m.from_account IN (SELECT blocked_id FROM blocks WHERE account_id = $3)))",
+    )
+    .bind(original)
+    .bind(conversation)
+    .bind(me)
+    .bind(group)
+    .fetch_one(tx)
+    .await?;
+    if !seen {
+        return Err(err(
+            ErrorCode::ReplyNotFound,
+            "Can't find the message to reply to.",
+        ));
+    }
+    Ok(())
+}
+
 /// One of my sessions as API-014 lists it: not the terminal inbox, seen in
 /// the last 7 days.
 async fn my_session(st: &St, me: i32, raw: &str) -> ApiResult<AgentRow> {
@@ -963,6 +1020,7 @@ pub struct AgentSendIn {
     body: Option<String>,
     client_msg_id: Option<String>,
     files: Option<Vec<Uuid>>,
+    in_reply_to: Option<i64>,
 }
 
 /// API-043: the web app or the App writes to one of my sessions; the
@@ -996,6 +1054,7 @@ pub async fn send_to_agent(
             "client_msg_id must be 1 to 64 characters.",
         ));
     }
+    check_reply_id(req.in_reply_to)?;
     let agent = my_session(&st, c.account_id, &raw).await?;
     let agent_id = agent.id;
     let message_id = match existing_result(&st, c.account_id, &client_msg_id).await? {
@@ -1009,9 +1068,17 @@ pub async fn send_to_agent(
                 },
                 agent,
             };
-            let id = store(&st, &c, &target, &body, &client_msg_id, &files)
-                .await?
-                .message_id;
+            let id = store(
+                &st,
+                &c,
+                &target,
+                &body,
+                &client_msg_id,
+                &files,
+                req.in_reply_to,
+            )
+            .await?
+            .message_id;
             if c.web_person() {
                 crate::wake::request(&st, c.account_id, agent_id).await?;
             }

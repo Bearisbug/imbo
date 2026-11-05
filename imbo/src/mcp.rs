@@ -89,7 +89,8 @@ fn tools(paste: Option<Paste>, prefix: &str) -> Vec<Tool> {
             "files": {
                 "type": "array", "items": { "type": "string" },
                 "description": "Files to attach, as absolute local paths; up to 20, 100 MB in total"
-            }
+            },
+            "in_reply_to": { "type": "integer", "description": "Only when you need to say which message this answers: its number, N in [Imbo message #N]" }
         },
         "required": ["to"]
     });
@@ -278,7 +279,10 @@ fn message_text(m: &MessageView, files: &[LocalFile]) -> String {
             .with_timezone(&local_offset(m.created_at))
             .format("%m-%d %H:%M"),
         reply,
-        m.body,
+        match render::reply_line(m) {
+            Some(line) => format!("{line}\n{}", m.body),
+            None => m.body.clone(),
+        },
         render::attachments(m, files)
     );
     if let Some(c) = render::consult(m) {
@@ -508,6 +512,9 @@ impl Imbo {
                 let mut req = json!({ "to": to, "body": body, "client_msg_id": uuid::Uuid::now_v7().to_string() });
                 if !ids.is_empty() {
                     req["files"] = json!(ids);
+                }
+                if let Some(id) = a.get("in_reply_to") {
+                    req["in_reply_to"] = id.clone();
                 }
                 let (v, unread) = self.call(actor, "POST", "/v1/messages", Some(req)).await?;
                 let r: SendResponse = serde_json::from_value(v).map_err(|_| bad_reply())?;

@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use imbo_proto::api::{
-    AccountRef, AgentRef, ConversationRef, FileView, GroupRef, MessageView, Sender, Sibling,
+    AccountRef, AgentRef, ConversationRef, FileView, GroupRef, MessageView, ReplyRef, Sender,
+    Sibling,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -31,6 +32,7 @@ struct MessageRow {
     to_short_id: Option<String>,
     to_title: Option<String>,
     to_tool: Option<String>,
+    in_reply_to: Option<i64>,
 }
 
 /// Message views by id, in id order. `viewer` decides which side of a direct
@@ -48,7 +50,8 @@ pub async fn messages(
                 m.from_account, fa.name AS from_name, m.from_agent_id, m.from_via,
                 ag.short_id AS agent_short_id, coalesce(ag.custom_title, ag.title) AS agent_title, ag.tool AS agent_tool,
                 c.account_lo, c.account_hi,
-                m.to_agent_id, ta.short_id AS to_short_id, coalesce(ta.custom_title, ta.title) AS to_title, ta.tool AS to_tool
+                m.to_agent_id, ta.short_id AS to_short_id, coalesce(ta.custom_title, ta.title) AS to_title, ta.tool AS to_tool,
+                m.in_reply_to
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
          LEFT JOIN chat_groups g ON g.id = c.group_id
@@ -101,6 +104,33 @@ pub async fn messages(
             expires_at,
         });
     }
+
+    // What replies show of the messages they answer (API-024): the number
+    // alone when the viewer can't see it (INV-035).
+    let mut originals: Vec<i64> = rows.iter().filter_map(|r| r.in_reply_to).collect();
+    originals.sort_unstable();
+    originals.dedup();
+    let replied: HashMap<i64, (String, String)> = if originals.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (i64, String, String, Option<String>)>(
+            "SELECT m.id, a.name, m.body,
+                    (SELECT f.name FROM files f WHERE f.message_id = m.id ORDER BY f.created_at, f.id LIMIT 1)
+             FROM messages m
+             JOIN accounts a ON a.id = m.from_account
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE m.id = ANY($1)
+               AND (c.group_id IS NULL OR m.from_account NOT IN
+                    (SELECT blocked_id FROM blocks WHERE account_id = $2))",
+        )
+        .bind(&originals)
+        .bind(viewer)
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .map(|(id, name, body, file)| (id, (name, preview(&body, file))))
+        .collect()
+    };
 
     Ok(rows
         .into_iter()
@@ -169,9 +199,36 @@ pub async fn messages(
                 reply_to,
                 files: files.remove(&r.id).unwrap_or_default(),
                 to,
+                in_reply_to: r.in_reply_to.map(|id| match replied.get(&id) {
+                    Some((name, preview)) => ReplyRef {
+                        id,
+                        from_name: Some(name.clone()),
+                        preview: Some(preview.clone()),
+                    },
+                    None => ReplyRef {
+                        id,
+                        from_name: None,
+                        preview: None,
+                    },
+                }),
             }
         })
         .collect())
+}
+
+/// A replied-to message as a reply shows it: its first 80 characters with
+/// line breaks as spaces, or its first file name when it has no text.
+fn preview(body: &str, file: Option<String>) -> String {
+    if body.is_empty()
+        && let Some(name) = file
+    {
+        return name;
+    }
+    body.replace("\r\n", "\n")
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .take(80)
+        .collect()
 }
 
 /// For each group message in `ids`: which of `viewer`'s sessions got it,

@@ -58,10 +58,11 @@ pub enum ErrorCode {
     ImageInvalid,
     OtherAccount,
     AppStoreRenewing,
+    ReplyNotFound,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 54] = [
+    pub const ALL: [ErrorCode; 55] = [
         Self::InvalidRequest,
         Self::InvalidEmail,
         Self::CodeInvalid,
@@ -116,6 +117,7 @@ impl ErrorCode {
         Self::ImageInvalid,
         Self::OtherAccount,
         Self::AppStoreRenewing,
+        Self::ReplyNotFound,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -174,6 +176,7 @@ impl ErrorCode {
             Self::ImageInvalid => "image-invalid",
             Self::OtherAccount => "other-account",
             Self::AppStoreRenewing => "app-store-renewing",
+            Self::ReplyNotFound => "reply-not-found",
         }
     }
 
@@ -229,7 +232,8 @@ impl ErrorCode {
             | Self::UnknownSession
             | Self::BodyInvalid
             | Self::FileHashMismatch
-            | Self::ImageInvalid => 422,
+            | Self::ImageInvalid
+            | Self::ReplyNotFound => 422,
             Self::RateLimited | Self::CodeLocked | Self::UploadQuotaExceeded => 429,
             Self::EmailSendFailed | Self::PaymentProviderFailed => 502,
             Self::Unavailable | Self::ServerUnreachable | Self::DaemonUnavailable => 503,
@@ -294,6 +298,7 @@ impl ErrorCode {
             Self::ImageInvalid => "Not a JPEG or PNG image",
             Self::OtherAccount => "Subscription belongs to another account",
             Self::AppStoreRenewing => "App Store subscription still renews",
+            Self::ReplyNotFound => "Can't find the message to reply to",
         }
     }
 }
