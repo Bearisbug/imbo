@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::config::Config;
 use crate::state::St;
 
 const EXPO_PUSH_URL: &str = "https://exp.host/--/api/v2/push/send";
@@ -29,12 +30,16 @@ struct Recipient {
     account_id: i32,
     from_account: i32,
     from_name: String,
+    from_avatar: Option<Uuid>,
     body: String,
     conversation_id: i64,
     session: Option<Uuid>,
+    session_short: Option<String>,
     session_title: Option<String>,
     computer: Option<String>,
+    group_id: Option<i32>,
     group_name: Option<String>,
+    group_avatar: Option<Uuid>,
     /// A group message whose `@` named this person (RULE-015).
     mention: bool,
 }
@@ -54,9 +59,11 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
     // gets that one notification instead of the group's (ADR-057). Nothing
     // for a conversation the person muted, but for that `@` (API-085).
     let recipients: Vec<Recipient> = sqlx::query_as(
-        "SELECT d.account_id, m.from_account, fa.name AS from_name, m.body, m.conversation_id,
-                m.from_agent_id AS session, coalesce(ag.custom_title, ag.title) AS session_title, dv.name AS computer,
-                g.name AS group_name, g.id IS NOT NULL AS mention
+        "SELECT d.account_id, m.from_account, fa.name AS from_name,
+                fa.avatar_id AS from_avatar, m.body, m.conversation_id,
+                m.from_agent_id AS session, ag.short_id AS session_short,
+                coalesce(ag.custom_title, ag.title) AS session_title, dv.name AS computer,
+                g.id AS group_id, g.name AS group_name, g.avatar_id AS group_avatar, g.id IS NOT NULL AS mention
          FROM deliveries d
          JOIN agents t ON t.id = d.agent_id AND t.tool = 'terminal'
          JOIN messages m ON m.id = d.message_id
@@ -70,8 +77,10 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
            AND (g.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM conversation_prefs cp
                 WHERE cp.account_id = d.account_id AND cp.conversation_id = m.conversation_id AND cp.muted))
          UNION ALL
-         SELECT gm.account_id, m.from_account, fa.name, m.body, m.conversation_id,
-                m.from_agent_id, coalesce(ag.custom_title, ag.title), dv.name, g.name, false
+         SELECT gm.account_id, m.from_account, fa.name,
+                fa.avatar_id, m.body, m.conversation_id,
+                m.from_agent_id, ag.short_id, coalesce(ag.custom_title, ag.title), dv.name,
+                g.id, g.name, g.avatar_id, false
          FROM messages m
          JOIN conversations cv ON cv.id = m.conversation_id
          JOIN chat_groups g ON g.id = cv.group_id
@@ -121,7 +130,7 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
                 id,
                 r.account_id,
                 &phones,
-                &note(&r, &files, locale.as_deref()),
+                &note(&st.cfg, &r, &files, locale.as_deref()),
             )
             .await?;
         }
@@ -129,13 +138,27 @@ async fn message(st: &St, id: i64) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// `locale` is the App's language (API-050), for a mention's words.
-fn note(r: &Recipient, files: &[String], locale: Option<&str>) -> Note {
+/// The sender, or the group, as the App shows it beside the notification (ADR-064).
+fn who(cfg: &Config, id: i64, name: &str, avatar: Option<Uuid>) -> Value {
+    let mut v = json!({ "id": id, "name": name });
+    if let Some(url) = crate::avatar::url_of(cfg, avatar) {
+        v["avatar_url"] = json!(url);
+    }
+    v
+}
+
+/// `locale` is the App's language (API-050), for a mention's words. `data`
+/// carries where a reply typed on the notification goes (ADR-064).
+fn note(cfg: &Config, r: &Recipient, files: &[String], locale: Option<&str>) -> Note {
     let body = if r.body.trim().is_empty() {
         files.join(", ")
     } else {
         r.body.chars().take(PREVIEW_CHARS).collect()
     };
+    let mut data = json!({
+        "conversation_id": r.conversation_id,
+        "sender": who(cfg, r.from_account.into(), &r.from_name, r.from_avatar),
+    });
     // A group's message is titled by the group, the sender up front.
     if let Some(group) = &r.group_name {
         let from = match &r.session_title {
@@ -147,10 +170,14 @@ fn note(r: &Recipient, files: &[String], locale: Option<&str>) -> Note {
             (true, Some("zh-Hans")) => format!("{from} @了你：{body}"),
             (true, _) => format!("{from} mentioned you: {body}"),
         };
+        if let Some(id) = r.group_id {
+            data["to"] = json!(format!("#{id}"));
+            data["group"] = who(cfg, id.into(), group, r.group_avatar);
+        }
         return Note {
             title: group.clone(),
             body,
-            data: json!({ "conversation_id": r.conversation_id }),
+            data,
         };
     }
     // A reply from one of the person's own sessions is titled by the session.
@@ -160,11 +187,23 @@ fn note(r: &Recipient, files: &[String], locale: Option<&str>) -> Note {
         (Some(t), None) if own_session => t.clone(),
         _ => r.from_name.clone(),
     };
-    let mut data = json!({ "conversation_id": r.conversation_id });
-    if own_session && let Some(s) = r.session {
-        data["agent_id"] = json!(s);
+    match (own_session, r.session, &r.session_short) {
+        // A reply goes back to the session itself (API-043).
+        (true, Some(s), _) => data["agent_id"] = json!(s),
+        (false, Some(_), Some(short)) => data["to"] = json!(format!("{}/{short}", r.from_account)),
+        _ => data["to"] = json!(r.from_account.to_string()),
     }
     Note { title, body, data }
+}
+
+/// The notification as Expo gets it, less the phone: a reply action on it, the
+/// sender's picture beside it, a chat's notifications stacked together (ADR-064).
+fn expo(n: &Note) -> Value {
+    json!({
+        "title": n.title, "body": n.body, "data": n.data, "sound": "default",
+        "categoryId": "message", "mutableContent": true,
+        "threadId": n.data["conversation_id"].to_string(),
+    })
 }
 
 async fn send(
@@ -184,6 +223,7 @@ async fn send(
             title = ?n.title,
             body = ?n.body,
             data = %n.data,
+            expo = %expo(n),
             "push (log only)"
         );
         return Ok(());
@@ -191,7 +231,9 @@ async fn send(
     let batch: Vec<Value> = phones
         .iter()
         .map(|(_, to)| {
-            json!({ "to": to, "title": n.title, "body": n.body, "data": n.data, "sound": "default" })
+            let mut m = expo(n);
+            m["to"] = json!(to);
+            m
         })
         .collect();
     let mut req = st.http.post(EXPO_PUSH_URL).json(&batch);
@@ -257,61 +299,99 @@ mod tests {
             account_id: 1,
             from_account,
             from_name: "bob".into(),
+            from_avatar: None,
             body: body.into(),
             conversation_id: 7,
             session: Some(Uuid::nil()),
+            session_short: Some("0a1b2c".into()),
             session_title: Some("checkout".into()),
             computer: Some("MacBook".into()),
+            group_id: None,
             group_name: None,
+            group_avatar: None,
             mention: false,
         }
     }
 
+    fn cfg() -> Config {
+        Config {
+            domain: Some("api.imbo.dev".into()),
+            ..Config::default()
+        }
+    }
+
+    fn group(mut r: Recipient) -> Recipient {
+        r.group_id = Some(1234567);
+        r.group_name = Some("release".into());
+        r
+    }
+
     #[test]
     fn contact_message_is_titled_by_the_sender() {
-        let n = note(&recipient(2, "lunch?"), &[], None);
+        let n = note(&cfg(), &recipient(2, "lunch?"), &[], None);
         assert_eq!(n.title, "bob");
         assert_eq!(n.body, "lunch?");
-        assert_eq!(n.data, json!({ "conversation_id": 7 }));
+        assert_eq!(
+            n.data,
+            json!({ "conversation_id": 7, "sender": { "id": 2, "name": "bob" }, "to": "2/0a1b2c" })
+        );
+        // The contact themselves, from the web, the App or a terminal: their inbox.
+        let mut r = recipient(2, "lunch?");
+        r.session = None;
+        r.session_short = None;
+        assert_eq!(note(&cfg(), &r, &[], None).data["to"], json!("2"));
+    }
+
+    #[test]
+    fn sender_and_group_pictures_ride_along_unless_missing() {
+        let mut r = group(recipient(2, "hi"));
+        r.from_avatar = Some(Uuid::nil());
+        let d = note(&cfg(), &r, &[], None).data;
+        assert_eq!(
+            d["sender"]["avatar_url"],
+            json!(format!(
+                "https://api.imbo.dev/v1/avatars/{}.jpg",
+                Uuid::nil()
+            ))
+        );
+        assert_eq!(d["group"], json!({ "id": 1234567, "name": "release" }));
     }
 
     #[test]
     fn own_session_reply_is_titled_by_session_and_computer() {
-        let n = note(&recipient(1, "412 tests pass"), &[], None);
+        let n = note(&cfg(), &recipient(1, "412 tests pass"), &[], None);
         assert_eq!(n.title, "checkout · MacBook");
         assert_eq!(n.data["agent_id"], json!(Uuid::nil()));
+        assert_eq!(n.data.get("to"), None);
     }
 
     #[test]
     fn group_message_is_titled_by_the_group_with_the_sender_up_front() {
-        let mut r = recipient(2, "build is green");
-        r.group_name = Some("release".into());
-        let n = note(&r, &[], None);
+        let n = note(&cfg(), &group(recipient(2, "build is green")), &[], None);
         assert_eq!(n.title, "release");
         assert_eq!(n.body, "bob · checkout: build is green");
-        assert_eq!(n.data, json!({ "conversation_id": 7 }));
+        assert_eq!(n.data["to"], json!("#1234567"));
         // The person's own session in the group, sent without a session title.
-        let mut r = recipient(1, "done");
-        r.group_name = Some("release".into());
+        let mut r = group(recipient(1, "done"));
         r.session_title = None;
-        assert_eq!(note(&r, &[], None).body, "bob: done");
-        assert_eq!(note(&r, &[], None).data, json!({ "conversation_id": 7 }));
+        assert_eq!(note(&cfg(), &r, &[], None).body, "bob: done");
+        assert_eq!(note(&cfg(), &r, &[], None).data["to"], json!("#1234567"));
+        assert_eq!(note(&cfg(), &r, &[], None).data.get("agent_id"), None);
     }
 
     #[test]
     fn mention_says_so_in_the_apps_language() {
-        let mut r = recipient(2, "@alice 看下发布单");
-        r.group_name = Some("release".into());
+        let mut r = group(recipient(2, "@alice 看下发布单"));
         r.mention = true;
-        let zh = note(&r, &[], Some("zh-Hans"));
+        let zh = note(&cfg(), &r, &[], Some("zh-Hans"));
         assert_eq!(zh.title, "release");
         assert_eq!(zh.body, "bob · checkout @了你：@alice 看下发布单");
         assert_eq!(
-            note(&r, &[], Some("en")).body,
+            note(&cfg(), &r, &[], Some("en")).body,
             "bob · checkout mentioned you: @alice 看下发布单"
         );
         assert_eq!(
-            note(&r, &[], None).body,
+            note(&cfg(), &r, &[], None).body,
             "bob · checkout mentioned you: @alice 看下发布单"
         );
     }
@@ -320,11 +400,27 @@ mod tests {
     fn body_is_cut_to_100_characters_or_names_the_files() {
         let long = "字".repeat(150);
         assert_eq!(
-            note(&recipient(2, &long), &[], None).body.chars().count(),
+            note(&cfg(), &recipient(2, &long), &[], None)
+                .body
+                .chars()
+                .count(),
             100
         );
         let files = ["a.png".to_string(), "b.log".to_string()];
-        assert_eq!(note(&recipient(2, " "), &files, None).body, "a.png, b.log");
+        assert_eq!(
+            note(&cfg(), &recipient(2, " "), &files, None).body,
+            "a.png, b.log"
+        );
+    }
+
+    #[test]
+    fn expo_gets_the_reply_category_and_the_chat_as_thread() {
+        let n = note(&cfg(), &recipient(2, "lunch?"), &[], None);
+        let v = expo(&n);
+        assert_eq!(v["categoryId"], json!("message"));
+        assert_eq!(v["mutableContent"], json!(true));
+        assert_eq!(v["threadId"], json!("7"));
+        assert_eq!(v["data"], n.data);
     }
 
     #[test]

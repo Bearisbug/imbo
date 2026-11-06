@@ -227,8 +227,8 @@ def tc142():
     got = wait_pushes(n, A)
     conv = conversation_with(TA, B)
     check(142, 3, len(got) == 1 and got[0]["title"] == "bob" and got[0]["body"] == "T142 lunch at noon?"
-          and got[0]["data"] == {"conversation_id": conv["id"]},
-          "bob writes alice: one push titled bob, body and conversation_id", got)
+          and got[0]["data"] == {"conversation_id": conv["id"], "sender": {"id": B, "name": "bob"}, "to": str(B)},
+          "bob writes alice: one push titled bob, body, conversation_id, sender and where a reply goes", got)
     n = len(pushes())
     imbo("alice", "send", str(A), "T142 note to self")
     call("POST", "/v1/messages", token=TA, body={"to": str(A), "body": "T142 from the App to me", "client_msg_id": "t142-self"})
