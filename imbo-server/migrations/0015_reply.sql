@@ -3,4 +3,4 @@
 -- its sender's account, and the number stays. Only adds a column, so older
 -- builds keep working.
 
-ALTER TABLE messages ADD COLUMN in_reply_to bigint;
+ALTER TABLE messages ADD COLUMN quote bigint;

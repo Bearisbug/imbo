@@ -32,7 +32,7 @@ struct MessageRow {
     to_short_id: Option<String>,
     to_title: Option<String>,
     to_tool: Option<String>,
-    in_reply_to: Option<i64>,
+    quote: Option<i64>,
 }
 
 /// Message views by id, in id order. `viewer` decides which side of a direct
@@ -51,7 +51,7 @@ pub async fn messages(
                 ag.short_id AS agent_short_id, coalesce(ag.custom_title, ag.title) AS agent_title, ag.tool AS agent_tool,
                 c.account_lo, c.account_hi,
                 m.to_agent_id, ta.short_id AS to_short_id, coalesce(ta.custom_title, ta.title) AS to_title, ta.tool AS to_tool,
-                m.in_reply_to
+                m.quote
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
          LEFT JOIN chat_groups g ON g.id = c.group_id
@@ -107,7 +107,7 @@ pub async fn messages(
 
     // What replies show of the messages they answer (API-024): the number
     // alone when the viewer can't see it (INV-035).
-    let mut originals: Vec<i64> = rows.iter().filter_map(|r| r.in_reply_to).collect();
+    let mut originals: Vec<i64> = rows.iter().filter_map(|r| r.quote).collect();
     originals.sort_unstable();
     originals.dedup();
     let replied: HashMap<i64, (String, String)> = if originals.is_empty() {
@@ -199,7 +199,7 @@ pub async fn messages(
                 reply_to,
                 files: files.remove(&r.id).unwrap_or_default(),
                 to,
-                in_reply_to: r.in_reply_to.map(|id| match replied.get(&id) {
+                quote: r.quote.map(|id| match replied.get(&id) {
                     Some((name, preview)) => ReplyRef {
                         id,
                         from_name: Some(name.clone()),

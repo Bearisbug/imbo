@@ -68,45 +68,45 @@ def tc561():
     m1 = sent(out)
     check(561, 1, "bob sends", rc == 0 and m1 is not None, out)
 
-    s, b = send("alice", {"to": str(B), "body": "T561 下午三点", "in_reply_to": m1})
+    s, b = send("alice", {"to": str(B), "body": "T561 下午三点", "quote": m1})
     m2 = b.get("message_id")
     v = read("bob", m2)
     check(561, 2, "a reply to bob's message", s == 201
-          and v.get("in_reply_to") == {"id": m1, "from_name": "bob", "preview": "T561 今天发版吗"}
-          and v.get("reply_to") == str(A), f"{s} #{m2} in_reply_to={v.get('in_reply_to')} reply_to={v.get('reply_to')}")
+          and v.get("quote") == {"id": m1, "from_name": "bob", "preview": "T561 今天发版吗"}
+          and v.get("reply_to") == str(A), f"{s} #{m2} quote={v.get('quote')} reply_to={v.get('reply_to')}")
 
-    s, b = send("alice", {"to": str(B), "body": "T561 补一句", "in_reply_to": m2})
-    r = read("bob", b.get("message_id")).get("in_reply_to", {})
+    s, b = send("alice", {"to": str(B), "body": "T561 补一句", "quote": m2})
+    r = read("bob", b.get("message_id")).get("quote", {})
     check(561, 3, "a reply to my own message", s == 201 and r.get("from_name") == "alice"
           and r.get("preview") == "T561 下午三点", f"{s} {r}")
 
     long = "T561 a\nb" + "字" * 90
     rc, out = imbo("bob", "send", str(A), long)
-    s, b = send("alice", {"to": str(B), "body": "T561 回长的", "in_reply_to": sent(out)})
-    p = read("bob", b.get("message_id")).get("in_reply_to", {}).get("preview", "")
+    s, b = send("alice", {"to": str(B), "body": "T561 回长的", "quote": sent(out)})
+    p = read("bob", b.get("message_id")).get("quote", {}).get("preview", "")
     check(561, 4, "the first 80 characters, line breaks as spaces", s == 201 and len(p) == 80
           and p.startswith("T561 a b字") and "\n" not in p, f"{s} {len(p)} chars: {p}")
 
     rc, out = imbo("bob", "send", str(A), "--file", PNG)
     m6 = sent(out)
-    s, b = send("alice", {"to": str(B), "body": "T561 回文件", "in_reply_to": m6})
-    p = read("bob", b.get("message_id")).get("in_reply_to", {}).get("preview")
+    s, b = send("alice", {"to": str(B), "body": "T561 回文件", "quote": m6})
+    p = read("bob", b.get("message_id")).get("quote", {}).get("preview")
     check(561, 5, "a message with only a file shows its name", rc == 0 and s == 201 and p == "T531-small.png",
           f"#{m6} {s} preview={p}")
 
     rc, out = imbo("bob", "send", f"#{g}", "T561 群消息")
     m8 = sent(out)
-    s, b = send("alice", {"to": f"#{g}", "body": "T561 群里回", "in_reply_to": m8})
-    r = read("bob", b.get("message_id")).get("in_reply_to", {})
+    s, b = send("alice", {"to": f"#{g}", "body": "T561 群里回", "quote": m8})
+    r = read("bob", b.get("message_id")).get("quote", {})
     check(561, 6, "a reply in a group", s == 201 and r.get("from_name") == "bob" and r.get("preview") == "T561 群消息",
           f"#{m8} {s} {r}")
 
-    s, b = send("alice", {"to": f"#{g}", "body": "T561 跨对话", "in_reply_to": m1})
+    s, b = send("alice", {"to": f"#{g}", "body": "T561 跨对话", "quote": m1})
     check(561, 7, "a message from another chat is refused", s == 422 and typ(b) == "/errors/reply-not-found"
           and "T561 跨对话" not in inbox_all("bob"), f"{s} {typ(b)}")
 
-    s1, b1 = send("alice", {"to": str(B), "body": "T561 不存在", "in_reply_to": 999999999})
-    s2, b2 = send("alice", {"to": str(B), "body": "T561 不是数", "in_reply_to": "abc"})
+    s1, b1 = send("alice", {"to": str(B), "body": "T561 不存在", "quote": 999999999})
+    s2, b2 = send("alice", {"to": str(B), "body": "T561 不是数", "quote": "abc"})
     box = inbox_all("bob")
     check(561, 8, "a missing message and a non-number are refused, nothing stored",
           s1 == 422 and typ(b1) == "/errors/reply-not-found" and s2 == 400 and typ(b2) == "/errors/invalid-request"
@@ -114,7 +114,7 @@ def tc561():
 
     s, b = send("alice", {"to": str(B), "body": "T561 不引用"})
     v = read("bob", b.get("message_id"))
-    check(561, 9, "without in_reply_to", s == 201 and v.get("body") == "T561 不引用" and "in_reply_to" not in v,
+    check(561, 9, "without quote", s == 201 and v.get("body") == "T561 不引用" and "quote" not in v,
           f"{s} keys={sorted(v)}")
 
 
@@ -136,14 +136,14 @@ def tc562():
     check(562, 3, "the session reads which message it answers", "T562 看过了" in out
           and "In reply to bob: T562 帮我看下日志\nT562 看过了" in out, out.strip())
 
-    out = mcp("bob", "send", {"to": str(A), "body": "T562 好的", "in_reply_to": m2}, S)
-    r = read("alice", sent(out)).get("in_reply_to", {})
-    check(562, 4, "send with in_reply_to", r.get("from_name") == "alice" and r.get("preview") == "T562 看过了",
+    out = mcp("bob", "send", {"to": str(A), "body": "T562 好的", "quote": m2}, S)
+    r = read("alice", sent(out)).get("quote", {})
+    check(562, 4, "send with quote", r.get("from_name") == "alice" and r.get("preview") == "T562 看过了",
           f"{out.strip()} {r}")
 
     out = mcp("bob", "send", {"to": str(A), "body": "T562 不带"}, S)
     v = read("alice", sent(out))
-    check(562, 5, "send without in_reply_to", v.get("body") == "T562 不带" and "in_reply_to" not in v,
+    check(562, 5, "send without quote", v.get("body") == "T562 不带" and "quote" not in v,
           f"{out.strip()} keys={sorted(v)}")
 
     rc, out = imbo("bob", "send", "--help")
@@ -170,10 +170,10 @@ def tc563():
 
     rc, out = imbo("alice", "send", f"#{g}", "--reply", str(m1), "T563 回复")
     m2 = sent(out)
-    r = read("carol", m2).get("in_reply_to")
+    r = read("carol", m2).get("quote")
     check(563, 2, "carol sees only the number", r == {"id": m1}, f"#{m2} {r}")
 
-    r = read("bob", m2).get("in_reply_to", {})
+    r = read("bob", m2).get("quote", {})
     check(563, 3, "bob sees the text", r.get("preview") == "T563 原话", str(r))
 
     out = mcp("carol", "inbox", {}, C1)

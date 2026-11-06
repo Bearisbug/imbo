@@ -42,7 +42,7 @@ fn body_within(m: &MessageView, max: usize) -> String {
 
 /// The line above a reply's body that says what it answers (§9 插入内容).
 pub fn reply_line(m: &MessageView) -> Option<String> {
-    let r = m.in_reply_to.as_ref()?;
+    let r = m.quote.as_ref()?;
     Some(match (&r.from_name, &r.preview) {
         (Some(name), Some(preview)) => format!(
             "In reply to {}: {}",
@@ -315,7 +315,7 @@ mod tests {
             from_me: false,
             state: None,
             siblings: vec![],
-            in_reply_to: None,
+            quote: None,
         }
     }
 
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn reply_line_above_the_body() {
         let mut m = msg("look at line 40", false);
-        m.in_reply_to = Some(imbo_proto::api::ReplyRef {
+        m.quote = Some(imbo_proto::api::ReplyRef {
             id: 6,
             from_name: Some("bob".into()),
             preview: Some("the build fails".into()),
@@ -388,7 +388,7 @@ mod tests {
         assert!(
             for_codex(&m, &[]).contains("\nIn reply to bob: the build fails\nlook at line 40\n")
         );
-        m.in_reply_to = Some(imbo_proto::api::ReplyRef {
+        m.quote = Some(imbo_proto::api::ReplyRef {
             id: 6,
             from_name: None,
             preview: None,

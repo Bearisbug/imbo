@@ -35,7 +35,7 @@ pub struct SendIn {
     body: Option<String>,
     client_msg_id: Option<String>,
     files: Option<Vec<Uuid>>,
-    in_reply_to: Option<i64>,
+    quote: Option<i64>,
 }
 
 #[derive(Clone, sqlx::FromRow)]
@@ -553,7 +553,7 @@ pub async fn send(
             "client_msg_id must be 1 to 64 characters.",
         ));
     }
-    check_reply_id(req.in_reply_to)?;
+    check_reply_id(req.quote)?;
     if let Some(done) = existing_result(&st, c.account_id, &client_msg_id).await? {
         return Ok((StatusCode::CREATED, Json(done)));
     }
@@ -589,16 +589,7 @@ pub async fn send(
             ),
         ));
     }
-    let done = store(
-        &st,
-        &c,
-        &target,
-        &body,
-        &client_msg_id,
-        &files,
-        req.in_reply_to,
-    )
-    .await?;
+    let done = store(&st, &c, &target, &body, &client_msg_id, &files, req.quote).await?;
     Ok((StatusCode::CREATED, Json(done)))
 }
 
@@ -611,7 +602,7 @@ async fn store(
     body: &str,
     client_msg_id: &str,
     files: &[Uuid],
-    in_reply_to: Option<i64>,
+    quote: Option<i64>,
 ) -> ApiResult<SendResponse> {
     let from_agent = c.actor.as_ref().map(|a| a.id);
     let from_via = from_agent.is_none().then(|| c.via());
@@ -850,12 +841,12 @@ async fn store(
     if !files.is_empty() {
         check_files(&mut tx, c.account_id, files).await?;
     }
-    if let Some(original) = in_reply_to {
+    if let Some(original) = quote {
         let group = matches!(target, Target::Group(_));
         check_reply(&mut tx, conversation.id, c.account_id, original, group).await?;
     }
     let message_id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO messages (conversation_id, from_account, from_agent_id, from_via, to_agent_id, body, client_msg_id, in_reply_to)
+        "INSERT INTO messages (conversation_id, from_account, from_agent_id, from_via, to_agent_id, body, client_msg_id, quote)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (from_account, client_msg_id) DO NOTHING RETURNING id",
     )
@@ -866,7 +857,7 @@ async fn store(
     .bind(to_agent)
     .bind(body)
     .bind(client_msg_id)
-    .bind(in_reply_to)
+    .bind(quote)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(message_id) = message_id else {
@@ -929,12 +920,12 @@ async fn store(
     })
 }
 
-/// `in_reply_to` is a message number (FLOW-REPLY S4).
-fn check_reply_id(in_reply_to: Option<i64>) -> ApiResult<()> {
-    if in_reply_to.is_some_and(|id| id <= 0) {
+/// `quote` is a message number (FLOW-REPLY S4).
+fn check_reply_id(quote: Option<i64>) -> ApiResult<()> {
+    if quote.is_some_and(|id| id <= 0) {
         return Err(err(
             ErrorCode::InvalidRequest,
-            "in_reply_to must be a message number.",
+            "quote must be a message number.",
         ));
     }
     Ok(())
@@ -1020,7 +1011,7 @@ pub struct AgentSendIn {
     body: Option<String>,
     client_msg_id: Option<String>,
     files: Option<Vec<Uuid>>,
-    in_reply_to: Option<i64>,
+    quote: Option<i64>,
 }
 
 /// API-043: the web app or the App writes to one of my sessions; the
@@ -1054,7 +1045,7 @@ pub async fn send_to_agent(
             "client_msg_id must be 1 to 64 characters.",
         ));
     }
-    check_reply_id(req.in_reply_to)?;
+    check_reply_id(req.quote)?;
     let agent = my_session(&st, c.account_id, &raw).await?;
     let agent_id = agent.id;
     let message_id = match existing_result(&st, c.account_id, &client_msg_id).await? {
@@ -1068,17 +1059,9 @@ pub async fn send_to_agent(
                 },
                 agent,
             };
-            let id = store(
-                &st,
-                &c,
-                &target,
-                &body,
-                &client_msg_id,
-                &files,
-                req.in_reply_to,
-            )
-            .await?
-            .message_id;
+            let id = store(&st, &c, &target, &body, &client_msg_id, &files, req.quote)
+                .await?
+                .message_id;
             if c.web_person() {
                 crate::wake::request(&st, c.account_id, agent_id).await?;
             }

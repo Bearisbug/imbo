@@ -105,7 +105,7 @@ pub async fn send(
         req["files"] = json!(uploaded.iter().map(|f| f.id).collect::<Vec<_>>());
     }
     if let Some(id) = reply {
-        req["in_reply_to"] = json!(id);
+        req["quote"] = json!(id);
     }
     let r: SendResponse = api_as("POST", "/v1/messages", Some(req)).await?;
     let with = match uploaded.len() {

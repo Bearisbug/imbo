@@ -90,7 +90,7 @@ fn tools(paste: Option<Paste>, prefix: &str) -> Vec<Tool> {
                 "type": "array", "items": { "type": "string" },
                 "description": "Files to attach, as absolute local paths; up to 20, 100 MB in total"
             },
-            "in_reply_to": { "type": "integer", "description": "Only when you need to say which message this answers: its number, N in [Imbo message #N]" }
+            "quote": { "type": "integer", "description": "Only when you need to say which message this answers: its number, N in [Imbo message #N]" }
         },
         "required": ["to"]
     });
@@ -513,8 +513,8 @@ impl Imbo {
                 if !ids.is_empty() {
                     req["files"] = json!(ids);
                 }
-                if let Some(id) = a.get("in_reply_to") {
-                    req["in_reply_to"] = id.clone();
+                if let Some(id) = a.get("quote") {
+                    req["quote"] = id.clone();
                 }
                 let (v, unread) = self.call(actor, "POST", "/v1/messages", Some(req)).await?;
                 let r: SendResponse = serde_json::from_value(v).map_err(|_| bad_reply())?;

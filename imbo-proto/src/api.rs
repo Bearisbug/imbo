@@ -429,7 +429,7 @@ pub struct MessageView {
     pub siblings: Vec<Sibling>,
     /// The message this one replies to (API-024).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub in_reply_to: Option<ReplyRef>,
+    pub quote: Option<ReplyRef>,
 }
 
 /// What a reply shows of the message it answers. Only `id` when the reader
