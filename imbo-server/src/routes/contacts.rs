@@ -389,9 +389,10 @@ pub async fn accept(
         serde_json::from_slice(&raw)
             .map_err(|e| err(ErrorCode::InvalidRequest, format!("Invalid JSON body: {e}")))?
     };
-    let Some(row) = load_request(&st, id).await?.filter(|r| {
-        r.to_account == Some(c.account_id) || (r.kind == "join" && !c.is_agent())
-    }) else {
+    let Some(row) = load_request(&st, id)
+        .await?
+        .filter(|r| r.to_account == Some(c.account_id) || (r.kind == "join" && !c.is_agent()))
+    else {
         return Err(err(ErrorCode::NotFound, "No such request."));
     };
     if row.kind == "join" {
@@ -606,11 +607,13 @@ async fn accept_join(st: &St, c: &Caller, row: RequestRow) -> ApiResult<Response
             ),
         ));
     }
-    let joined = sqlx::query("INSERT INTO group_members (group_id, account_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-        .bind(gid)
-        .bind(row.from_account)
-        .execute(&mut *tx)
-        .await?;
+    let joined = sqlx::query(
+        "INSERT INTO group_members (group_id, account_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(gid)
+    .bind(row.from_account)
+    .execute(&mut *tx)
+    .await?;
     if joined.rows_affected() == 0 {
         return Err(err(
             ErrorCode::AlreadyMember,
@@ -646,9 +649,10 @@ pub async fn decline(
     Extension(c): Extension<Caller>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<RequestResponse>> {
-    let Some(row) = load_request(&st, id).await?.filter(|r| {
-        r.to_account == Some(c.account_id) || (r.kind == "join" && !c.is_agent())
-    }) else {
+    let Some(row) = load_request(&st, id)
+        .await?
+        .filter(|r| r.to_account == Some(c.account_id) || (r.kind == "join" && !c.is_agent()))
+    else {
         return Err(err(ErrorCode::NotFound, "No such request."));
     };
     let mut tx = st.db.begin().await?;

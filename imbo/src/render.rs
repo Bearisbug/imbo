@@ -43,14 +43,16 @@ fn body_within(m: &MessageView, max: usize) -> String {
 /// The line above a reply's body that says what it answers (§9 插入内容).
 pub fn reply_line(m: &MessageView) -> Option<String> {
     let r = m.quote.as_ref()?;
-    Some(match (&r.from_name, r.text.as_ref().or(r.preview.as_ref())) {
-        (Some(name), Some(shown)) => format!(
-            "In reply to {}: {}",
-            strip_control(name, false),
-            strip_control(shown, false)
-        ),
-        _ => "In reply to a message you can't see".into(),
-    })
+    Some(
+        match (&r.from_name, r.text.as_ref().or(r.preview.as_ref())) {
+            (Some(name), Some(shown)) => format!(
+                "In reply to {}: {}",
+                strip_control(name, false),
+                strip_control(shown, false)
+            ),
+            _ => "In reply to a message you can't see".into(),
+        },
+    )
 }
 
 /// Attachment lines under the body (DESIGN §9 附件): local path and size,

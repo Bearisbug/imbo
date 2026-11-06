@@ -705,7 +705,11 @@ pub async fn rename(
         .transpose()?;
     let mut tx = st.db.begin().await?;
     if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
-        let what = if name.is_some() { "rename it" } else { "change who can find it" };
+        let what = if name.is_some() {
+            "rename it"
+        } else {
+            "change who can find it"
+        };
         return Err(not_owner(&mut tx, &g, what).await?);
     }
     if let Some(name) = name.filter(|n| *n != g.name) {
@@ -982,7 +986,13 @@ pub async fn unset_admin(
 }
 
 /// Under the group lock, so it can't cross the member leaving (DESIGN §16).
-async fn admin(st: &St, c: &Caller, raw: &str, who: &str, on: bool) -> ApiResult<Json<GroupResponse>> {
+async fn admin(
+    st: &St,
+    c: &Caller,
+    raw: &str,
+    who: &str,
+    on: bool,
+) -> ApiResult<Json<GroupResponse>> {
     c.require_person()?;
     let g = require_member(st, c, raw).await?;
     let missing = || err(ErrorCode::NotFound, format!("{who} is not in {}.", g.name));
@@ -997,7 +1007,11 @@ async fn admin(st: &St, c: &Caller, raw: &str, who: &str, on: bool) -> ApiResult
             format!("You own {}; the owner isn't an admin too.", g.name),
         ));
     }
-    let (from, to) = if on { ("member", "admin") } else { ("admin", "member") };
+    let (from, to) = if on {
+        ("member", "admin")
+    } else {
+        ("admin", "member")
+    };
     let found: Option<String> = sqlx::query_scalar(
         "SELECT role FROM group_members WHERE group_id = $1 AND account_id = $2",
     )

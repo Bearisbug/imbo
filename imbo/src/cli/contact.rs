@@ -172,7 +172,11 @@ pub fn request_line(r: &RequestItem, outgoing: bool) -> String {
             ui::dim(ui::ago(r.created_at))
         );
     }
-    let who = if outgoing { r.to.as_ref().unwrap_or(&r.from) } else { &r.from };
+    let who = if outgoing {
+        r.to.as_ref().unwrap_or(&r.from)
+    } else {
+        &r.from
+    };
     let what = match (&r.group, outgoing) {
         (Some(g), false) => format!(
             "invited you to {} {}",
@@ -251,7 +255,12 @@ async fn accept(id: i64, sessions: Option<Vec<String>>) -> anyhow::Result<()> {
         return super::group::join(id.to_string(), sessions).await;
     }
     if let Some(q) = found.filter(|q| q.kind == "join") {
-        api("POST", &format!("/v1/requests/{id}/accept"), Some(json!({}))).await?;
+        api(
+            "POST",
+            &format!("/v1/requests/{id}/accept"),
+            Some(json!({})),
+        )
+        .await?;
         ui::ok_line(&format!(
             "{} {} is in {} now",
             ui::heading(&q.from.name),

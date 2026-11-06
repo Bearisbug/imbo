@@ -591,7 +591,16 @@ pub async fn send(
             ),
         ));
     }
-    let done = store(&st, &c, &target, &body, &client_msg_id, &files, quote.as_ref()).await?;
+    let done = store(
+        &st,
+        &c,
+        &target,
+        &body,
+        &client_msg_id,
+        &files,
+        quote.as_ref(),
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(done)))
 }
 
@@ -1080,9 +1089,17 @@ pub async fn send_to_agent(
                 },
                 agent,
             };
-            let id = store(&st, &c, &target, &body, &client_msg_id, &files, quote.as_ref())
-                .await?
-                .message_id;
+            let id = store(
+                &st,
+                &c,
+                &target,
+                &body,
+                &client_msg_id,
+                &files,
+                quote.as_ref(),
+            )
+            .await?
+            .message_id;
             if c.web_person() {
                 crate::wake::request(&st, c.account_id, agent_id).await?;
             }

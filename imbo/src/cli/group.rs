@@ -277,7 +277,10 @@ async fn apply(group: String, note: Option<String>) -> anyhow::Result<()> {
         ui::error_line("Give the group's ID, as `imbo group search` shows it.");
         return Err(Reported.into());
     };
-    if note.as_ref().is_some_and(|n| n.chars().count() > MAX_NOTE_CHARS) {
+    if note
+        .as_ref()
+        .is_some_and(|n| n.chars().count() > MAX_NOTE_CHARS)
+    {
         ui::error_line(&format!(
             "The note can be at most {MAX_NOTE_CHARS} characters."
         ));
@@ -332,7 +335,11 @@ async fn discoverable(group: String, on: bool) -> anyhow::Result<()> {
         Some(json!({ "discoverable": on })),
     )
     .await?;
-    let g = format!("{} {}", ui::heading(&r.group.name), ui::dim(format!("(#{gid})")));
+    let g = format!(
+        "{} {}",
+        ui::heading(&r.group.name),
+        ui::dim(format!("(#{gid})"))
+    );
     if on {
         ui::ok_line(&format!("Anyone can now find {g}"));
         eprintln!(
