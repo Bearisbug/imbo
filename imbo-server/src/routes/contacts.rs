@@ -1,5 +1,5 @@
-//! API-008..013: contact requests, accept/decline (contacts and group
-//! invites), contact list and removal.
+//! API-008..013: contact requests, accept/decline (contacts, group invites
+//! and requests to join a group), contact list and removal.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -30,8 +30,8 @@ struct RequestRow {
     kind: String,
     from_account: i32,
     from_name: String,
-    to_account: i32,
-    to_name: String,
+    to_account: Option<i32>,
+    to_name: Option<String>,
     group_id: Option<i32>,
     group_name: Option<String>,
     note: Option<String>,
@@ -44,7 +44,7 @@ const REQUEST_SELECT: &str = "SELECT r.id, r.kind, r.from_account, fa.name AS fr
         ta.name AS to_name, r.group_id, g.name AS group_name, r.note, r.status, r.decided_by, r.created_at
      FROM requests r
      JOIN accounts fa ON fa.id = r.from_account
-     JOIN accounts ta ON ta.id = r.to_account
+     LEFT JOIN accounts ta ON ta.id = r.to_account
      LEFT JOIN chat_groups g ON g.id = r.group_id";
 
 impl RequestRow {
@@ -57,9 +57,9 @@ impl RequestRow {
                 id: self.from_account,
                 name: self.from_name,
             },
-            to: AccountRef {
-                id: self.to_account,
-                name: self.to_name,
+            to: match (self.to_account, self.to_name) {
+                (Some(id), Some(name)) => Some(AccountRef { id, name }),
+                _ => None,
             },
             group: match (self.group_id, self.group_name) {
                 (Some(id), Some(name)) => Some(GroupRef { id, name }),
@@ -308,7 +308,13 @@ pub async fn request_contact(
 pub struct RequestsQuery {
     direction: Option<String>,
     status: Option<String>,
+    include: Option<String>,
 }
+
+/// The owner and admins of a group, in person, see and handle its join
+/// requests (RULE-024).
+const HANDLES_JOIN: &str = "EXISTS (SELECT 1 FROM group_members m WHERE m.group_id = r.group_id
+        AND m.account_id = $1 AND m.role IN ('owner', 'admin'))";
 
 pub async fn list_requests(
     State(st): State<St>,
@@ -317,13 +323,16 @@ pub async fn list_requests(
 ) -> ApiResult<Json<RequestsResponse>> {
     let outgoing = q.direction.as_deref() == Some("out");
     let all = q.status.as_deref() == Some("all");
+    // Only with include=join, so older clients, which need `to`, never get one.
+    let join = q.include.as_deref() == Some("join") && !c.is_agent();
+    let whose = match (outgoing, join) {
+        (true, true) => "r.from_account = $1".to_string(),
+        (true, false) => "r.from_account = $1 AND r.kind <> 'join'".to_string(),
+        (false, true) => format!("(r.to_account = $1 OR (r.kind = 'join' AND {HANDLES_JOIN}))"),
+        (false, false) => "r.to_account = $1".to_string(),
+    };
     let sql = format!(
-        "{REQUEST_SELECT} WHERE {} = $1 {} ORDER BY r.id DESC LIMIT 100",
-        if outgoing {
-            "r.from_account"
-        } else {
-            "r.to_account"
-        },
+        "{REQUEST_SELECT} WHERE {whose} {} ORDER BY r.id DESC LIMIT 100",
         if all { "" } else { "AND r.status = 'pending'" },
     );
     let rows: Vec<RequestRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -372,7 +381,7 @@ pub async fn accept(
     Extension(c): Extension<Caller>,
     Path(id): Path<i64>,
     raw: axum::body::Bytes,
-) -> ApiResult<Json<AcceptResponse>> {
+) -> ApiResult<Response> {
     crate::billing::require_active(&st, c.account_id, "API-010").await?;
     let body: AcceptBody = if raw.iter().all(|b| b.is_ascii_whitespace()) {
         AcceptBody::default()
@@ -380,12 +389,14 @@ pub async fn accept(
         serde_json::from_slice(&raw)
             .map_err(|e| err(ErrorCode::InvalidRequest, format!("Invalid JSON body: {e}")))?
     };
-    let Some(row) = load_request(&st, id)
-        .await?
-        .filter(|r| r.to_account == c.account_id)
-    else {
+    let Some(row) = load_request(&st, id).await?.filter(|r| {
+        r.to_account == Some(c.account_id) || (r.kind == "join" && !c.is_agent())
+    }) else {
         return Err(err(ErrorCode::NotFound, "No such request."));
     };
+    if row.kind == "join" {
+        return accept_join(&st, &c, row).await;
+    }
     if row.status != "pending" {
         return Err(err(
             ErrorCode::RequestClosed,
@@ -534,7 +545,100 @@ pub async fn accept(
             my_sessions: Some(views::agent_refs(&st.db, &sessions).await?),
         }
     };
-    Ok(Json(resp))
+    Ok(Json(resp).into_response())
+}
+
+/// Under the group lock: the account's role there, or None when it's not
+/// the owner or an admin of a group that still exists (RULE-024).
+async fn join_handler_role(
+    tx: &mut Transaction<'_, Postgres>,
+    gid: i32,
+    account: i32,
+) -> Result<Option<String>, sqlx::Error> {
+    super::groups::lock_group(tx, gid).await?;
+    sqlx::query_scalar(
+        "SELECT m.role FROM group_members m JOIN chat_groups g ON g.id = m.group_id
+         WHERE m.group_id = $1 AND m.account_id = $2 AND m.role IN ('owner', 'admin')
+           AND g.dissolved_at IS NULL",
+    )
+    .bind(gid)
+    .bind(account)
+    .fetch_optional(&mut **tx)
+    .await
+}
+
+/// API-010 on a request to join: the group's owner or an admin, in person,
+/// lets the asker in with no sessions picked (FLOW-GROUP-APPROVE).
+async fn accept_join(st: &St, c: &Caller, row: RequestRow) -> ApiResult<Response> {
+    let gid = row.group_id.unwrap_or_default();
+    let name = row.group_name.clone().unwrap_or_default();
+    let mut tx = st.db.begin().await?;
+    let Some(role) = join_handler_role(&mut tx, gid, c.account_id).await? else {
+        return Err(err(ErrorCode::NotFound, "No such request."));
+    };
+    let changed = sqlx::query(
+        "UPDATE requests SET status = 'accepted', decided_by = $2, decided_at = now() WHERE id = $1 AND status = 'pending'",
+    )
+    .bind(row.id)
+    .bind(c.decided_by())
+    .execute(&mut *tx)
+    .await?;
+    if changed.rows_affected() == 0 {
+        return Err(err(
+            ErrorCode::RequestClosed,
+            "This request was already handled.",
+        ));
+    }
+    // RULE-009: someone removed comes back only with the owner's yes.
+    let removed: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM group_removals WHERE group_id = $1 AND account_id = $2)",
+    )
+    .bind(gid)
+    .bind(row.from_account)
+    .fetch_one(&mut *tx)
+    .await?;
+    if removed && role != "owner" {
+        return Err(err(
+            ErrorCode::RemovedFromGroup,
+            format!(
+                "{} was removed from {name}. Only its owner can let them back in.",
+                row.from_name
+            ),
+        ));
+    }
+    let joined = sqlx::query("INSERT INTO group_members (group_id, account_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(gid)
+        .bind(row.from_account)
+        .execute(&mut *tx)
+        .await?;
+    if joined.rows_affected() == 0 {
+        return Err(err(
+            ErrorCode::AlreadyMember,
+            format!("{} is already in {name}.", row.from_name),
+        ));
+    }
+    sqlx::query("DELETE FROM group_removals WHERE group_id = $1 AND account_id = $2")
+        .bind(gid)
+        .bind(row.from_account)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    notify::send(
+        st,
+        row.from_account,
+        "join_accepted",
+        format!(
+            "{} ({}) let you into group {name} (#{gid}). Pick the sessions that get its messages: `imbo group sessions #{gid} --sessions <short IDs>`.",
+            c.name, c.account_id
+        ),
+        None,
+        Some(row.id),
+    );
+    let item = load_request(st, row.id)
+        .await?
+        .expect("exists")
+        .into_item(true);
+    Ok(Json(RequestResponse { request: item }).into_response())
 }
 
 pub async fn decline(
@@ -542,12 +646,19 @@ pub async fn decline(
     Extension(c): Extension<Caller>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<RequestResponse>> {
-    let Some(row) = load_request(&st, id)
-        .await?
-        .filter(|r| r.to_account == c.account_id)
-    else {
+    let Some(row) = load_request(&st, id).await?.filter(|r| {
+        r.to_account == Some(c.account_id) || (r.kind == "join" && !c.is_agent())
+    }) else {
         return Err(err(ErrorCode::NotFound, "No such request."));
     };
+    let mut tx = st.db.begin().await?;
+    if row.kind == "join"
+        && join_handler_role(&mut tx, row.group_id.unwrap_or_default(), c.account_id)
+            .await?
+            .is_none()
+    {
+        return Err(err(ErrorCode::NotFound, "No such request."));
+    }
     if row.status != "pending" {
         return Err(err(
             ErrorCode::RequestClosed,
@@ -559,8 +670,9 @@ pub async fn decline(
     )
     .bind(id)
     .bind(c.decided_by())
-    .execute(&st.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     if changed.rows_affected() == 0 {
         return Err(err(
             ErrorCode::RequestClosed,

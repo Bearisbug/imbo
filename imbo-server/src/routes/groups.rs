@@ -1,14 +1,16 @@
-//! API-018..022, API-037..039: groups, their owner, removing and dissolving.
+//! API-018..022, API-037..039, API-077, API-087..090: groups, their owner and
+//! admins, finding and asking to join one, removing and dissolving.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use imbo_proto::api::{
-    AccountRef, AgentRef, CreateGroupBody, GroupRef, GroupResponse, GroupView, GroupsResponse,
-    InviteBody, MemberRef, MySessionsResponse, RequestItem, RequestResponse, SessionsBody,
+    AccountRef, AgentRef, CreateGroupBody, GroupHit, GroupRef, GroupResponse, GroupSearchResponse,
+    GroupView, GroupsResponse, InviteBody, MemberRef, MySessionsResponse, RequestItem,
+    RequestResponse, SessionsBody,
 };
 use imbo_proto::text::validate_group_name;
-use imbo_proto::{ErrorCode, TOOL_TERMINAL};
+use imbo_proto::{ErrorCode, MAX_NOTE_CHARS, TOOL_TERMINAL};
 use rand::Rng;
 use serde::Deserialize;
 use sqlx::PgConnection;
@@ -16,7 +18,7 @@ use uuid::Uuid;
 
 use super::Body;
 use crate::auth::Caller;
-use crate::error::{ApiError, ApiResult, err};
+use crate::error::{ApiError, ApiResult, err, rate_limited};
 use crate::state::St;
 use crate::{avatar, delivery, notify, push, safety, views};
 
@@ -221,8 +223,8 @@ pub(super) async fn post_notice(
 }
 
 async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
-    let picture: Option<Uuid> =
-        sqlx::query_scalar("SELECT avatar_id FROM chat_groups WHERE id = $1")
+    let (picture, discoverable): (Option<Uuid>, bool) =
+        sqlx::query_as("SELECT avatar_id, discoverable FROM chat_groups WHERE id = $1")
             .bind(g.id)
             .fetch_one(&st.db)
             .await?;
@@ -263,16 +265,18 @@ async fn view(st: &St, c: &Caller, g: GroupRef) -> ApiResult<GroupView> {
         owner,
         members: members
             .into_iter()
-            .map(|(id, name, _)| MemberRef {
+            .map(|(id, name, role)| MemberRef {
                 id,
                 name,
                 avatar_url: avatars.remove(&id),
                 active: !inactive.contains(&id),
                 sessions: sessions_of(id),
+                role: Some(role),
             })
             .collect(),
         my_sessions: sessions_of(c.account_id),
         avatar_url: avatar::url_of(&st.cfg, picture),
+        discoverable,
     })
 }
 
@@ -456,7 +460,7 @@ pub async fn invite(
             id: c.account_id,
             name: c.name.clone(),
         },
-        to,
+        to: Some(to),
         group: Some(g),
         note: None,
         status: "pending".into(),
@@ -553,7 +557,8 @@ async fn leave_group(st: &St, c: &Caller, g: &GroupRef) -> ApiResult<StatusCode>
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// API-037: the owner, or an agent of theirs, removes a member.
+/// API-037: the owner or an admin, or an agent of theirs, removes a member;
+/// an admin only ordinary members (RULE-023).
 pub async fn remove(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -570,17 +575,34 @@ pub async fn remove(
         .await?
         .contains(&target);
     let mut tx = st.db.begin().await?;
-    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
-        return Err(not_owner(&mut tx, &g, "remove members").await?);
+    let mine = role_locked(&mut tx, &g, c.account_id).await?;
+    if mine == "member" {
+        return Err(err(
+            ErrorCode::NotOwner,
+            format!(
+                "Only the owner and admins of {} (#{}) can remove members.",
+                g.name, g.id
+            ),
+        ));
     }
-    let gone = sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND account_id = $2")
+    let theirs: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM group_members WHERE group_id = $1 AND account_id = $2",
+    )
+    .bind(g.id)
+    .bind(target)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(theirs) = theirs else {
+        return Err(missing());
+    };
+    if mine == "admin" && theirs != "member" {
+        return Err(not_owner(&mut tx, &g, "remove the owner or an admin").await?);
+    }
+    sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND account_id = $2")
         .bind(g.id)
         .bind(target)
         .execute(&mut *tx)
         .await?;
-    if gone.rows_affected() == 0 {
-        return Err(missing());
-    }
     sqlx::query(
         "INSERT INTO group_removals (group_id, account_id) VALUES ($1, $2)
          ON CONFLICT (group_id, account_id) DO UPDATE SET removed_at = now()",
@@ -656,32 +678,50 @@ pub async fn transfer(
 }
 
 #[derive(Deserialize)]
-pub struct RenameBody {
-    name: String,
+pub struct UpdateBody {
+    name: Option<String>,
+    discoverable: Option<bool>,
 }
 
-/// API-077: only the owner, in person, renames the group. Members see the
-/// new name next time they look; no notice goes out.
+/// API-077: only the owner, in person, renames the group or lets anyone find
+/// it. Members see the change next time they look; no notice goes out.
 pub async fn rename(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
     Path(raw): Path<String>,
-    Body(req): Body<RenameBody>,
+    Body(req): Body<UpdateBody>,
 ) -> ApiResult<Json<GroupResponse>> {
     c.require_person()?;
     let mut g = require_member(&st, &c, &raw).await?;
-    let name = validate_group_name(&req.name).map_err(|m| err(ErrorCode::InvalidRequest, m))?;
+    if req.name.is_none() && req.discoverable.is_none() {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "Give a new name or whether anyone can find the group.",
+        ));
+    }
+    let name = req
+        .name
+        .map(|n| validate_group_name(&n).map_err(|m| err(ErrorCode::InvalidRequest, m)))
+        .transpose()?;
     let mut tx = st.db.begin().await?;
     if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
-        return Err(not_owner(&mut tx, &g, "rename it").await?);
+        let what = if name.is_some() { "rename it" } else { "change who can find it" };
+        return Err(not_owner(&mut tx, &g, what).await?);
     }
-    if name != g.name {
+    if let Some(name) = name.filter(|n| *n != g.name) {
         sqlx::query("UPDATE chat_groups SET name = $2 WHERE id = $1")
             .bind(g.id)
             .bind(&name)
             .execute(&mut *tx)
             .await?;
         g.name = name;
+    }
+    if let Some(on) = req.discoverable {
+        sqlx::query("UPDATE chat_groups SET discoverable = $2 WHERE id = $1")
+            .bind(g.id)
+            .bind(on)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     let group = view(&st, &c, g).await?;
@@ -731,4 +771,253 @@ pub async fn dissolve(
     delivery::kick(&st, inbox);
     push::messages(&st, messages);
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    q: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct HitRow {
+    id: i32,
+    name: String,
+    avatar_id: Option<Uuid>,
+    member_count: i64,
+    owner_id: i32,
+    owner_name: String,
+    joined: bool,
+    applied: bool,
+}
+
+/// API-087: groups anyone can find, by ID or by a piece of their name.
+pub async fn search(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Query(q): Query<SearchQuery>,
+) -> ApiResult<Json<GroupSearchResponse>> {
+    c.require_person()?;
+    let raw = q.q.unwrap_or_default();
+    let q = raw.trim();
+    if q.is_empty() || q.chars().count() > 64 {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "Search with a group ID or 1 to 64 characters of its name.",
+        ));
+    }
+    let id: Option<i32> = q.trim_start_matches('#').parse().ok();
+    let rows: Vec<HitRow> = sqlx::query_as(
+        "SELECT g.id, g.name, g.avatar_id,
+                (SELECT count(*) FROM group_members m WHERE m.group_id = g.id) AS member_count,
+                o.id AS owner_id, o.name AS owner_name,
+                EXISTS (SELECT 1 FROM group_members m WHERE m.group_id = g.id AND m.account_id = $3) AS joined,
+                EXISTS (SELECT 1 FROM requests r WHERE r.kind = 'join' AND r.group_id = g.id
+                        AND r.from_account = $3 AND r.status = 'pending') AS applied
+         FROM chat_groups g
+         JOIN group_members om ON om.group_id = g.id AND om.role = 'owner'
+         JOIN accounts o ON o.id = om.account_id
+         WHERE g.discoverable AND g.dissolved_at IS NULL
+           AND (g.id = $1 OR strpos(lower(g.name), lower($2)) > 0)
+         ORDER BY member_count DESC, g.id
+         LIMIT 20",
+    )
+    .bind(id)
+    .bind(q)
+    .bind(c.account_id)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(GroupSearchResponse {
+        groups: rows
+            .into_iter()
+            .map(|r| GroupHit {
+                id: r.id,
+                name: r.name,
+                avatar_url: avatar::url_of(&st.cfg, r.avatar_id),
+                member_count: r.member_count,
+                owner: AccountRef {
+                    id: r.owner_id,
+                    name: r.owner_name,
+                },
+                joined: r.joined,
+                applied: r.applied,
+            })
+            .collect(),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ApplyBody {
+    note: Option<String>,
+}
+
+/// API-088: ask to join a group anyone can find; its owner and admins are
+/// told (FLOW-GROUP-DISCOVER S5–S6).
+pub async fn apply(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(raw): Path<String>,
+    Body(req): Body<ApplyBody>,
+) -> ApiResult<(StatusCode, Json<RequestResponse>)> {
+    c.require_person()?;
+    crate::billing::require_active(&st, c.account_id, "API-088").await?;
+    let gid = parse_gid(&raw)?;
+    let note = req
+        .note
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+    if note
+        .as_ref()
+        .is_some_and(|n| n.chars().count() > MAX_NOTE_CHARS)
+    {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "The note can be at most 200 characters.",
+        ));
+    }
+    let mut tx = st.db.begin().await?;
+    lock_group(&mut tx, gid).await?;
+    let name: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM chat_groups WHERE id = $1 AND discoverable AND dissolved_at IS NULL",
+    )
+    .bind(gid)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(name) = name else {
+        return Err(err(
+            ErrorCode::NotFound,
+            format!("No group #{gid} that anyone can find."),
+        ));
+    };
+    let (member, pending, today): (bool, bool, i64) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND account_id = $2),
+                EXISTS (SELECT 1 FROM requests WHERE kind = 'join' AND group_id = $1 AND from_account = $2 AND status = 'pending'),
+                (SELECT count(*) FROM requests WHERE kind = 'join' AND from_account = $2 AND created_at > now() - interval '1 day')",
+    )
+    .bind(gid)
+    .bind(c.account_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if member {
+        return Err(err(
+            ErrorCode::AlreadyMember,
+            format!("You are already in {name}."),
+        ));
+    }
+    if pending {
+        return Err(err(
+            ErrorCode::RequestPending,
+            format!("You already asked to join {name}. Its owner or an admin will answer."),
+        ));
+    }
+    if today >= 20 {
+        return Err(rate_limited(
+            "join-requests",
+            Some(c.account_id),
+            "At most 20 requests to join groups per day.",
+            3600,
+        ));
+    }
+    let (id, created_at): (i64, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        "INSERT INTO requests (kind, from_account, group_id, note) VALUES ('join', $1, $2, $3)
+         RETURNING id, created_at",
+    )
+    .bind(c.account_id)
+    .bind(gid)
+    .bind(&note)
+    .fetch_one(&mut *tx)
+    .await?;
+    let handlers: Vec<i32> = sqlx::query_scalar(
+        "SELECT account_id FROM group_members WHERE group_id = $1 AND role IN ('owner', 'admin')",
+    )
+    .bind(gid)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    for to in handlers {
+        notify::send(
+            &st,
+            to,
+            "join_request",
+            format!(
+                "{} ({}) asked to join group {name} (#{gid}). `imbo contact requests` to review.",
+                c.name, c.account_id
+            ),
+            note.clone(),
+            Some(id),
+        );
+    }
+    let request = RequestItem {
+        id,
+        kind: "join".into(),
+        from: AccountRef {
+            id: c.account_id,
+            name: c.name.clone(),
+        },
+        to: None,
+        group: Some(GroupRef { id: gid, name }),
+        note: None,
+        status: "pending".into(),
+        decided_by: None,
+        created_at,
+    };
+    Ok((StatusCode::CREATED, Json(RequestResponse { request })))
+}
+
+/// API-089: the owner, in person, makes a member an admin.
+pub async fn set_admin(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path((raw, who)): Path<(String, String)>,
+) -> ApiResult<Json<GroupResponse>> {
+    admin(&st, &c, &raw, &who, true).await
+}
+
+/// API-090: the owner, in person, makes an admin an ordinary member again.
+pub async fn unset_admin(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path((raw, who)): Path<(String, String)>,
+) -> ApiResult<Json<GroupResponse>> {
+    admin(&st, &c, &raw, &who, false).await
+}
+
+/// Under the group lock, so it can't cross the member leaving (DESIGN §16).
+async fn admin(st: &St, c: &Caller, raw: &str, who: &str, on: bool) -> ApiResult<Json<GroupResponse>> {
+    c.require_person()?;
+    let g = require_member(st, c, raw).await?;
+    let missing = || err(ErrorCode::NotFound, format!("{who} is not in {}.", g.name));
+    let target: i32 = who.parse().map_err(|_| missing())?;
+    let mut tx = st.db.begin().await?;
+    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
+        return Err(not_owner(&mut tx, &g, "choose its admins").await?);
+    }
+    if target == c.account_id {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            format!("You own {}; the owner isn't an admin too.", g.name),
+        ));
+    }
+    let (from, to) = if on { ("member", "admin") } else { ("admin", "member") };
+    let found: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM group_members WHERE group_id = $1 AND account_id = $2",
+    )
+    .bind(g.id)
+    .bind(target)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if found.is_none() {
+        return Err(missing());
+    }
+    sqlx::query(
+        "UPDATE group_members SET role = $4 WHERE group_id = $1 AND account_id = $2 AND role = $3",
+    )
+    .bind(g.id)
+    .bind(target)
+    .bind(from)
+    .bind(to)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let group = view(st, c, g).await?;
+    Ok(Json(GroupResponse { group }))
 }

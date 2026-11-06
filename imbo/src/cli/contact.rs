@@ -23,7 +23,7 @@ pub enum ContactCmd {
         #[arg(long)]
         note: Option<String>,
     },
-    /// Contact requests and group invites waiting for you.
+    /// Contact requests, group invites and requests to join your groups waiting for you.
     Requests {
         /// Requests you sent instead.
         #[arg(long)]
@@ -149,7 +149,30 @@ async fn add(who: String, note: Option<String>) -> anyhow::Result<()> {
 }
 
 pub fn request_line(r: &RequestItem, outgoing: bool) -> String {
-    let who = if outgoing { &r.to } else { &r.from };
+    let status = if r.status == "pending" {
+        String::new()
+    } else {
+        format!("  {}", ui::dim(&r.status))
+    };
+    // A request to join goes to a group, not to one person (API-009).
+    if let (Some(g), "join") = (&r.group, r.kind.as_str()) {
+        let group = format!("{} {}", ui::heading(&g.name), ui::dim(format!("#{}", g.id)));
+        let what = if outgoing {
+            format!("asked to join {group}")
+        } else {
+            format!(
+                "{} {}  wants to join {group}",
+                ui::heading(&r.from.name),
+                ui::dim(format!("({})", r.from.id))
+            )
+        };
+        return format!(
+            "{}  {what}  {}{status}",
+            ui::s(ui::text(), format!("#{}", r.id)),
+            ui::dim(ui::ago(r.created_at))
+        );
+    }
+    let who = if outgoing { r.to.as_ref().unwrap_or(&r.from) } else { &r.from };
     let what = match (&r.group, outgoing) {
         (Some(g), false) => format!(
             "invited you to {} {}",
@@ -164,11 +187,6 @@ pub fn request_line(r: &RequestItem, outgoing: bool) -> String {
         (None, false) => "wants to add you".into(),
         (None, true) => "contact request".into(),
     };
-    let status = if r.status == "pending" {
-        String::new()
-    } else {
-        format!("  {}", ui::dim(&r.status))
-    };
     format!(
         "{}  {} {}  {}  {}{}",
         ui::s(ui::text(), format!("#{}", r.id)),
@@ -182,7 +200,7 @@ pub fn request_line(r: &RequestItem, outgoing: bool) -> String {
 
 async fn requests(out: bool, all: bool) -> anyhow::Result<()> {
     let path = format!(
-        "/v1/requests?direction={}&status={}",
+        "/v1/requests?direction={}&status={}&include=join",
         if out { "out" } else { "in" },
         if all { "all" } else { "pending" }
     );
@@ -204,7 +222,7 @@ async fn requests(out: bool, all: bool) -> anyhow::Result<()> {
             println!("      {}", ui::s(ui::text(), format!("“{n}”")));
         }
         if !out && q.status == "pending" {
-            let hint = if q.group.is_some() {
+            let hint = if q.kind == "group" {
                 format!("imbo group join {}", q.id)
             } else {
                 format!("imbo contact accept {}", q.id)
@@ -222,10 +240,25 @@ async fn requests(out: bool, all: bool) -> anyhow::Result<()> {
 }
 
 async fn accept(id: i64, sessions: Option<Vec<String>>) -> anyhow::Result<()> {
-    let r: RequestsResponse =
-        api_as("GET", "/v1/requests?direction=in&status=pending", None).await?;
-    if r.requests.iter().any(|q| q.id == id && q.group.is_some()) {
+    let r: RequestsResponse = api_as(
+        "GET",
+        "/v1/requests?direction=in&status=pending&include=join",
+        None,
+    )
+    .await?;
+    let found = r.requests.iter().find(|q| q.id == id);
+    if found.is_some_and(|q| q.kind == "group") {
         return super::group::join(id.to_string(), sessions).await;
+    }
+    if let Some(q) = found.filter(|q| q.kind == "join") {
+        api("POST", &format!("/v1/requests/{id}/accept"), Some(json!({}))).await?;
+        ui::ok_line(&format!(
+            "{} {} is in {} now",
+            ui::heading(&q.from.name),
+            ui::dim(format!("({})", q.from.id)),
+            ui::heading(q.group.as_ref().map_or("the group", |g| g.name.as_str()))
+        ));
+        return Ok(());
     }
     let a: AcceptResponse = api_as(
         "POST",

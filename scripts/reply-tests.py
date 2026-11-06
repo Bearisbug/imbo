@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""TC-561 to TC-563 (docs/TEST.md): replying to a message (FLOW-REPLY,
-API-015, API-024, API-MCP-001, INV-035), against the local server.
+"""TC-561 to TC-563 and TC-595 (docs/TEST.md): replying to a message or to a
+passage of it (FLOW-REPLY, API-015, API-043, API-024, API-MCP-001, INV-035),
+against the local server.
 
     . crates/scripts/local-env.sh
-    python3 crates/scripts/reply-tests.py <RUN-ID> [561 562 563]
+    python3 crates/scripts/reply-tests.py <RUN-ID> [561 562 563 595]
 
 Each case starts its own server and seed the way parity-tests.py does and
 writes its lines to docs/test-runs/<run>-tc-NNN.txt (with RUN_HEADER, if
@@ -184,9 +185,79 @@ def tc563():
     check(563, 5, "carol can't reply to it", rc == 1 and "Can't find the message to reply to" in out, f"exit {rc}: {out}")
 
 
+def tc595():
+    P.up("alice:bob,alice:carol")
+    ids = P.ids()
+    A, B, C = ids["alice"], ids["bob"], ids["carol"]
+    g = P.make_group("t595", [("bob", B), ("carol", C)])
+    S, S2 = "55555555-aaaa-bbbb-cccc-000000595001", "55555555-aaaa-bbbb-cccc-000000595002"
+    imbo("bob", "dev", "fake-session", S, "--title", "b595")
+    imbo("alice", "dev", "fake-session", S2, "--title", "a595")
+
+    rc, out = imbo("bob", "send", str(A), "T595 今天先发安卓,明天发 iPhone")
+    m1 = sent(out)
+    check(595, 1, "bob sends", rc == 0 and m1 is not None, out)
+
+    s, b = send("alice", {"to": str(B), "body": "T595 好", "quote": m1, "quote_text": "明天发 iPhone"})
+    q = read("bob", b.get("message_id")).get("quote")
+    check(595, 2, "a reply to a passage", s == 201 and q == {"id": m1, "from_name": "bob",
+          "preview": "T595 今天先发安卓,明天发 iPhone", "text": "明天发 iPhone"}, f"{s} {q}")
+
+    s, b = send("alice", {"to": "bob/595001", "body": "T595 回会话", "quote": m1, "quote_text": "明天发 iPhone"})
+    out = mcp("bob", "inbox", {}, S)
+    check(595, 3, "the session reads the passage above the body", s == 201
+          and "In reply to bob: 明天发 iPhone\nT595 回会话" in out, f"{s} {out.strip()}")
+
+    rc, out = imbo("bob", "send", str(A), "T595 第一行\n第二行")
+    m3 = sent(out)
+    s, b = send("alice", {"to": str(B), "body": "T595 回两行", "quote": m3, "quote_text": "第一行\n第二行"})
+    t = read("bob", b.get("message_id")).get("quote", {}).get("text")
+    check(595, 4, "line breaks become spaces", s == 201 and t == "第一行 第二行", f"#{m3} {s} text={t!r}")
+
+    s, b = send("alice", {"to": str(B), "body": "T595 后天", "quote": m1, "quote_text": "后天发"})
+    check(595, 5, "a passage not in the message is refused, nothing stored", s == 400
+          and typ(b) == "/errors/invalid-request" and "T595 后天" not in inbox_all("bob"), f"{s} {typ(b)}")
+
+    rc, out = imbo("bob", "send", str(A), "字" * 600)
+    m5 = sent(out)
+    s1, _ = send("alice", {"to": str(B), "body": "T595 五百", "quote": m5, "quote_text": "字" * 500})
+    s2, b2 = send("alice", {"to": str(B), "body": "T595 五百零一", "quote": m5, "quote_text": "字" * 501})
+    check(595, 6, "500 characters go, 501 are refused", s1 == 201 and s2 == 400
+          and typ(b2) == "/errors/invalid-request", f"#{m5} {s1}; {s2} {typ(b2)}")
+
+    s1, b1 = send("alice", {"to": str(B), "body": "T595 只有一段", "quote_text": "明天发 iPhone"})
+    s2, b2 = send("alice", {"to": str(B), "body": "T595 空的", "quote": m1, "quote_text": ""})
+    box = inbox_all("bob")
+    check(595, 7, "without quote, or empty: refused, nothing stored", s1 == 400 and typ(b1) == "/errors/invalid-request"
+          and s2 == 400 and typ(b2) == "/errors/invalid-request" and "T595 只有一段" not in box and "T595 空的" not in box,
+          f"{s1} {typ(b1)}; {s2} {typ(b2)}")
+
+    rc, out = imbo("bob", "send", f"#{g}", "T595 群里的原话")
+    m6 = sent(out)
+    TC = P.app_token("carol@imbo.test")
+    sb, _, _ = call("POST", "/v1/blocks", {"account_id": B}, bearer=TC)
+    s, b = send("alice", {"to": f"#{g}", "body": "T595 群里回", "quote": m6, "quote_text": "原话"})
+    sg, v, _ = call("GET", f"/v1/messages/{b.get('message_id')}", bearer=TC)
+    q = (v or {}).get("message", {}).get("quote")
+    check(595, 8, "carol, who can't see the original, gets no text", sb == 201 and s == 201 and q == {"id": m6},
+          f"block {sb}; {s}; {sg} {q}")
+
+    out = mcp("alice", "send", {"to": str(A), "body": "T595 会话说完了"}, S2)
+    m8 = sent(out)
+    TA = P.app_token("alice@imbo.test")
+    _, ag, _ = call("GET", "/v1/agents", bearer=TA)
+    sid = next((a["id"] for a in (ag or {}).get("agents", []) if a["title"] == "a595"), None)
+    s, b, _ = call("POST", f"/v1/agents/{sid}/messages",
+                   {"body": "T595 收到", "client_msg_id": "t595-9", "quote": m8, "quote_text": "说完了"}, bearer=TA)
+    m9 = ((b or {}).get("message") or {}).get("id")
+    t = read("alice", m9).get("quote", {}).get("text")
+    check(595, 9, "to my own session (API-043) with a passage", m8 is not None and s == 201 and t == "说完了",
+          f"#{m8} {sid} {s} #{m9} text={t!r}")
+
+
 def main():
     run = sys.argv[1]
-    want = sys.argv[2:] or ["561", "562", "563"]
+    want = sys.argv[2:] or ["561", "562", "563", "595"]
     head = os.environ.get("RUN_HEADER")
     root = os.path.dirname(os.path.dirname(HERE))
     for tc in want:

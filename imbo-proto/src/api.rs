@@ -155,7 +155,9 @@ pub struct RequestItem {
     pub id: RequestId,
     pub kind: String,
     pub from: AccountRef,
-    pub to: AccountRef,
+    /// None on a join request: it goes to the group's owner and admins (API-009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<AccountRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<GroupRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -445,6 +447,10 @@ pub struct ReplyRef {
     /// name when it has no text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    /// The passage of it the reply picked, line breaks as spaces; shown in
+    /// place of `preview` (REQ-123).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// One of the reader's own sessions, as `siblings` lists it.
@@ -726,6 +732,9 @@ pub struct GroupView {
     pub my_sessions: Vec<AgentRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    /// Anyone can find it and ask to join (API-077, API-087).
+    #[serde(default)]
+    pub discoverable: bool,
 }
 
 /// A group member as API-019 lists them.
@@ -741,6 +750,9 @@ pub struct MemberRef {
     /// The sessions they picked for this group's messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<AgentRef>,
+    /// `owner`, `admin` or `member`; missing from servers before group admins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -751,6 +763,26 @@ pub struct GroupResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupsResponse {
     pub groups: Vec<GroupView>,
+}
+
+/// A group API-087 found: one anyone can find.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupHit {
+    pub id: GroupId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    pub member_count: i64,
+    pub owner: AccountRef,
+    /// I'm in it.
+    pub joined: bool,
+    /// I asked to join and it's not handled yet.
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupSearchResponse {
+    pub groups: Vec<GroupHit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

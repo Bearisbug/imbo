@@ -53,6 +53,12 @@ pub fn router(st: St) -> Router {
         .route("/v1/files", post(files::upload))
         .route("/v1/files/{id}", get(files::download))
         .route("/v1/groups", post(groups::create).get(groups::list))
+        .route("/v1/groups/search", get(groups::search))
+        .route("/v1/groups/{id}/join-requests", post(groups::apply))
+        .route(
+            "/v1/groups/{id}/admins/{account_id}",
+            put(groups::set_admin).delete(groups::unset_admin),
+        )
         .route("/v1/groups/{id}/invites", post(groups::invite))
         .route("/v1/groups/{id}/sessions", put(groups::set_sessions))
         .route("/v1/groups/{id}/members/me", delete(groups::leave))

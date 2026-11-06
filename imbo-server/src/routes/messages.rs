@@ -10,7 +10,8 @@ use imbo_proto::api::{
 };
 use imbo_proto::text::{Address, parse_address};
 use imbo_proto::{
-    Candidate, ErrorCode, MAX_BODY_CHARS, MAX_FILES, MAX_MESSAGE_FILE_BYTES, TOOL_TERMINAL,
+    Candidate, ErrorCode, MAX_BODY_CHARS, MAX_FILES, MAX_MESSAGE_FILE_BYTES, MAX_QUOTE_TEXT_CHARS,
+    TOOL_TERMINAL,
 };
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -36,6 +37,7 @@ pub struct SendIn {
     client_msg_id: Option<String>,
     files: Option<Vec<Uuid>>,
     quote: Option<i64>,
+    quote_text: Option<String>,
 }
 
 #[derive(Clone, sqlx::FromRow)]
@@ -553,7 +555,7 @@ pub async fn send(
             "client_msg_id must be 1 to 64 characters.",
         ));
     }
-    check_reply_id(req.quote)?;
+    let quote = check_quote(req.quote, req.quote_text)?;
     if let Some(done) = existing_result(&st, c.account_id, &client_msg_id).await? {
         return Ok((StatusCode::CREATED, Json(done)));
     }
@@ -589,7 +591,7 @@ pub async fn send(
             ),
         ));
     }
-    let done = store(&st, &c, &target, &body, &client_msg_id, &files, req.quote).await?;
+    let done = store(&st, &c, &target, &body, &client_msg_id, &files, quote.as_ref()).await?;
     Ok((StatusCode::CREATED, Json(done)))
 }
 
@@ -602,7 +604,7 @@ async fn store(
     body: &str,
     client_msg_id: &str,
     files: &[Uuid],
-    quote: Option<i64>,
+    quote: Option<&Quote>,
 ) -> ApiResult<SendResponse> {
     let from_agent = c.actor.as_ref().map(|a| a.id);
     let from_via = from_agent.is_none().then(|| c.via());
@@ -841,13 +843,13 @@ async fn store(
     if !files.is_empty() {
         check_files(&mut tx, c.account_id, files).await?;
     }
-    if let Some(original) = quote {
+    if let Some(q) = quote {
         let group = matches!(target, Target::Group(_));
-        check_reply(&mut tx, conversation.id, c.account_id, original, group).await?;
+        check_reply(&mut tx, conversation.id, c.account_id, q, group).await?;
     }
     let message_id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO messages (conversation_id, from_account, from_agent_id, from_via, to_agent_id, body, client_msg_id, quote)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "INSERT INTO messages (conversation_id, from_account, from_agent_id, from_via, to_agent_id, body, client_msg_id, quote, quote_text)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (from_account, client_msg_id) DO NOTHING RETURNING id",
     )
     .bind(conversation.id)
@@ -857,7 +859,8 @@ async fn store(
     .bind(to_agent)
     .bind(body)
     .bind(client_msg_id)
-    .bind(quote)
+    .bind(quote.map(|q| q.id))
+    .bind(quote.and_then(|q| q.text.as_deref()))
     .fetch_optional(&mut *tx)
     .await?;
     let Some(message_id) = message_id else {
@@ -920,41 +923,58 @@ async fn store(
     })
 }
 
-/// `quote` is a message number (FLOW-REPLY S4).
-fn check_reply_id(quote: Option<i64>) -> ApiResult<()> {
-    if quote.is_some_and(|id| id <= 0) {
-        return Err(err(
-            ErrorCode::InvalidRequest,
-            "quote must be a message number.",
-        ));
+/// What a message replies to: the message, and the passage of it picked.
+pub struct Quote {
+    id: i64,
+    text: Option<String>,
+}
+
+/// `quote` is a message number; `quote_text` comes with it and is 1 to 500
+/// characters (FLOW-REPLY S4).
+fn check_quote(quote: Option<i64>, text: Option<String>) -> ApiResult<Option<Quote>> {
+    let bad = |detail| Err(err(ErrorCode::InvalidRequest, detail));
+    match (quote, text) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => bad("quote_text goes with quote."),
+        (Some(id), _) if id <= 0 => bad("quote must be a message number."),
+        (Some(_), Some(t)) if t.is_empty() || t.chars().count() > MAX_QUOTE_TEXT_CHARS => {
+            bad("quote_text must be 1 to 500 characters.")
+        }
+        (Some(id), text) => Ok(Some(Quote { id, text })),
     }
-    Ok(())
 }
 
 /// The message a reply answers is in the conversation it goes to, and the
 /// sender sees it as API-024 decides: it still exists, and in a group the
 /// sender hasn't blocked whoever sent it (FLOW-REPLY S4, RULE-013).
+/// The passage picked is a run of the message's text.
 async fn check_reply(
     tx: &mut sqlx::PgConnection,
     conversation: i64,
     me: i32,
-    original: i64,
+    q: &Quote,
     group: bool,
 ) -> ApiResult<()> {
-    let seen: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM messages m WHERE m.id = $1 AND m.conversation_id = $2
-           AND NOT ($4 AND m.from_account IN (SELECT blocked_id FROM blocks WHERE account_id = $3)))",
+    let body: Option<String> = sqlx::query_scalar(
+        "SELECT m.body FROM messages m WHERE m.id = $1 AND m.conversation_id = $2
+           AND NOT ($4 AND m.from_account IN (SELECT blocked_id FROM blocks WHERE account_id = $3))",
     )
-    .bind(original)
+    .bind(q.id)
     .bind(conversation)
     .bind(me)
     .bind(group)
-    .fetch_one(tx)
+    .fetch_optional(tx)
     .await?;
-    if !seen {
+    let Some(body) = body else {
         return Err(err(
             ErrorCode::ReplyNotFound,
             "Can't find the message to reply to.",
+        ));
+    };
+    if q.text.as_ref().is_some_and(|t| !body.contains(t.as_str())) {
+        return Err(err(
+            ErrorCode::InvalidRequest,
+            "quote_text isn't in the message it replies to.",
         ));
     }
     Ok(())
@@ -1012,6 +1032,7 @@ pub struct AgentSendIn {
     client_msg_id: Option<String>,
     files: Option<Vec<Uuid>>,
     quote: Option<i64>,
+    quote_text: Option<String>,
 }
 
 /// API-043: the web app or the App writes to one of my sessions; the
@@ -1045,7 +1066,7 @@ pub async fn send_to_agent(
             "client_msg_id must be 1 to 64 characters.",
         ));
     }
-    check_reply_id(req.quote)?;
+    let quote = check_quote(req.quote, req.quote_text)?;
     let agent = my_session(&st, c.account_id, &raw).await?;
     let agent_id = agent.id;
     let message_id = match existing_result(&st, c.account_id, &client_msg_id).await? {
@@ -1059,7 +1080,7 @@ pub async fn send_to_agent(
                 },
                 agent,
             };
-            let id = store(&st, &c, &target, &body, &client_msg_id, &files, req.quote)
+            let id = store(&st, &c, &target, &body, &client_msg_id, &files, quote.as_ref())
                 .await?
                 .message_id;
             if c.web_person() {

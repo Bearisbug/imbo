@@ -37,6 +37,8 @@ pub const TOOL_TERMINAL: &str = "terminal";
 pub const MAX_BODY_CHARS: usize = 32_000;
 pub const INJECT_TRUNCATE_CHARS: usize = 4_000;
 pub const MAX_NOTE_CHARS: usize = 200;
+/// Longest passage of a message a reply can pick (API-015 `quote_text`).
+pub const MAX_QUOTE_TEXT_CHARS: usize = 500;
 pub const MAX_NAME_CHARS: usize = 32;
 pub const MAX_GROUP_NAME_CHARS: usize = 64;
 pub const MAX_TITLE_CHARS: usize = 200;

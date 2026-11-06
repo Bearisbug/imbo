@@ -1,11 +1,12 @@
 //! `imbo group …` (FLOW-GROUP).
 
 use clap::Subcommand;
+use imbo_proto::MAX_NOTE_CHARS;
 use imbo_proto::api::{
-    AcceptResponse, AgentRef, AgentsResponse, AvatarResponse, GroupResponse, GroupView,
-    GroupsResponse, MySessionsResponse, RequestResponse, RequestsResponse,
+    AcceptResponse, AgentRef, AgentsResponse, AvatarResponse, GroupResponse, GroupSearchResponse,
+    GroupView, GroupsResponse, MySessionsResponse, RequestResponse, RequestsResponse,
 };
-use imbo_proto::text::validate_group_name;
+use imbo_proto::text::{percent_encode, validate_group_name};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -76,6 +77,30 @@ pub enum GroupCmd {
     },
     /// Rename a group you own. Members see the new name next time they look.
     Rename { group: String, name: String },
+    /// Find groups anyone can find, by name or #ID.
+    Search { query: String },
+    /// Ask to join a group you found; its owner or an admin answers.
+    Apply {
+        /// The group's ID, as `imbo group search` shows it.
+        group: String,
+        /// A short note only its owner and admins see (up to 200 characters).
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Make a member an admin of a group you own.
+    Admin {
+        group: String,
+        account_id: i32,
+        /// Make them an ordinary member again instead.
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Let anyone find a group you own and ask to join it, or stop that.
+    Discoverable {
+        group: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
 }
 
 /// Ask once, no by default; `--yes` or no terminal skips the question (PAGE-GROUP).
@@ -102,7 +127,7 @@ pub async fn run(cmd: GroupCmd) -> anyhow::Result<()> {
             .await?;
             ui::ok_line(&format!(
                 "Invited {} {}  {}",
-                ui::heading(&r.request.to.name),
+                ui::heading(r.request.to.as_ref().map_or("", |t| t.name.as_str())),
                 ui::dim(format!("({account_id})")),
                 ui::dim("they join once they accept")
             ));
@@ -197,7 +222,129 @@ pub async fn run(cmd: GroupCmd) -> anyhow::Result<()> {
             remove,
         } => avatar(group, picture, remove).await,
         GroupCmd::Rename { group, name } => rename(group, name).await,
+        GroupCmd::Search { query } => search(query).await,
+        GroupCmd::Apply { group, note } => apply(group, note).await,
+        GroupCmd::Admin {
+            group,
+            account_id,
+            remove,
+        } => admin(group, account_id, remove).await,
+        GroupCmd::Discoverable { group, state } => discoverable(group, state == "on").await,
     }
+}
+
+/// API-087: one line a group.
+async fn search(query: String) -> anyhow::Result<()> {
+    let r: GroupSearchResponse = api_as(
+        "GET",
+        &format!("/v1/groups/search?q={}", percent_encode(query.trim())),
+        None,
+    )
+    .await?;
+    if r.groups.is_empty() {
+        println!(
+            "{}",
+            ui::dim("No group found. A group shows up here once its owner lets anyone find it.")
+        );
+        return Ok(());
+    }
+    for g in &r.groups {
+        let mark = if g.joined {
+            "joined"
+        } else if g.applied {
+            "applied"
+        } else {
+            ""
+        };
+        println!(
+            "{}  {}  {}  {}  {}",
+            ui::s(ui::text(), format!("#{}", g.id)),
+            ui::heading(&g.name),
+            ui::dim(format!("{} members", g.member_count)),
+            ui::dim(format!("owner {}", g.owner.name)),
+            ui::s(ui::warn(), mark)
+        );
+    }
+    if r.groups.iter().any(|g| !g.joined && !g.applied) {
+        eprintln!("  {}", ui::dim("Ask to join one: imbo group apply <#ID>"));
+    }
+    Ok(())
+}
+
+/// API-088.
+async fn apply(group: String, note: Option<String>) -> anyhow::Result<()> {
+    let Ok(gid) = group.trim().trim_start_matches('#').parse::<i32>() else {
+        ui::error_line("Give the group's ID, as `imbo group search` shows it.");
+        return Err(Reported.into());
+    };
+    if note.as_ref().is_some_and(|n| n.chars().count() > MAX_NOTE_CHARS) {
+        ui::error_line(&format!(
+            "The note can be at most {MAX_NOTE_CHARS} characters."
+        ));
+        return Err(Reported.into());
+    }
+    let r: RequestResponse = api_as(
+        "POST",
+        &format!("/v1/groups/{gid}/join-requests"),
+        Some(json!({ "note": note })),
+    )
+    .await?;
+    let name = r.request.group.map(|g| g.name).unwrap_or_default();
+    ui::ok_line(&format!(
+        "Asked to join {} {}",
+        ui::heading(&name),
+        ui::dim(format!("#{gid}"))
+    ));
+    eprintln!("  {}", ui::dim("Its owner or an admin will answer."));
+    Ok(())
+}
+
+/// API-089 and API-090.
+async fn admin(group: String, account_id: i32, remove: bool) -> anyhow::Result<()> {
+    let gid = group_id(&group).await?;
+    let path = format!("/v1/groups/{gid}/admins/{account_id}");
+    let r: GroupResponse = api_as(if remove { "DELETE" } else { "PUT" }, &path, None).await?;
+    let who = r
+        .group
+        .members
+        .iter()
+        .find(|m| m.id == account_id)
+        .map_or(account_id.to_string(), |m| m.name.clone());
+    let what = if remove {
+        "is no longer an admin of"
+    } else {
+        "is now an admin of"
+    };
+    ui::ok_line(&format!(
+        "{} {what} {}",
+        ui::heading(who),
+        ui::heading(&r.group.name)
+    ));
+    Ok(())
+}
+
+/// API-077 with `discoverable`.
+async fn discoverable(group: String, on: bool) -> anyhow::Result<()> {
+    let gid = group_id(&group).await?;
+    let r: GroupResponse = api_as(
+        "PATCH",
+        &format!("/v1/groups/{gid}"),
+        Some(json!({ "discoverable": on })),
+    )
+    .await?;
+    let g = format!("{} {}", ui::heading(&r.group.name), ui::dim(format!("(#{gid})")));
+    if on {
+        ui::ok_line(&format!("Anyone can now find {g}"));
+        eprintln!(
+            "  {}",
+            ui::dim(format!(
+                "They ask to join with `imbo group apply {gid}`; you and its admins answer with `imbo contact requests`."
+            ))
+        );
+    } else {
+        ui::ok_line(&format!("{g} can no longer be found"));
+    }
+    Ok(())
 }
 
 /// API-077.
@@ -280,6 +427,8 @@ fn print_group(g: &GroupView) {
         .map(|m| {
             if Some(m.id) == owner {
                 format!("{} {}", m.name, ui::dim("owner"))
+            } else if m.role.as_deref() == Some("admin") {
+                format!("{} {}", m.name, ui::dim("admin"))
             } else {
                 m.name.clone()
             }

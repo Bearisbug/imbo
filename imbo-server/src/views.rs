@@ -33,6 +33,7 @@ struct MessageRow {
     to_title: Option<String>,
     to_tool: Option<String>,
     quote: Option<i64>,
+    quote_text: Option<String>,
 }
 
 /// Message views by id, in id order. `viewer` decides which side of a direct
@@ -51,7 +52,7 @@ pub async fn messages(
                 ag.short_id AS agent_short_id, coalesce(ag.custom_title, ag.title) AS agent_title, ag.tool AS agent_tool,
                 c.account_lo, c.account_hi,
                 m.to_agent_id, ta.short_id AS to_short_id, coalesce(ta.custom_title, ta.title) AS to_title, ta.tool AS to_tool,
-                m.quote
+                m.quote, m.quote_text
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
          LEFT JOIN chat_groups g ON g.id = c.group_id
@@ -204,11 +205,13 @@ pub async fn messages(
                         id,
                         from_name: Some(name.clone()),
                         preview: Some(preview.clone()),
+                        text: r.quote_text.as_deref().map(one_line),
                     },
                     None => ReplyRef {
                         id,
                         from_name: None,
                         preview: None,
+                        text: None,
                     },
                 }),
             }
@@ -224,10 +227,14 @@ fn preview(body: &str, file: Option<String>) -> String {
     {
         return name;
     }
-    body.replace("\r\n", "\n")
+    one_line(body).chars().take(80).collect()
+}
+
+/// Line breaks as spaces.
+fn one_line(text: &str) -> String {
+    text.replace("\r\n", "\n")
         .chars()
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
-        .take(80)
         .collect()
 }
 
