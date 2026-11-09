@@ -61,7 +61,7 @@ ok = (
     status == 429
     and isinstance(body, dict)
     and body.get("type") == "/errors/upload-quota-exceeded"
-    and body.get("detail", "").startswith("You uploaded 1022.0 MB today and this file is 40.0 MB")
+    and body.get("detail", "").startswith("You uploaded 2046.0 MB today and this file is 40.0 MB")
 )
 print(f"{'PASS' if ok else 'FAIL'} TC-345 #1 40 MB past the day's limit: {status} {body}", flush=True)
 sys.exit(0 if ok else 1)
