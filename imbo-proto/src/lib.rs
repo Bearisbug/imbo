@@ -46,4 +46,4 @@ pub const MAX_TITLE_CHARS: usize = 200;
 /// Attachment limits (INV-012, API-026).
 pub const MAX_FILES: usize = 20;
 pub const MAX_MESSAGE_FILE_BYTES: u64 = 104_857_600;
-pub const DAILY_UPLOAD_BYTES: u64 = 1_073_741_824;
+pub const DAILY_UPLOAD_BYTES: u64 = 2_147_483_648;

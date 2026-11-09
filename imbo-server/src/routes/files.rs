@@ -138,9 +138,10 @@ pub async fn upload(
         let e = err(
             ErrorCode::UploadQuotaExceeded,
             format!(
-                "You uploaded {} today and this file is {}; the limit is 1 GB a day. It resets at midnight Beijing time, in {} h {} min.",
+                "You uploaded {} today and this file is {}; the limit is {} GB a day. It resets at midnight Beijing time, in {} h {} min.",
                 mb(used),
                 mb(size),
+                DAILY_UPLOAD_BYTES >> 30,
                 left / 60,
                 left % 60
             ),

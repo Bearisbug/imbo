@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TC-345 step 1 (docs/TEST.md): an upload past the day's 1 GB, sent whole
+"""TC-345 step 1 (docs/TEST.md): an upload past the day's 2 GB, sent whole
 before its answer is read, as iOS and browsers send it, against the local
 server.
 
@@ -48,7 +48,7 @@ def upload(name, size):
         c.close()
 
 
-left = 1024 * MB - 2 * MB
+left = 2048 * MB - 2 * MB
 while left > 0:
     n = min(left, 100 * MB)
     status, body = upload("alice", n)
