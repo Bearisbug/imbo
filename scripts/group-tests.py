@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""TC-610 to TC-613 (docs/TEST.md): group admins, groups anyone can find and
-asking to join one (FLOW-GROUP-DISCOVER, FLOW-GROUP-APPROVE, FLOW-GROUP-ADMIN,
-RULE-023, RULE-024, API-087..090), against the local server.
+"""TC-610, TC-613, TC-629, TC-631 and TC-633 (docs/TEST.md): group admins,
+groups anyone can find, asking to join one and inviting back someone removed
+(FLOW-GROUP-DISCOVER, FLOW-GROUP-APPROVE, FLOW-GROUP-ADMIN, FLOW-GROUP-REMOVE,
+RULE-009, RULE-023, RULE-024, API-087..090), against the local server.
 
     . crates/scripts/local-env.sh
-    python3 crates/scripts/group-tests.py <RUN-ID> [610 611 612 613]
+    python3 crates/scripts/group-tests.py <RUN-ID> [610 613 629 631 633]
 
 Each case starts its own server and seed the way parity-tests.py does and
 writes its lines to docs/test-runs/<run>-tc-NNN.txt (with RUN_HEADER, if
@@ -16,9 +17,11 @@ import importlib.util
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import time
+import zlib
 from urllib.parse import quote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -83,6 +86,26 @@ def notice(who, *parts):
             return hit[-1]
         time.sleep(0.2)
     return None
+
+
+def png(w, h):
+    """A plain grey w×h PNG."""
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+    rows = b"".join(b"\x00" + b"\x80" * 3 * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def picture(who, g, raw):
+    """`who` puts `raw` as the group's picture (API-056): (status, body)."""
+    c = http.client.HTTPConnection("127.0.0.1", 18080, timeout=30)
+    c.request("PUT", f"/v1/groups/{g}/avatar", body=raw,
+              headers={"content-type": "image/png", "authorization": f"Bearer {P.computer_token(f'{L}/{who}')}"})
+    r = c.getresponse()
+    body = r.read()
+    c.close()
+    return r.status, (json.loads(body) if body else {})
 
 
 def tc610():
@@ -156,120 +179,152 @@ def tc610():
     check(610, 12, "an empty change is refused", s == 400 and typ(b) == "/errors/invalid-request", f"{s} {typ(b)}")
 
 
-def tc611():
-    P.up("alice:bob,alice:carol")
-    dave("bob")
-    ids = P.ids()
-    B, C = ids["bob"], ids["carol"]
-    g = P.make_group("t611", [("bob", B)])
-    api("alice", "PATCH", f"/v1/groups/{g}", {"discoverable": True})
-    api("alice", "PUT", f"/v1/groups/{g}/admins/{B}")
-    S = "55555555-aaaa-bbbb-cccc-000000611001"
-    imbo("alice", "dev", "fake-session", S, "--title", "a611")
-
-    s1, b1 = apply("carol", g, "T611 carol")
-    s2, b2 = apply(DAVE, g, "T611 dave")
-    r1, r2 = b1.get("request", {}).get("id"), b2.get("request", {}).get("id")
-    check(611, 1, "carol and dave ask", s1 == 201 and s2 == 201, f"{s1} #{r1}; {s2} #{r2}")
-
-    _, bob_in = api("bob", "GET", "/v1/requests?include=join")
-    _, agent_in = api("alice", "GET", "/v1/requests?include=join", session=S)
-    notes = {r["id"]: r.get("note") for r in joins(bob_in)}
-    check(611, 2, "the admin sees both with notes; the owner's session sees none",
-          notes == {r1: "T611 carol", r2: "T611 dave"} and not joins(agent_in), f"bob: {notes}; session: {joins(agent_in)}")
-
-    s, b = api("alice", "POST", f"/v1/requests/{r1}/accept", session=S)
-    check(611, 3, "the owner's session can't accept", s == 404 and typ(b) == "/errors/not-found", f"{s} {typ(b)}")
-
-    s, b = api("bob", "POST", f"/v1/requests/{r1}/accept")
-    gv = group("carol", g)
-    check(611, 4, "the admin accepts: carol is in, no sessions picked", s == 200
-          and b.get("request", {}).get("status") == "accepted" and gv.get("my_sessions") == [],
-          f"{s} {b.get('request', {}).get('status')}; carol's t611 {gv.get('name')} my_sessions={gv.get('my_sessions')}")
-
-    s, b = api("alice", "POST", f"/v1/requests/{r1}/accept")
-    check(611, 5, "already handled", s == 409 and typ(b) == "/errors/request-closed", f"{s} {typ(b)}")
-
-    s, b = api("carol", "POST", f"/v1/requests/{r2}/accept")
-    check(611, 6, "a member can't accept", s == 404 and typ(b) == "/errors/not-found", f"{s} {typ(b)}")
-
-    s, b = api("alice", "POST", f"/v1/requests/{r2}/decline")
-    _, out = api(DAVE, "GET", "/v1/requests?direction=out&include=join&status=all")
-    mine = {r["id"]: r["status"] for r in joins(out)}
-    check(611, 7, "the owner declines; dave sees it declined", s == 200
-          and b.get("request", {}).get("status") == "declined" and mine.get(r2) == "declined", f"{s}; dave {mine}")
-
-    s, b = apply(DAVE, g)
-    check(611, 8, "declined, so dave can ask again", s == 201, f"{s} #{b.get('request', {}).get('id')}")
-
-    s1, _ = api("alice", "DELETE", f"/v1/groups/{g}/members/{C}")
-    s2, b2 = apply("carol", g)
-    r4 = b2.get("request", {}).get("id")
-    check(611, 9, "carol removed, then asks again", s1 == 204 and s2 == 201, f"{s1}; {s2} #{r4}")
-
-    s, b = api("bob", "POST", f"/v1/requests/{r4}/accept")
-    check(611, 10, "the admin can't let a removed one back", s == 403 and typ(b) == "/errors/removed-from-group",
-          f"{s} {typ(b)}")
-
-    s, b = api("alice", "POST", f"/v1/requests/{r4}/accept")
-    gv = group("alice", g)
-    check(611, 11, "the owner can", s == 200 and "carol" in roles(gv), f"{s}; members {roles(gv)}")
-
-
-def tc612():
+def tc629():
     P.up("alice:bob,alice:carol")
     ids = P.ids()
     A, B, C, D = ids["alice"], ids["bob"], ids["carol"], dave("alice")
-    g = P.make_group("t612", [("bob", B), ("carol", C), (f"{L}/{DAVE}", D)])
-    S = "55555555-aaaa-bbbb-cccc-000000612001"
-    imbo("bob", "dev", "fake-session", S, "--title", "b612")
+    g = P.make_group("t629", [("bob", B), ("carol", C), (f"{L}/{DAVE}", D)])
+    S = "55555555-aaaa-bbbb-cccc-000000629001"
+    imbo("bob", "dev", "fake-session", S, "--title", "b629")
 
     s, b = api("bob", "PUT", f"/v1/groups/{g}/admins/{C}")
-    check(612, 1, "a member can't make admins", s == 403 and typ(b) == "/errors/not-owner", f"{s} {typ(b)}")
+    check(629, 1, "a member can't make admins", s == 403 and typ(b) == "/errors/not-owner"
+          and f"Only the owner and admins of t629 (#{g}) can choose its admins." in b.get("detail", ""),
+          f"{s} {typ(b)} {b.get('detail')}")
 
     s1, _ = api("alice", "PUT", f"/v1/groups/{g}/admins/{B}")
     s2, b2 = api("alice", "PUT", f"/v1/groups/{g}/admins/{B}")
     r = roles(b2.get("group", {}))
-    check(612, 2, "the owner makes bob an admin, twice", s1 == 200 and s2 == 200
+    check(629, 2, "the owner makes bob an admin, twice", s1 == 200 and s2 == 200
           and r == {"alice": "owner", "bob": "admin", "carol": "member", "dave": "member"}, f"{s1} {s2} {r}")
 
-    (s1, b1), (s2, b2) = api("alice", "PUT", f"/v1/groups/{g}/admins/{A}"), api("alice", "PUT", f"/v1/groups/{g}/admins/99999999")
-    check(612, 3, "not the owner herself, not a stranger", s1 == 400 and typ(b1) == "/errors/invalid-request"
-          and s2 == 404 and typ(b2) == "/errors/not-found", f"{s1} {typ(b1)}; {s2} {typ(b2)}")
+    got = [api("alice", "PUT", f"/v1/groups/{g}/admins/{A}"), api("bob", "PUT", f"/v1/groups/{g}/admins/{A}"),
+           api("bob", "PUT", f"/v1/groups/{g}/admins/99999999")]
+    check(629, 3, "not the owner, by her or by the admin; not a stranger",
+          [(s, typ(b)) for s, b in got] == [(400, "/errors/invalid-request")] * 2 + [(404, "/errors/not-found")],
+          "; ".join(f"{s} {typ(b)}" for s, b in got))
+
+    s1, _ = api("bob", "PUT", f"/v1/groups/{g}/admins/{C}")
+    s2, b2 = api("bob", "PUT", f"/v1/groups/{g}/admins/{C}")
+    r = roles(b2.get("group", {}))
+    check(629, 4, "the admin makes carol an admin, twice", s1 == 200 and s2 == 200 and r.get("carol") == "admin",
+          f"{s1} {s2} {r}")
+
+    s1, _ = api("bob", "DELETE", f"/v1/groups/{g}/admins/{C}")
+    s2, b2 = api("bob", "DELETE", f"/v1/groups/{g}/admins/{C}")
+    r = roles(b2.get("group", {}))
+    check(629, 5, "the admin unsets carol, twice", s1 == 200 and s2 == 200 and r.get("carol") == "member",
+          f"{s1} {s2} {r}")
+
+    sn, bn = api("bob", "PATCH", f"/v1/groups/{g}", {"name": "t629b"})
+    sd, bd = api("bob", "PATCH", f"/v1/groups/{g}", {"discoverable": True})
+    sp, bp = picture("bob", g, png(40, 40))
+    sx, _ = api("bob", "DELETE", f"/v1/groups/{g}/avatar")
+    sm, bm = api("carol", "PATCH", f"/v1/groups/{g}", {"name": "x"})
+    check(629, 6, "the admin renames it, lets anyone find it, puts and removes its picture; a member can't rename",
+          sn == 200 and bn.get("group", {}).get("name") == "t629b" and sd == 200
+          and bd.get("group", {}).get("discoverable") is True and sp == 200 and bool(bp.get("avatar_url")) and sx == 204
+          and sm == 403 and typ(bm) == "/errors/not-owner",
+          f"{sn} {bn.get('group', {}).get('name')}; {sd} {bd.get('group', {}).get('discoverable')}; "
+          f"picture {sp} {bp.get('avatar_url')}; {sx}; carol {sm} {typ(bm)}")
 
     s, _ = api("bob", "DELETE", f"/v1/groups/{g}/members/{C}")
     box = imbo("carol", "inbox", "--all")[1]
-    check(612, 4, "the admin removes carol, the notice names bob", s == 204
-          and f"You were removed from group t612 (#{g}) by bob." in box, f"{s}; {box[-300:]}")
+    check(629, 7, "the admin removes carol, the notice names bob", s == 204
+          and f"You were removed from group t629b (#{g}) by bob." in box, f"{s}; {box[-300:]}")
 
     s0, _ = api("alice", "PUT", f"/v1/groups/{g}/admins/{D}")
-    (s1, b1), (s2, b2) = api("bob", "DELETE", f"/v1/groups/{g}/members/{D}"), api("bob", "DELETE", f"/v1/groups/{g}/members/{A}")
-    check(612, 5, "the admin can't remove another admin or the owner", s0 == 200
-          and s1 == 403 and typ(b1) == "/errors/not-owner" and s2 == 403 and typ(b2) == "/errors/not-owner",
-          f"{s0}; {s1} {typ(b1)}; {s2} {typ(b2)}")
+    s1, _ = api("bob", "DELETE", f"/v1/groups/{g}/members/{D}")
+    box = imbo(DAVE, "inbox", "--all")[1]
+    s2, b2 = api("bob", "DELETE", f"/v1/groups/{g}/members/{A}")
+    check(629, 8, "the admin removes the admin dave, not the owner", s0 == 200 and s1 == 204
+          and f"You were removed from group t629b (#{g}) by bob." in box
+          and s2 == 403 and typ(b2) == "/errors/not-owner" and f"The owner of t629b (#{g}) can't be removed." in b2.get("detail", ""),
+          f"{s0}; {s1}; dave: {box[-200:]}; {s2} {typ(b2)} {b2.get('detail')}")
 
-    got = [api("bob", "PATCH", f"/v1/groups/{g}", {"name": "x"}), api("bob", "DELETE", f"/v1/groups/{g}/admins/{D}"),
-           api("bob", "PUT", f"/v1/groups/{g}/owner", {"account_id": B}), api("bob", "DELETE", f"/v1/groups/{g}")]
-    check(612, 6, "the admin can't rename, unset admins, transfer or dissolve",
+    got = [api("bob", "PUT", f"/v1/groups/{g}/owner", {"account_id": B}), api("bob", "DELETE", f"/v1/groups/{g}")]
+    check(629, 9, "the admin can't hand it on or dissolve it",
           all(s == 403 and typ(b) == "/errors/not-owner" for s, b in got), "; ".join(f"{s} {typ(b)}" for s, b in got))
-
-    s1, _ = api("alice", "DELETE", f"/v1/groups/{g}/admins/{D}")
-    s2, b2 = api("alice", "DELETE", f"/v1/groups/{g}/admins/{D}")
-    check(612, 7, "the owner unsets dave, twice", s1 == 200 and s2 == 200 and roles(b2.get("group", {})).get("dave") == "member",
-          f"{s1} {s2} {roles(b2.get('group', {}))}")
 
     s, b = api("alice", "PUT", f"/v1/groups/{g}/owner", {"account_id": B})
     r = roles(b.get("group", {}))
-    check(612, 8, "handed to the admin: bob owns it, alice is a member, no admins", s == 200
-          and r == {"alice": "member", "bob": "owner", "dave": "member"}, f"{s} {r}")
+    check(629, 10, "handed to the admin: bob owns it, alice is a member, no admins", s == 200
+          and r == {"alice": "member", "bob": "owner"}, f"{s} {r}")
 
-    s, b = api("bob", "PUT", f"/v1/groups/{g}/admins/{D}", session=S)
-    check(612, 9, "an agent can't make admins", s == 403 and typ(b) == "/errors/forbidden", f"{s} {typ(b)}")
+    s, b = api("bob", "PUT", f"/v1/groups/{g}/admins/{A}", session=S)
+    check(629, 11, "an agent can't make admins", s == 403 and typ(b) == "/errors/forbidden", f"{s} {typ(b)}")
 
-    s1, _ = api("bob", "PUT", f"/v1/groups/{g}/admins/{D}")
-    s2, _ = api(DAVE, "DELETE", f"/v1/groups/{g}/members/me")
+    s1, _ = api("bob", "PUT", f"/v1/groups/{g}/admins/{A}")
+    s2, _ = api("alice", "DELETE", f"/v1/groups/{g}/members/me")
     r = roles(group("bob", g))
-    check(612, 10, "an admin leaves like anyone", s1 == 200 and s2 == 204 and "dave" not in r, f"{s1} {s2} {r}")
+    check(629, 12, "an admin leaves like anyone", s1 == 200 and s2 == 204 and "alice" not in r, f"{s1} {s2} {r}")
+
+
+def tc631():
+    P.up("alice:bob,alice:carol")
+    D = dave("bob")
+    ids = P.ids()
+    B, C = ids["bob"], ids["carol"]
+    g = P.make_group("t631", [("bob", B)])
+    api("alice", "PATCH", f"/v1/groups/{g}", {"discoverable": True})
+    api("alice", "PUT", f"/v1/groups/{g}/admins/{B}")
+    S = "55555555-aaaa-bbbb-cccc-000000631001"
+    imbo("alice", "dev", "fake-session", S, "--title", "a631")
+
+    s1, b1 = apply("carol", g, "T631 carol")
+    s2, b2 = apply(DAVE, g, "T631 dave")
+    r1, r2 = b1.get("request", {}).get("id"), b2.get("request", {}).get("id")
+    check(631, 1, "carol and dave ask", s1 == 201 and s2 == 201, f"{s1} #{r1}; {s2} #{r2}")
+
+    _, bob_in = api("bob", "GET", "/v1/requests?include=join")
+    _, agent_in = api("alice", "GET", "/v1/requests?include=join", session=S)
+    notes = {r["id"]: r.get("note") for r in joins(bob_in)}
+    check(631, 2, "the admin sees both with notes; the owner's session sees none",
+          notes == {r1: "T631 carol", r2: "T631 dave"} and not joins(agent_in), f"bob: {notes}; session: {joins(agent_in)}")
+
+    s, b = api("alice", "POST", f"/v1/requests/{r1}/accept", session=S)
+    check(631, 3, "the owner's session can't accept", s == 404 and typ(b) == "/errors/not-found", f"{s} {typ(b)}")
+
+    s, b = api("bob", "POST", f"/v1/requests/{r1}/accept")
+    gv = group("carol", g)
+    check(631, 4, "the admin accepts: carol is in, no sessions picked", s == 200
+          and b.get("request", {}).get("status") == "accepted" and gv.get("my_sessions") == [],
+          f"{s} {b.get('request', {}).get('status')}; carol's t631 {gv.get('name')} my_sessions={gv.get('my_sessions')}")
+
+    s, b = api("alice", "POST", f"/v1/requests/{r1}/accept")
+    check(631, 5, "already handled", s == 409 and typ(b) == "/errors/request-closed", f"{s} {typ(b)}")
+
+    s, b = api("carol", "POST", f"/v1/requests/{r2}/accept")
+    check(631, 6, "a member can't accept", s == 404 and typ(b) == "/errors/not-found", f"{s} {typ(b)}")
+
+    s, b = api("alice", "POST", f"/v1/requests/{r2}/decline")
+    _, out = api(DAVE, "GET", "/v1/requests?direction=out&include=join&status=all")
+    mine = {r["id"]: r["status"] for r in joins(out)}
+    check(631, 7, "the owner declines; dave sees it declined", s == 200
+          and b.get("request", {}).get("status") == "declined" and mine.get(r2) == "declined", f"{s}; dave {mine}")
+
+    s, b = apply(DAVE, g)
+    r3 = b.get("request", {}).get("id")
+    check(631, 8, "declined, so dave can ask again", s == 201, f"{s} #{r3}")
+
+    s1, _ = api("alice", "DELETE", f"/v1/groups/{g}/members/{C}")
+    s2, b2 = apply("carol", g)
+    r4 = b2.get("request", {}).get("id")
+    check(631, 9, "carol removed, then asks again", s1 == 204 and s2 == 201, f"{s1}; {s2} #{r4}")
+
+    s, b = api("bob", "POST", f"/v1/requests/{r4}/accept")
+    gv = group("alice", g)
+    check(631, 10, "the admin lets a removed one back", s == 200 and b.get("request", {}).get("status") == "accepted"
+          and "carol" in roles(gv), f"{s} {typ(b)}; members {roles(gv)}")
+
+    s1, _ = api("alice", "POST", f"/v1/requests/{r3}/accept")
+    s2, _ = api("bob", "DELETE", f"/v1/groups/{g}/members/{D}")
+    s3, b3 = api("bob", "POST", f"/v1/groups/{g}/invites", {"account_id": D})
+    r5 = b3.get("request", {}).get("id")
+    s4, _ = api(DAVE, "POST", f"/v1/requests/{r5}/accept")
+    gv = group("alice", g)
+    check(631, 11, "dave in, removed by the admin, back on the admin's invite", (s1, s2, s3, s4) == (200, 204, 201, 200)
+          and "dave" in roles(gv), f"{s1} {s2} {s3} #{r5} {s4}; members {roles(gv)}")
 
 
 def tc613():
@@ -323,9 +378,43 @@ def tc613():
           and "No group found" in found and "owner lets anyone find it" in found, f"{out} | {found}")
 
 
+def tc633():
+    P.up("alice:bob,alice:carol,bob:carol")
+    ids = P.ids()
+    B, C = ids["bob"], ids["carol"]
+    g = P.make_group("t633", [("bob", B), ("carol", C)])
+    imbo("alice", "group", "remove", "t633", str(B), "--yes")
+
+    rc, out = imbo("carol", "group", "invite", "t633", str(B))
+    check(633, 1, "a member can't invite the removed bob", rc == 1 and "Removed from this group" in out
+          and "Only its owner and admins can invite them back." in out, f"exit {rc}: {out}")
+
+    rc1, out1 = imbo("alice", "group", "invite", "t633", str(B))
+    rc2, out2 = imbo("bob", "group", "join", "t633")
+    check(633, 2, "the owner invites him, he joins", rc1 == 0 and rc2 == 0 and "t633" in out2,
+          f"exit {rc1}: {out1} | exit {rc2}: {out2}")
+
+    got = [imbo("bob", "group", "leave", "t633", "--yes"), imbo("carol", "group", "invite", "t633", str(B)),
+           imbo("bob", "group", "join", "t633")]
+    check(633, 3, "he leaves; a member invites him and he joins", all(rc == 0 for rc, _ in got),
+          " | ".join(f"exit {rc}: {o}" for rc, o in got))
+
+    got = [imbo("alice", "group", "remove", "t633", str(B), "--yes"), imbo("alice", "group", "invite", "t633", str(B)),
+           imbo("alice", "group", "transfer", "t633", str(C), "--yes")]
+    rc, out = imbo("bob", "group", "join", "t633")
+    check(633, 4, "removed, invited by alice who then hands it to carol: he can't join", all(r == 0 for r, _ in got)
+          and rc == 1 and "Removed from this group" in out,
+          " | ".join(f"exit {r}: {o}" for r, o in got) + f" | bob exit {rc}: {out}")
+
+    _, out = imbo("carol", "group", "list")
+    line = next((l.strip() for l in out.splitlines() if l.strip().startswith("members")), "")
+    check(633, 5, "members alice and carol, the owner", re.sub(r"\s+", " ", line) == "members alice, carol owner",
+          f"{line} | g #{g}")
+
+
 def main():
     run = sys.argv[1]
-    want = sys.argv[2:] or ["610", "611", "612", "613"]
+    want = sys.argv[2:] or ["610", "613", "629", "631", "633"]
     head = os.environ.get("RUN_HEADER")
     root = os.path.dirname(os.path.dirname(HERE))
     for tc in want:

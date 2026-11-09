@@ -46,7 +46,7 @@ pub enum GroupCmd {
         #[arg(long, short)]
         yes: bool,
     },
-    /// Remove a member from a group you own.
+    /// Remove a member from a group you own or are an admin of; nobody removes the owner.
     Remove {
         group: String,
         account_id: i32,
@@ -66,7 +66,7 @@ pub enum GroupCmd {
         #[arg(long, short)]
         yes: bool,
     },
-    /// Change the picture of a group you own (JPEG or PNG, up to 5 MB).
+    /// Change the picture of a group you own or are an admin of (JPEG or PNG, up to 5 MB).
     Avatar {
         group: String,
         #[arg(required_unless_present = "remove", conflicts_with = "remove")]
@@ -75,7 +75,7 @@ pub enum GroupCmd {
         #[arg(long)]
         remove: bool,
     },
-    /// Rename a group you own. Members see the new name next time they look.
+    /// Rename a group you own or are an admin of. Members see the new name next time they look.
     Rename { group: String, name: String },
     /// Find groups anyone can find, by name or #ID.
     Search { query: String },
@@ -87,7 +87,7 @@ pub enum GroupCmd {
         #[arg(long)]
         note: Option<String>,
     },
-    /// Make a member an admin of a group you own.
+    /// Make a member an admin of a group you own or are an admin of.
     Admin {
         group: String,
         account_id: i32,
@@ -95,7 +95,7 @@ pub enum GroupCmd {
         #[arg(long)]
         remove: bool,
     },
-    /// Let anyone find a group you own and ask to join it, or stop that.
+    /// Let anyone find a group you own or are an admin of and ask to join it, or stop that.
     Discoverable {
         group: String,
         #[arg(value_parser = ["on", "off"])]
@@ -158,7 +158,7 @@ pub async fn run(cmd: GroupCmd) -> anyhow::Result<()> {
             if !confirmed(
                 yes,
                 format!(
-                    "Remove {account_id} from {group}? Only you, the owner, can invite them back."
+                    "Remove {account_id} from {group}? Only its owner and admins can invite them back."
                 ),
             )? {
                 return Ok(());

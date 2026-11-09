@@ -143,6 +143,17 @@ pub(super) async fn not_owner(
     ))
 }
 
+/// RULE-010: what the owner and admins do, asked by an ordinary member.
+pub(super) fn not_manager(g: &GroupRef, what: &str) -> ApiError {
+    err(
+        ErrorCode::NotOwner,
+        format!(
+            "Only the owner and admins of {} (#{}) can {what}.",
+            g.name, g.id
+        ),
+    )
+}
+
 /// Cancel the group's undelivered messages to `account`, or to everyone.
 pub(super) async fn cancel_group(
     tx: &mut PgConnection,
@@ -382,21 +393,21 @@ pub async fn invite(
             format!("{target} is already in {}.", g.name),
         ));
     }
-    // RULE-009: someone the owner removed comes back only on the owner's invite.
-    let (removed, owner): (bool, bool) = sqlx::query_as(
+    // RULE-009: someone removed comes back only on the owner's or an admin's invite.
+    let (removed, manager): (bool, bool) = sqlx::query_as(
         "SELECT EXISTS (SELECT 1 FROM group_removals WHERE group_id = $1 AND account_id = $2),
-                EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND account_id = $3 AND role = 'owner')",
+                EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND account_id = $3 AND role IN ('owner', 'admin'))",
     )
     .bind(g.id)
     .bind(target)
     .bind(c.account_id)
     .fetch_one(&st.db)
     .await?;
-    if removed && !owner {
+    if removed && !manager {
         return Err(err(
             ErrorCode::RemovedFromGroup,
             format!(
-                "{target} was removed from {} by its owner. Only the owner can invite them back.",
+                "{target} was removed from {}. Only its owner and admins can invite them back.",
                 g.name
             ),
         ));
@@ -557,8 +568,8 @@ async fn leave_group(st: &St, c: &Caller, g: &GroupRef) -> ApiResult<StatusCode>
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// API-037: the owner or an admin, or an agent of theirs, removes a member;
-/// an admin only ordinary members (RULE-023).
+/// API-037: the owner or an admin, or an agent of theirs, removes anyone but
+/// the owner (RULE-023).
 pub async fn remove(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -595,8 +606,11 @@ pub async fn remove(
     let Some(theirs) = theirs else {
         return Err(missing());
     };
-    if mine == "admin" && theirs != "member" {
-        return Err(not_owner(&mut tx, &g, "remove the owner or an admin").await?);
+    if theirs == "owner" {
+        return Err(err(
+            ErrorCode::NotOwner,
+            format!("The owner of {} (#{}) can't be removed.", g.name, g.id),
+        ));
     }
     sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND account_id = $2")
         .bind(g.id)
@@ -683,8 +697,8 @@ pub struct UpdateBody {
     discoverable: Option<bool>,
 }
 
-/// API-077: only the owner, in person, renames the group or lets anyone find
-/// it. Members see the change next time they look; no notice goes out.
+/// API-077: the owner or an admin, in person, renames the group or lets anyone
+/// find it. Members see the change next time they look; no notice goes out.
 pub async fn rename(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -704,13 +718,13 @@ pub async fn rename(
         .map(|n| validate_group_name(&n).map_err(|m| err(ErrorCode::InvalidRequest, m)))
         .transpose()?;
     let mut tx = st.db.begin().await?;
-    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
+    if role_locked(&mut tx, &g, c.account_id).await? == "member" {
         let what = if name.is_some() {
             "rename it"
         } else {
             "change who can find it"
         };
-        return Err(not_owner(&mut tx, &g, what).await?);
+        return Err(not_manager(&g, what));
     }
     if let Some(name) = name.filter(|n| *n != g.name) {
         sqlx::query("UPDATE chat_groups SET name = $2 WHERE id = $1")
@@ -967,7 +981,7 @@ pub async fn apply(
     Ok((StatusCode::CREATED, Json(RequestResponse { request })))
 }
 
-/// API-089: the owner, in person, makes a member an admin.
+/// API-089: the owner or an admin, in person, makes a member an admin.
 pub async fn set_admin(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -976,7 +990,7 @@ pub async fn set_admin(
     admin(&st, &c, &raw, &who, true).await
 }
 
-/// API-090: the owner, in person, makes an admin an ordinary member again.
+/// API-090: the owner or an admin, in person, makes an admin an ordinary member again.
 pub async fn unset_admin(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -998,14 +1012,8 @@ async fn admin(
     let missing = || err(ErrorCode::NotFound, format!("{who} is not in {}.", g.name));
     let target: i32 = who.parse().map_err(|_| missing())?;
     let mut tx = st.db.begin().await?;
-    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
-        return Err(not_owner(&mut tx, &g, "choose its admins").await?);
-    }
-    if target == c.account_id {
-        return Err(err(
-            ErrorCode::InvalidRequest,
-            format!("You own {}; the owner isn't an admin too.", g.name),
-        ));
+    if role_locked(&mut tx, &g, c.account_id).await? == "member" {
+        return Err(not_manager(&g, "choose its admins"));
     }
     let (from, to) = if on {
         ("member", "admin")
@@ -1019,8 +1027,15 @@ async fn admin(
     .bind(target)
     .fetch_optional(&mut *tx)
     .await?;
-    if found.is_none() {
-        return Err(missing());
+    match found.as_deref() {
+        None => return Err(missing()),
+        Some("owner") => {
+            return Err(err(
+                ErrorCode::InvalidRequest,
+                format!("{who} owns {}; the owner isn't an admin too.", g.name),
+            ));
+        }
+        _ => {}
     }
     sqlx::query(
         "UPDATE group_members SET role = $4 WHERE group_id = $1 AND account_id = $2 AND role = $3",

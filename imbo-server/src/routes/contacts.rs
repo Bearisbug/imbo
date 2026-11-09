@@ -472,10 +472,10 @@ pub async fn accept(
         };
         // Under the group lock, like leaving, removing and dissolving (DESIGN §16).
         super::groups::lock_group(&mut tx, gid).await?;
-        let (dissolved, removed, by_owner): (bool, bool, bool) = sqlx::query_as(
+        let (dissolved, removed, by_manager): (bool, bool, bool) = sqlx::query_as(
             "SELECT g.dissolved_at IS NOT NULL,
                     EXISTS (SELECT 1 FROM group_removals WHERE group_id = g.id AND account_id = $2),
-                    EXISTS (SELECT 1 FROM group_members WHERE group_id = g.id AND account_id = $3 AND role = 'owner')
+                    EXISTS (SELECT 1 FROM group_members WHERE group_id = g.id AND account_id = $3 AND role IN ('owner', 'admin'))
              FROM chat_groups g WHERE g.id = $1",
         )
         .bind(gid)
@@ -490,11 +490,11 @@ pub async fn accept(
             ));
         }
         // RULE-009: checked again when the invite is accepted.
-        if removed && !by_owner {
+        if removed && !by_manager {
             return Err(err(
                 ErrorCode::RemovedFromGroup,
                 format!(
-                    "You were removed from {} by its owner. Only the owner can invite you back.",
+                    "You were removed from {}. Only its owner and admins can invite you back.",
                     group.name
                 ),
             ));
@@ -574,9 +574,12 @@ async fn accept_join(st: &St, c: &Caller, row: RequestRow) -> ApiResult<Response
     let gid = row.group_id.unwrap_or_default();
     let name = row.group_name.clone().unwrap_or_default();
     let mut tx = st.db.begin().await?;
-    let Some(role) = join_handler_role(&mut tx, gid, c.account_id).await? else {
+    if join_handler_role(&mut tx, gid, c.account_id)
+        .await?
+        .is_none()
+    {
         return Err(err(ErrorCode::NotFound, "No such request."));
-    };
+    }
     let changed = sqlx::query(
         "UPDATE requests SET status = 'accepted', decided_by = $2, decided_at = now() WHERE id = $1 AND status = 'pending'",
     )
@@ -588,23 +591,6 @@ async fn accept_join(st: &St, c: &Caller, row: RequestRow) -> ApiResult<Response
         return Err(err(
             ErrorCode::RequestClosed,
             "This request was already handled.",
-        ));
-    }
-    // RULE-009: someone removed comes back only with the owner's yes.
-    let removed: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM group_removals WHERE group_id = $1 AND account_id = $2)",
-    )
-    .bind(gid)
-    .bind(row.from_account)
-    .fetch_one(&mut *tx)
-    .await?;
-    if removed && role != "owner" {
-        return Err(err(
-            ErrorCode::RemovedFromGroup,
-            format!(
-                "{} was removed from {name}. Only its owner can let them back in.",
-                row.from_name
-            ),
         ));
     }
     let joined = sqlx::query(

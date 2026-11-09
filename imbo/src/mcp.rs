@@ -146,7 +146,7 @@ action=add: ask to add a contact by account ID; you can message each other once 
             "groups",
             "Groups: action=list lists groups you're in, with the sessions each member gets its messages in; create makes a group (name required; this session gets its messages by default); \
 invite invites a contact (group, account_id); sessions picks which of your sessions get the group's messages (group, sessions); leave leaves a group (group); \
-remove takes a member out of a group you own (group, account_id). Making someone else the owner and dissolving a group are done by the person themselves in a terminal outside this session.",
+remove takes a member out of a group you own or are an admin of (group, account_id). Making someone else the owner and dissolving a group are done by the person themselves in a terminal outside this session.",
             schema(json!({
                 "type": "object",
                 "properties": {

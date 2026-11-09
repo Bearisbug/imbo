@@ -16,7 +16,7 @@ use tokio::sync::Semaphore;
 use tracing::info;
 use uuid::Uuid;
 
-use super::groups::{not_owner, require_member, role_locked};
+use super::groups::{not_manager, require_member, role_locked};
 use crate::auth::Caller;
 use crate::avatar;
 use crate::error::{ApiResult, err, rate_limited};
@@ -193,7 +193,7 @@ pub async fn get(State(st): State<St>, Path(file): Path<String>) -> ApiResult<Re
     Ok(res)
 }
 
-/// API-056: the owner in person, from a terminal, the web app or the App.
+/// API-056: the owner or an admin in person, from a terminal, the web app or the App.
 pub async fn set_group(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -205,8 +205,8 @@ pub async fn set_group(
     let g = require_member(&st, &c, &raw).await?;
     let jpeg = picture(&headers, body).await?;
     let mut tx = st.db.begin().await?;
-    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
-        return Err(not_owner(&mut tx, &g, "change its picture").await?);
+    if role_locked(&mut tx, &g, c.account_id).await? == "member" {
+        return Err(not_manager(&g, "change its picture"));
     }
     count_change(&st, c.account_id)?;
     let old: Option<Uuid> =
@@ -233,7 +233,7 @@ pub async fn set_group(
     }))
 }
 
-/// API-057: the owner in person; 204 whether or not there was one.
+/// API-057: the owner or an admin in person; 204 whether or not there was one.
 pub async fn delete_group(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -242,8 +242,8 @@ pub async fn delete_group(
     c.require_person()?;
     let g = require_member(&st, &c, &raw).await?;
     let mut tx = st.db.begin().await?;
-    if role_locked(&mut tx, &g, c.account_id).await? != "owner" {
-        return Err(not_owner(&mut tx, &g, "change its picture").await?);
+    if role_locked(&mut tx, &g, c.account_id).await? == "member" {
+        return Err(not_manager(&g, "change its picture"));
     }
     let old: Option<Uuid> =
         sqlx::query_scalar("SELECT avatar_id FROM chat_groups WHERE id = $1 FOR NO KEY UPDATE")
