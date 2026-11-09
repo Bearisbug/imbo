@@ -1,14 +1,15 @@
 //! API-030 listConversations, API-031 listConversationMessages,
 //! API-036 listAgentMessages, API-078 markConversationRead,
-//! API-085 setConversationPrefs, API-086 searchConversation: reading
-//! history, for the web app and the App.
+//! API-085 setConversationPrefs, API-086 searchConversation,
+//! API-093 listConversationLikes: reading history, for the web app and the
+//! App.
 
 use axum::extract::{Path, Query, State};
 use axum::{Extension, Json};
 use imbo_proto::ErrorCode;
 use imbo_proto::api::{
-    ConversationItem, ConversationPrefs, ConversationsResponse, FileView, LastMessage, MessageView,
-    MessagesPage, Profile, ReadResponse,
+    ConversationItem, ConversationLikes, ConversationPrefs, ConversationsResponse, FileView,
+    LastMessage, MessageLikes, MessageView, MessagesPage, Profile, ReadResponse,
 };
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -252,7 +253,57 @@ pub async fn messages(
     let (ids, has_more) = page(&st, Some(id), None, hide, &q).await?;
     let mut messages = views::messages(&st.db, &ids, c.account_id).await?;
     with_waiting(&st.db, &mut messages, c.account_id).await?;
+    let mut likes = views::likes(&st.db, &ids, c.account_id).await?;
+    for m in &mut messages {
+        m.likes = likes.remove(&m.id).unwrap_or_default();
+    }
     Ok(Json(MessagesPage { messages, has_more }))
+}
+
+/// What API-093 returns at most.
+const LIKED: i64 = 500;
+
+#[derive(Deserialize)]
+pub struct LikesQuery {
+    after: Option<i64>,
+}
+
+/// API-093: the messages here after `after` that have a 👍 on them, oldest
+/// first, the newest 500 at most; what API-031 leaves out stays out.
+pub async fn likes(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+    Query(q): Query<LikesQuery>,
+) -> ApiResult<Json<ConversationLikes>> {
+    c.require_person()?;
+    let kind = kind_of(&st, id, c.account_id).await?;
+    let hide = (kind == "group").then_some(c.account_id);
+    let mut ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT l.message_id FROM message_likes l JOIN messages m ON m.id = l.message_id
+         WHERE m.conversation_id = $1 AND l.message_id > $2
+           AND l.account_id NOT IN (SELECT blocked_id FROM blocks WHERE account_id = $3)
+           AND ($4::integer IS NULL OR m.from_account NOT IN
+                (SELECT blocked_id FROM blocks WHERE account_id = $4))
+         ORDER BY l.message_id DESC LIMIT $5",
+    )
+    .bind(id)
+    .bind(q.after.unwrap_or(0))
+    .bind(c.account_id)
+    .bind(hide)
+    .bind(LIKED)
+    .fetch_all(&st.db)
+    .await?;
+    ids.reverse();
+    let mut likes = views::likes(&st.db, &ids, c.account_id).await?;
+    let messages = ids
+        .into_iter()
+        .map(|id| MessageLikes {
+            id,
+            likes: likes.remove(&id).unwrap_or_default(),
+        })
+        .collect();
+    Ok(Json(ConversationLikes { messages }))
 }
 
 /// API-078: what the web app or the App has shown of a conversation counts

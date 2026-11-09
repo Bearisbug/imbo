@@ -182,6 +182,7 @@ pub async fn messages(
                 from_me: r.from_account == viewer && r.from_agent_id.is_none(),
                 state: None,
                 siblings: vec![],
+                likes: vec![],
                 id: r.id,
                 from: Sender {
                     account_id: r.from_account,
@@ -320,6 +321,32 @@ pub async fn agent_refs(db: &PgPool, ids: &[Uuid]) -> Result<Vec<AgentRef>, sqlx
             tool,
         })
         .collect())
+}
+
+/// Who put a 👍 on each of `ids`, first first, leaving out the people
+/// `viewer` blocks (API-031, RULE-013). Messages nobody liked aren't keys.
+pub async fn likes(
+    db: &PgPool,
+    ids: &[i64],
+    viewer: i32,
+) -> Result<HashMap<i64, Vec<AccountRef>>, sqlx::Error> {
+    let rows: Vec<(i64, i32, String)> = sqlx::query_as(
+        "SELECT l.message_id, a.id, a.name FROM message_likes l JOIN accounts a ON a.id = l.account_id
+         WHERE l.message_id = ANY($1)
+           AND l.account_id NOT IN (SELECT blocked_id FROM blocks WHERE account_id = $2)
+         ORDER BY l.message_id, l.created_at, l.account_id",
+    )
+    .bind(ids)
+    .bind(viewer)
+    .fetch_all(db)
+    .await?;
+    let mut out: HashMap<i64, Vec<AccountRef>> = HashMap::new();
+    for (message, id, name) in rows {
+        out.entry(message)
+            .or_default()
+            .push(AccountRef { id, name });
+    }
+    Ok(out)
 }
 
 pub async fn account_ref(db: &PgPool, id: i32) -> Result<Option<AccountRef>, sqlx::Error> {

@@ -48,6 +48,10 @@ pub fn router(st: St) -> Router {
         .route("/v1/agents", get(me::list_agents))
         .route("/v1/messages", post(messages::send))
         .route("/v1/messages/{id}", get(messages::get_message))
+        .route(
+            "/v1/messages/{id}/like",
+            put(messages::like).delete(messages::unlike),
+        )
         .route("/v1/inbox", get(messages::list_inbox))
         .route("/v1/inbox/pull", post(messages::pull))
         .route("/v1/files", post(files::upload))
@@ -85,6 +89,7 @@ pub fn router(st: St) -> Router {
         )
         .route("/v1/conversations/{id}/prefs", post(conversations::prefs))
         .route("/v1/conversations/{id}/search", get(conversations::search))
+        .route("/v1/conversations/{id}/likes", get(conversations::likes))
         .route(
             "/v1/agents/{id}/messages",
             get(conversations::agent_messages).post(messages::send_to_agent),

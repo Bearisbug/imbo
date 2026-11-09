@@ -318,6 +318,7 @@ mod tests {
             state: None,
             siblings: vec![],
             quote: None,
+            likes: vec![],
         }
     }
 

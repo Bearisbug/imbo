@@ -432,6 +432,10 @@ pub struct MessageView {
     /// The message this one replies to (API-024).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote: Option<ReplyRef>,
+    /// Who put a 👍 on it, first first, not the people the reader blocks
+    /// (API-031, REQ-128).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub likes: Vec<AccountRef>,
 }
 
 /// What a reply shows of the message it answers. Only `id` when the reader
@@ -590,6 +594,25 @@ pub struct ConversationItem {
     pub marked_unread: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub muted: bool,
+}
+
+/// API-091 likeMessage, API-092 unlikeMessage: who has a 👍 on the message
+/// now, as API-031 lists them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LikesResponse {
+    pub likes: Vec<AccountRef>,
+}
+
+/// API-093: a message with a 👍 on it and who put one there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageLikes {
+    pub id: MessageId,
+    pub likes: Vec<AccountRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationLikes {
+    pub messages: Vec<MessageLikes>,
 }
 
 /// API-085: my settings for a conversation after the change.

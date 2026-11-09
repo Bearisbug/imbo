@@ -1,12 +1,13 @@
 //! API-015 send, API-016 inbox, API-017 pull, API-024 message,
-//! API-043 send to my session, API-044 mark my session's replies read.
+//! API-043 send to my session, API-044 mark my session's replies read,
+//! API-091 and API-092 my 👍 on a message.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use imbo_proto::api::{
-    AccountRef, AgentRef, ConversationRef, GroupRef, InboxItem, InboxResponse, MessageResponse,
-    PullResponse, ReadResponse, SendResponse,
+    AccountRef, AgentRef, ConversationRef, GroupRef, InboxItem, InboxResponse, LikesResponse,
+    MessageResponse, PullResponse, ReadResponse, SendResponse,
 };
 use imbo_proto::text::{Address, parse_address};
 use imbo_proto::{
@@ -1282,6 +1283,69 @@ pub async fn get_message(
         .next()
         .ok_or_else(not_found)?;
     Ok(Json(MessageResponse { message }))
+}
+
+/// API-091: my 👍 on a message in one of my conversations now, as API-031
+/// lists them; a second one changes nothing (INV-038).
+pub async fn like(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<LikesResponse>> {
+    likeable(&st, &c, id).await?;
+    sqlx::query(
+        "INSERT INTO message_likes (message_id, account_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(c.account_id)
+    .execute(&st.db)
+    .await?;
+    likes_now(&st, &c, id).await
+}
+
+/// API-092: takes my 👍 off; nothing changes when there was none.
+pub async fn unlike(
+    State(st): State<St>,
+    Extension(c): Extension<Caller>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<LikesResponse>> {
+    likeable(&st, &c, id).await?;
+    sqlx::query("DELETE FROM message_likes WHERE message_id = $1 AND account_id = $2")
+        .bind(id)
+        .bind(c.account_id)
+        .execute(&st.db)
+        .await?;
+    likes_now(&st, &c, id).await
+}
+
+/// A message API-031 lists for me: in a direct conversation of mine, or in
+/// a group I'm in now and not from someone I block.
+async fn likeable(st: &St, c: &Caller, id: i64) -> ApiResult<()> {
+    c.require_person()?;
+    let listed: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+           SELECT 1 FROM messages m JOIN conversations cv ON cv.id = m.conversation_id
+           WHERE m.id = $1 AND (
+             $2 IN (cv.account_lo, cv.account_hi)
+             OR (EXISTS (SELECT 1 FROM group_members gm WHERE gm.group_id = cv.group_id AND gm.account_id = $2)
+                 AND m.from_account NOT IN (SELECT blocked_id FROM blocks WHERE account_id = $2))))",
+    )
+    .bind(id)
+    .bind(c.account_id)
+    .fetch_one(&st.db)
+    .await?;
+    if !listed {
+        return Err(err(ErrorCode::NotFound, format!("No message {id}.")));
+    }
+    Ok(())
+}
+
+async fn likes_now(st: &St, c: &Caller, id: i64) -> ApiResult<Json<LikesResponse>> {
+    let likes = views::likes(&st.db, &[id], c.account_id)
+        .await?
+        .remove(&id)
+        .unwrap_or_default();
+    Ok(Json(LikesResponse { likes }))
 }
 
 #[cfg(test)]

@@ -19,7 +19,14 @@ use crate::auth::Caller;
 use crate::state::St;
 
 const CHANNEL: &str = "imbo_events";
-const AREAS: &[&str] = &["conversations", "agents", "contacts", "requests", "groups"];
+const AREAS: &[&str] = &[
+    "conversations",
+    "agents",
+    "contacts",
+    "requests",
+    "groups",
+    "likes",
+];
 /// Sent when notifications may have been missed: fetch everything.
 const ALL: &str = "all";
 /// A ping keeps proxies from closing the connection; each one also checks
