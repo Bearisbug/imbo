@@ -446,6 +446,20 @@ fn print_group(g: &GroupView) {
         ui::dim("members "),
         ui::s(ui::text(), members.join(", "))
     );
+    // Which sessions each member picked for the group; everyone in it sees them.
+    for (i, m) in g.members.iter().enumerate() {
+        let picked = if m.sessions.is_empty() {
+            ui::dim("none")
+        } else {
+            m.sessions
+                .iter()
+                .map(|a| format!("{} {}", a.title, ui::dim(&a.short_id)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let label = if i == 0 { "sessions " } else { "         " };
+        println!("  {} {}: {}", ui::dim(label), m.name, picked);
+    }
     if g.my_sessions.is_empty() {
         println!(
             "  {} {}",
