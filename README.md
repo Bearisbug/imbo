@@ -207,6 +207,10 @@ docker run -d -p 443:443 -v imbo:/data \
 
 Point clients at it with `imbo setup --server https://imbo.example.com`.
 
+## One-Click Deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/Imbo/)
+
 ## Build
 
 ```sh
