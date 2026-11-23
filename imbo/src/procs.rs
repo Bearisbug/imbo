@@ -62,6 +62,68 @@ pub fn name(pid: u32) -> Option<String> {
     Some(s.trim().to_string())
 }
 
+/// The arguments `pid` was started with, its program first; empty once the
+/// process is gone.
+#[cfg(target_os = "macos")]
+pub fn args(pid: u32) -> Vec<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    // SAFETY: a null buffer asks for the size; the second call writes at
+    // most `size` bytes into `buf`.
+    let sized = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if sized != 0 {
+        return vec![];
+    }
+    let mut buf = vec![0u8; size];
+    let read = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read != 0 || size < 4 {
+        return vec![];
+    }
+    buf.truncate(size);
+    // The count of arguments, the program's path, padding, then the
+    // arguments, each ended by a zero byte.
+    let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]).max(0) as usize;
+    let rest = &buf[4..];
+    let path_end = rest.iter().position(|b| *b == 0).unwrap_or(rest.len());
+    let rest = &rest[path_end..];
+    let start = rest.iter().position(|b| *b != 0).unwrap_or(rest.len());
+    rest[start..]
+        .split(|b| *b == 0)
+        .take(argc)
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn args(pid: u32) -> Vec<String> {
+    let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return vec![];
+    };
+    raw.strip_suffix(&[0])
+        .unwrap_or(&raw)
+        .split(|b| *b == 0)
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
+}
+
 #[cfg(target_os = "macos")]
 fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -157,6 +219,25 @@ pub fn cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
+/// The program `pid` runs; `None` once the process is gone.
+#[cfg(target_os = "macos")]
+pub fn exe(pid: u32) -> Option<PathBuf> {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: proc_pidpath writes at most `buf.len()` bytes and returns how
+    // many it wrote.
+    let n = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    Some(PathBuf::from(String::from_utf8(buf).ok()?))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn exe(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
 /// Shells sit between a tool and the commands and hooks it runs.
 pub fn is_shell(pid: u32) -> bool {
     name(pid).is_some_and(|n| {
@@ -213,4 +294,14 @@ pub fn stdout_path() -> Option<PathBuf> {
     std::fs::read_link("/proc/self/fd/1")
         .ok()
         .filter(|p| p.is_absolute())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_process_names_its_own_program() {
+        let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let found = super::exe(std::process::id()).unwrap();
+        assert_eq!(std::fs::canonicalize(found).unwrap(), me);
+    }
 }

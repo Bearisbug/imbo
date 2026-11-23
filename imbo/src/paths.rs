@@ -126,13 +126,15 @@ impl Home {
     }
 }
 
+/// The temporary file is made anew, so a link left in its place is
+/// replaced, not followed.
 pub fn write_private(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     let tmp = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
     {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .open(&tmp)
             .with_context(|| format!("write {}", tmp.display()))?;
@@ -197,4 +199,20 @@ pub fn which(name: &str) -> Option<PathBuf> {
                 .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
                 .unwrap_or(false)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_link_in_place_of_the_temporary_file_is_not_followed() {
+        let dir = std::env::temp_dir().join(format!("imbo-private-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("1.tmp")).unwrap();
+        super::write_private(&dir.join("1.json"), b"{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(dir.join("1.json")).unwrap(), "{}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

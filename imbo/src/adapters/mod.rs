@@ -2,6 +2,7 @@
 //! tool lives in its adapter; the rest of the client finds adapters through
 //! `all()` and never names a tool.
 
+pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
@@ -30,7 +31,7 @@ use crate::paths::Home;
 /// leave the same marks: ZCode sets Claude Code's session variable for its
 /// hooks, and tools started from a Claude Code or Codex shell inherit theirs
 /// (ADR-018).
-static ALL: [&dyn Adapter; 10] = [
+static ALL: [&dyn Adapter; 11] = [
     &zcode::ZCODE,
     &cursor::CURSOR,
     &mcode::MCODE,
@@ -38,6 +39,7 @@ static ALL: [&dyn Adapter; 10] = [
     &pi::PI,
     &hermes::HERMES,
     &dsh::DSH,
+    &agy::AGY,
     &opencode::OPENCODE,
     &claude::CLAUDE,
     &codex::CODEX,
