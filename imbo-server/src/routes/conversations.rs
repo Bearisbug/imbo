@@ -58,6 +58,8 @@ pub async fn list(
     Extension(c): Extension<Caller>,
 ) -> ApiResult<Json<ConversationsResponse>> {
     c.require_person()?;
+    // `pending` stops counting what never reached my inbox at 999, so a chat
+    // nobody opens costs no more to list than one that is read.
     let rows: Vec<ConvRow> = sqlx::query_as(
         "WITH mine AS (
            SELECT cv.id, cv.kind, cv.group_id,
@@ -75,7 +77,18 @@ pub async fn list(
                 (SELECT count(*) FROM deliveries d JOIN messages m ON m.id = d.message_id
                  JOIN agents t ON t.id = d.agent_id
                  WHERE m.conversation_id = mine.id AND d.account_id = $1 AND t.tool = 'terminal'
-                   AND d.state IN ('pending', 'pushed')) AS pending,
+                   AND d.state IN ('pending', 'pushed'))
+                + (SELECT count(*) FROM (SELECT 1 FROM messages m
+                   WHERE m.conversation_id = mine.id AND m.id > coalesce(cp.read_up_to, 0)
+                     AND m.from_account <> $1
+                     AND NOT EXISTS (SELECT 1 FROM deliveries d JOIN agents t ON t.id = d.agent_id
+                                     WHERE d.message_id = m.id AND d.account_id = $1 AND t.tool = 'terminal')
+                     AND (mine.kind = 'direct'
+                          OR (m.from_account NOT IN (SELECT blocked_id FROM blocks WHERE account_id = $1)
+                              AND m.created_at >= (SELECT joined_at FROM group_members
+                                                   WHERE group_id = mine.group_id AND account_id = $1)))
+                   LIMIT 999) unread)
+                  AS pending,
                 coalesce(cp.pinned, false) AS pinned, coalesce(cp.marked_unread, false) AS marked_unread,
                 coalesce(cp.muted, false) AS muted
          FROM mine
@@ -307,7 +320,8 @@ pub async fn likes(
 }
 
 /// API-078: what the web app or the App has shown of a conversation counts
-/// as read in my inbox, as `imbo inbox` would (REQ-104).
+/// as read: in my inbox, as `imbo inbox` would, and for the red dot, which
+/// counts what came after `up_to` (REQ-104).
 pub async fn mark_read(
     State(st): State<St>,
     Extension(c): Extension<Caller>,
@@ -333,12 +347,20 @@ pub async fn mark_read(
     .execute(&st.db)
     .await?
     .rows_affected();
+    // Never past the last message: what comes later must still count. A chat
+    // with no messages still loses its marked-unread mark.
     sqlx::query(
-        "UPDATE conversation_prefs SET marked_unread = false
-         WHERE account_id = $1 AND conversation_id = $2 AND marked_unread",
+        "INSERT INTO conversation_prefs (account_id, conversation_id, read_up_to)
+         SELECT $1::integer, $2::bigint, coalesce(least($3::bigint, max(id)), 0)
+         FROM messages WHERE conversation_id = $2
+         ON CONFLICT (account_id, conversation_id) DO UPDATE
+           SET read_up_to = greatest(conversation_prefs.read_up_to, EXCLUDED.read_up_to),
+               marked_unread = false
+           WHERE conversation_prefs.read_up_to < EXCLUDED.read_up_to OR conversation_prefs.marked_unread",
     )
     .bind(c.account_id)
     .bind(id)
+    .bind(up_to)
     .execute(&st.db)
     .await?;
     Ok(Json(ReadResponse { marked }))

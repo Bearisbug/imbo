@@ -585,7 +585,9 @@ pub struct ConversationItem {
     pub group: Option<Profile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<LastMessage>,
-    /// Messages to me here not yet in a session or read in the terminal.
+    /// Messages here from others that I haven't read: what waits in my
+    /// inbox, and what came after the last message a web app or App of
+    /// mine showed.
     pub pending: i64,
     /// My own settings for it (API-085), left out when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

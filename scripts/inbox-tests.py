@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""TC-377, TC-378 and TC-480 (docs/TEST.md): what the red dot in the web
+"""TC-644, TC-378 and TC-480 (docs/TEST.md): what the red dot in the web
 app and the App counts and marking a conversation read (API-030, API-031,
 API-078), where a message sent in person was written from (ADR-056), and
 an @ in a group naming a member (RULE-015, ADR-059), against the local
 server.
 
     . crates/scripts/local-env.sh
-    python3 crates/scripts/inbox-tests.py <RUN-ID> [377 378 480]
+    python3 crates/scripts/inbox-tests.py <RUN-ID> [644 378 480]
 
 Each case starts its own server and seed the way parity-tests.py does, and
 writes its lines to docs/test-runs/<run>-tc-NNN.txt (with RUN_HEADER, if
@@ -72,73 +72,117 @@ def entries(out):
             for k, l in enumerate(rows) if l.strip().startswith("#")]
 
 
-def tc377():
+def tc644():
     P.up("alice:bob,alice:carol", IMBO_WEB_ORIGIN=P.ORIGIN)
     i = P.ids()
-    fake("bob", "377001", "t377")
-    g = P.make_group("t377g", [("bob", i["bob"])])
-    imbo("bob", "group", "sessions", "t377g", "--sessions", "377001")
-    fake("bob", "377001", "t377", "--remove")
+    fake("bob", "644001", "t644")
+    g = P.make_group("t644g", [("bob", i["bob"])])
+    imbo("bob", "group", "sessions", "t644g", "--sessions", "644001")
+    fake("bob", "644001", "t644", "--remove")
     bob = {"bearer": P.app_token("bob@imbo.test")}
     carol = {"cookie": P.web_cookie("carol@imbo.test")}
     computer = {"bearer": P.computer_token(f"{L}/bob")}
-    OUT.append(f"前置:群 t377g #{g}")
+    OUT.append(f"前置:群 t644g #{g}")
 
-    imbo("alice", "send", str(i["bob"]), "T377-1")
-    imbo("alice", "send", str(i["bob"]), "T377-2")
+    def read(who, conv, up_to):
+        s, b, _ = call("POST", f"/v1/conversations/{conv}/read", {"up_to": up_to}, **who)
+        return s, (b or {}).get("marked")
+
+    imbo("alice", "send", str(i["bob"]), "T644-1")
+    imbo("alice", "send", str(i["bob"]), "T644-2")
     c = conv_with(bob, peer="alice")
     C = c.get("id")
-    check(377, 1, "两条发进收件箱", c.get("pending") == 2, f"与 alice 的私聊 pending={c.get('pending')}")
+    check(644, 1, "发进收件箱的两条算未读", c.get("pending") == 2, f"与 alice 的私聊 pending={c.get('pending')}")
 
-    imbo("alice", "send", "bob/t377", "T377-3")
-    imbo("alice", "send", f"#{g}", "T377-4")
-    c, gc = conv_with(bob, peer="alice"), conv_with(bob, group="t377g")
-    check(377, 2, "发给没上线的会话不算", c.get("pending") == 2 and gc.get("pending") == 0,
-          f"私聊 pending={c.get('pending')};群 t377g pending={gc.get('pending')}")
+    imbo("alice", "send", "bob/t644", "T644-3")
+    imbo("alice", "send", f"#{g}", "T644-4")
+    c, gc = conv_with(bob, peer="alice"), conv_with(bob, group="t644g")
+    G = gc.get("id")
+    check(644, 2, "发给会话的和群里没 @ 我的也算", c.get("pending") == 3 and gc.get("pending") == 1,
+          f"私聊 pending={c.get('pending')};群 t644g pending={gc.get('pending')}")
 
-    dm, gm = msgs(bob, C), msgs(bob, gc.get("id"))
-    st = {b: by_body(dm, b).get("state") for b in ("T377-1", "T377-2", "T377-3")}
-    st["T377-4"] = by_body(gm, "T377-4").get("state")
-    check(377, 3, "没送进会话的带 state",
-          st == {"T377-1": None, "T377-2": None, "T377-3": "pending", "T377-4": "pending"}, f"state {st}")
+    dm, gm = msgs(bob, C), msgs(bob, G)
+    st = {b: by_body(dm, b).get("state") for b in ("T644-1", "T644-2", "T644-3")}
+    st["T644-4"] = by_body(gm, "T644-4").get("state")
+    check(644, 3, "没送进会话的带 state",
+          st == {"T644-1": None, "T644-2": None, "T644-3": "pending", "T644-4": "pending"}, f"state {st}")
 
-    up_to = by_body(dm, "T377-2").get("id")
-    s, b, _ = call("POST", f"/v1/conversations/{C}/read", {"up_to": up_to}, **bob)
-    check(377, 4, "App 记已读", s == 200 and (b or {}).get("marked") == 2, f"{s} {b}")
-    c = conv_with(bob, peer="alice")
-    check(377, 5, "红点归零", c.get("pending") == 0, f"pending={c.get('pending')}")
-    s, b, _ = call("POST", f"/v1/conversations/{C}/read", {"up_to": up_to}, **bob)
-    check(377, 6, "再记一次", s == 200 and (b or {}).get("marked") == 0, f"{s} {b}")
+    s, marked = read(bob, C, by_body(dm, "T644-2").get("id"))
+    after = conv_with(bob, peer="alice").get("pending")
+    check(644, 4, "读到第二条,后一条仍未读", s == 200 and marked == 2 and after == 1, f"{s} marked={marked};之后 pending={after}")
+    last = by_body(dm, "T644-3").get("id")
+    s, marked = read(bob, C, last)
+    after = conv_with(bob, peer="alice").get("pending")
+    check(644, 5, "读到最后一条,红点归零", s == 200 and marked == 0 and after == 0, f"{s} marked={marked};之后 pending={after}")
+    s, marked = read(bob, C, last)
+    after = conv_with(bob, peer="alice").get("pending")
+    check(644, 6, "再记一次", s == 200 and marked == 0 and after == 0, f"{s} marked={marked};之后 pending={after}")
 
     _, new = imbo("bob", "inbox")
     _, every = imbo("bob", "inbox", "--all")
     heads = [l for l in new.splitlines() if l.startswith("Inbox") or l.startswith("Terminal inbox")]
     OUT.append(f"bob imbo inbox:\n{new}\nbob imbo inbox --all:\n{every}")
-    waiting = [b for h, b in entries(new) if h.endswith("waiting") and b in ("T377-3", "T377-4")]
-    read = [b for h, b in entries(every) if h.endswith("read") and b in ("T377-1", "T377-2")]
-    ok = (not heads and "T377-1" not in new and "T377-2" not in new and len(waiting) == 2
-          and "Inbox" in every.splitlines()[0] and len(read) == 2)
-    check(377, 7, "imbo inbox 不再列出", ok,
-          f"inbox 标题 {heads};T377-1/2 在 inbox 里:{'是' if 'T377-1' in new or 'T377-2' in new else '否'};"
-          f"waiting {len(waiting)} 条;--all 首行 {every.splitlines()[0] if every else ''!r},标 read {len(read)} 条")
+    waiting = [b for h, b in entries(new) if h.endswith("waiting") and b in ("T644-3", "T644-4")]
+    was_read = [b for h, b in entries(every) if h.endswith("read") and b in ("T644-1", "T644-2")]
+    ok = (not heads and "T644-1" not in new and "T644-2" not in new and len(waiting) == 2
+          and "Inbox" in every.splitlines()[0] and len(was_read) == 2)
+    check(644, 7, "imbo inbox 不再列出", ok,
+          f"inbox 标题 {heads};T644-1/2 在 inbox 里:{'是' if 'T644-1' in new or 'T644-2' in new else '否'};"
+          f"waiting {len(waiting)} 条;--all 首行 {every.splitlines()[0] if every else ''!r},标 read {len(was_read)} 条")
 
-    imbo("alice", "send", str(i["carol"]), "T377-5")
+    s, marked = read(bob, G, by_body(gm, "T644-4").get("id"))
+    after = conv_with(bob, group="t644g").get("pending")
+    check(644, 8, "群里点进去归零", s == 200 and marked == 0 and after == 0, f"{s} marked={marked};之后 pending={after}")
+    imbo("alice", "send", f"#{g}", "T644-5")
+    after = conv_with(bob, group="t644g").get("pending")
+    check(644, 9, "之后来的又算", after == 1, f"群 t644g pending={after}")
+
+    fake("bob", "644001", "t644")
+    out = mcp("bob", "send", {"to": f"#{g}", "body": "T644-6"}, "644001").strip()
+    after = conv_with(bob, group="t644g").get("pending")
+    check(644, 10, "本人会话发的不算", out.startswith("Sent to group t644g") and after == 1,
+          f"{out.splitlines()[0] if out else ''};群 t644g pending={after}")
+
+    s, marked = read(bob, G, 10 ** 12)
+    zero = conv_with(bob, group="t644g").get("pending")
+    imbo("alice", "send", f"#{g}", "T644-7")
+    after = conv_with(bob, group="t644g").get("pending")
+    check(644, 11, "读到的位置不超过最后一条", s == 200 and zero == 0 and after == 1,
+          f"{s};记已读后 pending={zero};再来一条 pending={after}")
+
+    imbo("alice", "send", str(i["bob"]), "T644-8")
+    before = conv_with(bob, peer="alice").get("pending")
+    imbo("bob", "inbox")
+    after = conv_with(bob, peer="alice").get("pending")
+    check(644, 12, "终端里读过的不再算", before == 1 and after == 0, f"之前 pending={before};imbo inbox 之后 pending={after}")
+
+    imbo("alice", "send", str(i["carol"]), "T644-9")
     c = conv_with(carol, peer="alice")
     before = c.get("pending")
-    last = by_body(msgs(carol, c.get("id")), "T377-5").get("id")
-    s, b, _ = call("POST", f"/v1/conversations/{c.get('id')}/read", {"up_to": last}, **carol)
+    s, marked = read(carol, c.get("id"), by_body(msgs(carol, c.get("id")), "T644-9").get("id"))
     after = conv_with(carol, peer="alice").get("pending")
-    check(377, 8, "网页记已读", before == 1 and s == 200 and (b or {}).get("marked") == 1 and after == 0,
-          f"之前 pending={before};记已读 {s} {b};之后 pending={after}")
+    check(644, 13, "网页记已读", before == 1 and s == 200 and marked == 1 and after == 0,
+          f"之前 pending={before};记已读 {s} marked={marked};之后 pending={after}")
 
-    s, b, _ = call("POST", f"/v1/conversations/{C}/read", {"up_to": up_to}, **computer)
-    check(377, 9, "电脑登录被拒", s == 403 and typ(b) == "/errors/forbidden", f"{s} {typ(b)}")
+    s, b, _ = call("POST", f"/v1/conversations/{C}/read", {"up_to": last}, **computer)
+    check(644, 14, "电脑登录被拒", s == 403 and typ(b) == "/errors/forbidden", f"{s} {typ(b)}")
 
     s1, b1, _ = call("POST", f"/v1/conversations/{C}/read", {}, **bob)
     s2, b2, _ = call("POST", f"/v1/conversations/{C}/read", {"up_to": 1}, **carol)
-    check(377, 10, "缺 up_to 与别人的对话",
+    check(644, 15, "缺 up_to 与别人的对话",
           s1 == 400 and typ(b1) == "/errors/invalid-request" and s2 == 404 and typ(b2) == "/errors/not-found",
           f"缺 up_to:{s1} {typ(b1)};carol 对 <C>:{s2} {typ(b2)}")
+
+    e = P.make_group("t644e", [("bob", i["bob"])])
+    E = conv_with(bob, group="t644e").get("id")
+    s1, b1, _ = call("POST", f"/v1/conversations/{E}/prefs", {"marked_unread": True}, **bob)
+    s2, marked = read(bob, E, 1)
+    after = conv_with(bob, group="t644e")
+    check(644, 16, "没有消息的对话记已读也摘掉标为未读",
+          s1 == 200 and (b1 or {}).get("marked_unread") is True and s2 == 200 and marked == 0
+          and not after.get("marked_unread") and after.get("pending") == 0,
+          f"群 t644e #{e} 标为未读 {s1} {(b1 or {}).get('marked_unread')};记已读 {s2} marked={marked};"
+          f"之后 marked_unread={after.get('marked_unread')} pending={after.get('pending')}")
 
 
 def tc378():
@@ -313,7 +357,7 @@ def tc480():
 
 def main():
     run = sys.argv[1]
-    want = sys.argv[2:] or ["377", "378", "480"]
+    want = sys.argv[2:] or ["644", "378", "480"]
     head = os.environ.get("RUN_HEADER")
     root = os.path.dirname(os.path.dirname(HERE))
     for tc in want:
