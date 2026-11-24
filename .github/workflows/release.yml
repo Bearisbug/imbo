@@ -34,6 +34,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo build --release --locked -p imbo --target ${{ matrix.target }}
+      - name: sign
+        if: runner.os == 'macOS'
+        env:
+          IMBO_DEVELOPER_ID_KEY: ${{ secrets.IMBO_DEVELOPER_ID_KEY }}
+        run: scripts/sign-macos.sh target/${{ matrix.target }}/release/imbo
       - name: package
         run: |
           mkdir -p out stage
