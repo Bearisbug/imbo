@@ -233,14 +233,38 @@ impl Local {
         picture: String,
         actor: Option<String>,
     ) -> Result<Value, Problem> {
+        let copy = crate::files::staged(&self.home, &picture)?;
         let req = LocalRequest::Call {
             method: method.into(),
             path: path.into(),
             body: None,
             actor,
-            picture: Some(picture),
+            picture: Some(copy.clone()),
         };
-        self.files_op(&req).await
+        self.read_by_daemon(&req, &picture, &copy).await
+    }
+
+    /// API-LOCAL-008: upload the file `path`.
+    pub async fn upload(&self, path: &str) -> Result<Value, Problem> {
+        let copy = crate::files::staged(&self.home, path)?;
+        let req = LocalRequest::UploadFile { path: copy.clone() };
+        self.read_by_daemon(&req, path, &copy).await
+    }
+
+    /// A request for which the daemon reads `copy`, the copy of `path` made
+    /// for it, and removes it when done. A failure names `path`.
+    async fn read_by_daemon(
+        &self,
+        req: &LocalRequest,
+        path: &str,
+        copy: &str,
+    ) -> Result<Value, Problem> {
+        self.files_op(req).await.map_err(|mut p| {
+            // The daemon may never have got the request.
+            crate::files::unstage(&self.home, copy);
+            p.detail = p.detail.replace(copy, path);
+            p
+        })
     }
 
     /// API-LOCAL-008 / 009 with the problem unwrapped.

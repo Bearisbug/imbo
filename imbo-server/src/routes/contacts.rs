@@ -38,10 +38,13 @@ struct RequestRow {
     status: String,
     decided_by: Option<String>,
     created_at: DateTime<Utc>,
+    /// The request's group was dissolved.
+    group_gone: bool,
 }
 
 const REQUEST_SELECT: &str = "SELECT r.id, r.kind, r.from_account, fa.name AS from_name, r.to_account,
-        ta.name AS to_name, r.group_id, g.name AS group_name, r.note, r.status, r.decided_by, r.created_at
+        ta.name AS to_name, r.group_id, g.name AS group_name, r.note, r.status, r.decided_by, r.created_at,
+        g.dissolved_at IS NOT NULL AS group_gone
      FROM requests r
      JOIN accounts fa ON fa.id = r.from_account
      LEFT JOIN accounts ta ON ta.id = r.to_account
@@ -398,6 +401,24 @@ pub async fn accept(
     if row.kind == "join" {
         return accept_join(&st, &c, row).await;
     }
+    if row.group_gone {
+        // Dissolving closes the group's invites (ENT-Request); one left
+        // open from before it did is closed once it's answered.
+        sqlx::query(
+            "UPDATE requests SET status = 'declined', decided_at = now() WHERE id = $1 AND status = 'pending'",
+        )
+        .bind(id)
+        .execute(&st.db)
+        .await?;
+        return Err(err(
+            ErrorCode::NotFound,
+            format!(
+                "Group {} (#{}) was dissolved.",
+                row.group_name.unwrap_or_default(),
+                row.group_id.unwrap_or_default()
+            ),
+        ));
+    }
     if row.status != "pending" {
         return Err(err(
             ErrorCode::RequestClosed,
@@ -411,6 +432,11 @@ pub async fn accept(
     };
 
     let mut tx = st.db.begin().await?;
+    // Under the group lock, like leaving, removing and dissolving, and taken
+    // before the request's row as dissolving does (DESIGN §16).
+    if let Some(gid) = row.group_id {
+        super::groups::lock_group(&mut tx, gid).await?;
+    }
     let changed = sqlx::query(
         "UPDATE requests SET status = 'accepted', decided_by = $2, decided_at = now() WHERE id = $1 AND status = 'pending'",
     )
@@ -470,25 +496,15 @@ pub async fn accept(
             id: gid,
             name: row.group_name.clone().unwrap_or_default(),
         };
-        // Under the group lock, like leaving, removing and dissolving (DESIGN §16).
-        super::groups::lock_group(&mut tx, gid).await?;
-        let (dissolved, removed, by_manager): (bool, bool, bool) = sqlx::query_as(
-            "SELECT g.dissolved_at IS NOT NULL,
-                    EXISTS (SELECT 1 FROM group_removals WHERE group_id = g.id AND account_id = $2),
-                    EXISTS (SELECT 1 FROM group_members WHERE group_id = g.id AND account_id = $3 AND role IN ('owner', 'admin'))
-             FROM chat_groups g WHERE g.id = $1",
+        let (removed, by_manager): (bool, bool) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM group_removals WHERE group_id = $1 AND account_id = $2),
+                    EXISTS (SELECT 1 FROM group_members WHERE group_id = $1 AND account_id = $3 AND role IN ('owner', 'admin'))",
         )
         .bind(gid)
         .bind(c.account_id)
         .bind(row.from_account)
         .fetch_one(&mut *tx)
         .await?;
-        if dissolved {
-            return Err(err(
-                ErrorCode::NotFound,
-                format!("Group {} (#{gid}) was dissolved.", group.name),
-            ));
-        }
         // RULE-009: checked again when the invite is accepted.
         if removed && !by_manager {
             return Err(err(

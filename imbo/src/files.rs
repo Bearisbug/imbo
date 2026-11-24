@@ -121,6 +121,61 @@ pub fn check_file(path: &str) -> Result<u64, Problem> {
     Ok(meta.len())
 }
 
+fn outbox(home: &Home) -> PathBuf {
+    home.dir.join("outbox")
+}
+
+/// A copy of `path` under `~/.imbo/outbox/` for the daemon to read, which
+/// removes it after the upload. On macOS the daemon may read Documents,
+/// Desktop, Downloads and other volumes only once someone at the screen
+/// allows it, and the system asks again after every update; the process
+/// that sends reads them under what its terminal is already allowed. Other
+/// systems have no such question, and the daemon reads `path` itself.
+pub fn staged(home: &Home, path: &str) -> Result<String, Problem> {
+    if !cfg!(target_os = "macos") {
+        return Ok(path.to_string());
+    }
+    let dir = outbox(home).join(uuid::Uuid::now_v7().to_string());
+    let copy = dir.join(Path::new(path).file_name().unwrap_or_default());
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .and_then(|_| std::fs::copy(path, &copy))
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&dir);
+            unreadable(path, &format!("copying it for the upload failed ({e})"))
+        })?;
+    Ok(copy.to_string_lossy().into_owned())
+}
+
+/// Remove a copy made by [`staged`]; any other path is left alone.
+pub fn unstage(home: &Home, path: &str) {
+    if let Some(dir) = Path::new(path).parent()
+        && dir.parent() == Some(outbox(home).as_path())
+    {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Remove copies whose upload never ended, such as when the daemon was
+/// stopped halfway. An hour leaves alone a copy made a moment ago by a
+/// process that is about to ask this daemon for its upload.
+pub fn sweep_outbox(home: &Home) {
+    let Ok(dir) = std::fs::read_dir(outbox(home)) else {
+        return;
+    };
+    for e in dir.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|d| d.as_secs() > 3600));
+        if old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// Saves a pasted image under the temp folder, keyed by its hash so sending
 /// it again reuses the same file; the system clears the temp folder.
 pub fn save_pasted(n: u32, img: &PastedImage) -> Result<String, Problem> {
@@ -194,6 +249,45 @@ mod tests {
             fv(".env"),
         ]);
         assert_eq!(names, ["a.txt", "A (2).txt", "a (3).txt", ".._x", ".env"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_daemon_reads_a_copy() {
+        let tmp = std::env::temp_dir().join(format!("imbo-outbox-{}", uuid::Uuid::now_v7()));
+        let home = Home {
+            dir: tmp.join("home"),
+        };
+        let file = tmp.join("notes.txt");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(&file, "hello").unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let copy = staged(&home, &path).unwrap();
+        assert!(copy.starts_with(&*home.dir.join("outbox").to_string_lossy()));
+        assert!(copy.ends_with("/notes.txt"));
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "hello");
+
+        // A path that is no copy stays.
+        unstage(&home, &path);
+        assert!(file.exists());
+        unstage(&home, &copy);
+        assert!(!Path::new(&copy).exists());
+        assert_eq!(
+            std::fs::read_dir(home.dir.join("outbox")).unwrap().count(),
+            0
+        );
+
+        assert!(
+            staged(&home, "/nonexistent/imbo-test")
+                .unwrap_err()
+                .is(ErrorCode::FileUnreadable)
+        );
+        assert_eq!(
+            std::fs::read_dir(home.dir.join("outbox")).unwrap().count(),
+            0
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]

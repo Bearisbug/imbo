@@ -333,6 +333,7 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
     std::fs::write(home.dir.join("daemon.pid"), std::process::id().to_string())?;
+    crate::files::sweep_outbox(&home);
     let daemon = Arc::new(Daemon {
         creds: RwLock::new(home.credentials()),
         dedupe: Mutex::new(dedupe::Dedupe::load(home.state().join("delivered.log"))),

@@ -117,12 +117,33 @@ impl Adapter for Agy {
         Duration::from_secs(5)
     }
 
-    /// The session each running `agy` process has open.
+    /// The session each running `agy` process has open. The hooks report
+    /// it, but none runs before the user's first prompt: until then the
+    /// conversation is the one whose lock file the process holds.
     fn discover(&self) -> BoxFuture<'_, Result<Vec<Found>, String>> {
-        let open = remembered_all(TOOL);
-        forget_links(&open);
-        let list = open.into_iter().map(|(_, id)| found(&id, true)).collect();
-        Box::pin(std::future::ready(Ok(list)))
+        Box::pin(async {
+            let open = tokio::task::spawn_blocking(|| {
+                let mut open = remembered_all(TOOL);
+                let presence = presence_dir();
+                for pid in crate::procs::pids() {
+                    if open.iter().any(|(p, _)| *p == pid)
+                        || crate::procs::name(pid).as_deref() != Some("agy")
+                        || print_mode(&crate::procs::args(pid))
+                    {
+                        continue;
+                    }
+                    if let Some(id) = locked_session(&crate::procs::open_files(pid), &presence) {
+                        super::remember(TOOL, pid, &id);
+                        open.push((pid, id));
+                    }
+                }
+                open
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            forget_links(&open);
+            Ok(open.into_iter().map(|(_, id)| found(&id, true)).collect())
+        })
     }
 
     fn channel(&self, session_id: &str) -> &'static str {
@@ -391,6 +412,25 @@ fn opened_by_user(data: &Path, session_id: &str) -> bool {
     data.join("presence")
         .join(format!("{session_id}.lock"))
         .exists()
+}
+
+/// The lock files' folder as the system names it in a process's open files,
+/// links in the path followed.
+fn presence_dir() -> PathBuf {
+    let dir = data_dir().join("presence");
+    std::fs::canonicalize(&dir).unwrap_or(dir)
+}
+
+/// The conversation whose lock file is the only one in `presence` among
+/// `files`, a process's open files. With several open, which one the process
+/// shows isn't known: its hooks say.
+fn locked_session(files: &[PathBuf], presence: &Path) -> Option<String> {
+    let mut ids = files
+        .iter()
+        .filter(|f| f.parent() == Some(presence) && f.extension().is_some_and(|e| e == "lock"))
+        .filter_map(|f| f.file_stem()?.to_str());
+    let id = ids.next()?;
+    ids.all(|other| other == id).then(|| id.to_string())
 }
 
 /// The session behind a command the agent runs. A subagent's commands name
@@ -801,6 +841,27 @@ mod tests {
         let moved = attach_rule(&other).replace("/imbo ", "/old/imbo ");
         assert!(our_rule(&json!(moved), &other, &allow_rules(&other)));
         assert!(!our_rule(&json!(moved), &home, &rules));
+    }
+
+    #[test]
+    fn a_process_holding_one_lock_has_that_conversation_open() {
+        let presence = Path::new("/data/presence");
+        let files = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let one = files(&[
+            "/data/conversations/aaa.db-shm",
+            "/data/presence",
+            "/data/presence/aaa.lock",
+            "/data/presence/aaa.lock",
+            "/elsewhere/presence/bbb.lock",
+            "/data/presence/notes.txt",
+        ]);
+        assert_eq!(locked_session(&one, presence).as_deref(), Some("aaa"));
+        let two = files(&["/data/presence/aaa.lock", "/data/presence/bbb.lock"]);
+        assert_eq!(locked_session(&two, presence), None);
+        assert_eq!(
+            locked_session(&files(&["/data/log/cli.log"]), presence),
+            None
+        );
     }
 
     #[test]

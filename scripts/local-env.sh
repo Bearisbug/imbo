@@ -18,12 +18,15 @@ unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_
 export CODEX_HOME=$L/codex-home
 
 # Only bob's daemon sees the test Codex home; the others get an empty one.
+# None sees the Antigravity CLI sessions open on this computer: each looks in
+# an empty folder unless the caller names one in ANTIGRAVITY_APP_DATA_DIR.
 start_daemon() {
   ch=$L/$1/codex-none
   [ "$1" = bob ] && ch=$CODEX_HOME
   mkdir -p "$ch"
   # The payment keys are for the server only.
   env -u IMBO_WAFFO_PRIVATE_KEY -u IMBO_ALIPAY_PRIVATE_KEY CODEX_HOME=$ch IMBO_HOME=$L/$1 \
+    ANTIGRAVITY_APP_DATA_DIR="${ANTIGRAVITY_APP_DATA_DIR:-$L/$1/agy-none}" \
     nohup "$I" daemon >> "$L/$1/daemon.log" 2>&1 &
 }
 

@@ -11,7 +11,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use super::Body;
-use super::groups::{cancel_group, lock_group, post_notice};
+use super::groups::{cancel_group, close_requests, lock_group, post_notice};
 use crate::auth::Caller;
 use crate::error::{ApiResult, err};
 use crate::state::St;
@@ -185,6 +185,7 @@ pub(crate) async fn delete_now(st: &St, me: i32, why: &str) -> ApiResult<()> {
         .fetch_one(&mut *tx)
         .await?;
         avatars.extend(picture);
+        close_requests(&mut tx, *gid).await?;
         canceled.extend(cancel_group(&mut tx, *gid, None, "group_dissolved").await?);
         dissolved.push((*gid, name.clone(), members));
     }

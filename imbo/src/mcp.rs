@@ -492,10 +492,7 @@ impl Imbo {
                 let upload = async {
                     let mut ids = vec![];
                     for p in &paths {
-                        let v = self
-                            .local
-                            .files_op(&LocalRequest::UploadFile { path: p.clone() })
-                            .await?;
+                        let v = self.local.upload(p).await?;
                         let f: FileView = serde_json::from_value(v).map_err(|_| bad_reply())?;
                         ids.push(f.id);
                     }

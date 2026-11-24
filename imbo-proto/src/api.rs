@@ -296,6 +296,9 @@ pub struct Agent {
     pub device_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_online_at: Option<DateTime<Utc>>,
+    /// When it last sent or got a message, if within 7 days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<DateTime<Utc>>,
     /// Messages this session sent the terminal inbox that are still unread.
     #[serde(default)]
     pub unread: i64,

@@ -157,7 +157,8 @@ pub async fn list_agents(
 }
 
 /// API-014's rows: my 200 most recent sessions seen in the last 7 days, online ones first, or just `only`. One account
-/// had 4,240, and the App froze drawing them.
+/// had 4,240, and the App froze drawing them. Each comes with when it last sent or got a message, within 7 days: the
+/// web app and the App put the session talked to last on top.
 async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>> {
     let rows: Vec<(
         Uuid,
@@ -172,18 +173,32 @@ async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>
         Option<DateTime<Utc>>,
         i64,
         Option<String>,
+        Option<DateTime<Utc>>,
     )> = sqlx::query_as(
         "SELECT ag.id, ag.short_id, ag.session_id, coalesce(ag.custom_title, ag.title), ag.title, ag.tool, ag.online, ag.device_id, d.name, ag.last_online_at,
                 (SELECT count(*) FROM deliveries dl JOIN messages m ON m.id = dl.message_id
                  JOIN agents t ON t.id = dl.agent_id
                  WHERE m.from_agent_id = ag.id AND t.account_id = $1 AND t.tool = 'terminal'
                    AND dl.state IN ('pending', 'pushed')) AS unread,
-                d.client_version
-         FROM agents ag LEFT JOIN devices d ON d.id = ag.device_id
-         WHERE ag.account_id = $1 AND ag.tool <> 'terminal' AND (ag.online OR ag.last_online_at > now() - interval '7 days')
-           AND ($2::uuid IS NULL OR ag.id = $2)
-         ORDER BY ag.online DESC, ag.last_online_at DESC NULLS LAST
-         LIMIT 200",
+                d.client_version,
+                greatest(sent.at, (SELECT m.created_at FROM messages m
+                                   WHERE m.id = got.id AND m.created_at > now() - interval '7 days'))
+         FROM (SELECT * FROM agents
+               WHERE account_id = $1 AND tool <> 'terminal' AND (online OR last_online_at > now() - interval '7 days')
+                 AND ($2::uuid IS NULL OR id = $2)
+               ORDER BY online DESC, last_online_at DESC NULLS LAST
+               LIMIT 200) ag
+         LEFT JOIN devices d ON d.id = ag.device_id
+         LEFT JOIN (SELECT from_agent_id, max(created_at) AS at FROM messages
+                    WHERE from_account = $1 AND created_at > now() - interval '7 days'
+                    GROUP BY from_agent_id) sent ON sent.from_agent_id = ag.id
+         -- The newest message handed to the session: one index probe per delivery state.
+         LEFT JOIN LATERAL (SELECT max(newest.id) AS id
+                            FROM unnest(ARRAY['pending', 'pushed', 'delivered', 'canceled']) AS st (state)
+                            CROSS JOIN LATERAL (SELECT dl.message_id AS id FROM deliveries dl
+                                                WHERE dl.agent_id = ag.id AND dl.state = st.state
+                                                ORDER BY dl.message_id DESC LIMIT 1) newest) got ON true
+         ORDER BY ag.online DESC, ag.last_online_at DESC NULLS LAST",
     )
     .bind(me)
     .bind(only)
@@ -205,6 +220,7 @@ async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>
                 last_online_at,
                 unread,
                 client_version,
+                last_message_at,
             )| Agent {
                 wakeable: !online
                     && tool == imbo_proto::TOOL_CLAUDE
@@ -222,6 +238,7 @@ async fn agents_of(st: &St, me: i32, only: Option<Uuid>) -> ApiResult<Vec<Agent>
                 device_name,
                 last_online_at,
                 unread,
+                last_message_at,
             },
         )
         .collect())

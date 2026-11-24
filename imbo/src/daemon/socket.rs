@@ -102,7 +102,7 @@ async fn handle(d: &D, req: LocalRequest) -> LocalResponse {
             actor,
             picture: Some(picture),
             ..
-        } => match read_picture(&picture) {
+        } => match picture_at(d, picture).await {
             Ok((bytes, kind)) => {
                 let actor = actor.as_deref().map(adapters::current_actor);
                 call_with(d, &method, &path, Payload::Picture(bytes, kind), actor).await
@@ -257,6 +257,15 @@ fn read_picture(path: &str) -> Result<(Vec<u8>, &'static str), Problem> {
         _ => "application/octet-stream",
     };
     Ok((bytes, kind))
+}
+
+/// [`read_picture`] off this thread (the file may take long to open); a
+/// copy made for this read is removed.
+async fn picture_at(d: &D, path: String) -> Result<(Vec<u8>, &'static str), Problem> {
+    let read = path.clone();
+    let got = super::files::looked(&path, move || read_picture(&read)).await;
+    crate::files::unstage(&d.home, &path);
+    got
 }
 
 enum Payload {

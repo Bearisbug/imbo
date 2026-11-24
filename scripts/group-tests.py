@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""TC-610, TC-613, TC-629, TC-631 and TC-633 (docs/TEST.md): group admins,
-groups anyone can find, asking to join one and inviting back someone removed
-(FLOW-GROUP-DISCOVER, FLOW-GROUP-APPROVE, FLOW-GROUP-ADMIN, FLOW-GROUP-REMOVE,
-RULE-009, RULE-023, RULE-024, API-087..090), against the local server.
+"""TC-610, TC-613, TC-629, TC-631, TC-633 and TC-651 (docs/TEST.md): group
+admins, groups anyone can find, asking to join one, inviting back someone
+removed, and what dissolving does to invites and requests waiting on the
+group (FLOW-GROUP-DISCOVER, FLOW-GROUP-APPROVE, FLOW-GROUP-ADMIN,
+FLOW-GROUP-REMOVE, FLOW-GROUP-DISSOLVE, RULE-009, RULE-023, RULE-024,
+API-087..090, API-039), against the local server.
 
     . crates/scripts/local-env.sh
-    python3 crates/scripts/group-tests.py <RUN-ID> [610 613 629 631 633]
+    python3 crates/scripts/group-tests.py <RUN-ID> [610 613 629 631 633 651]
 
 Each case starts its own server and seed the way parity-tests.py does and
 writes its lines to docs/test-runs/<run>-tc-NNN.txt (with RUN_HEADER, if
@@ -412,9 +414,71 @@ def tc633():
           f"{line} | g #{g}")
 
 
+def waiting(who, *args):
+    """The requests `who` has waiting, as `imbo contact requests` lists them."""
+    rc, out = imbo(who, "contact", "requests", *args)
+    return rc, re.sub(r"[ \t]+", " ", out).strip()
+
+
+def request_line(out, rid):
+    """The line `imbo contact requests` gives request `rid`; "" when none."""
+    return next((l.strip() for l in out.splitlines() if l.strip().startswith(f"#{rid} ")), "")
+
+
+def tc651():
+    P.up("alice:bob,alice:carol")
+    ids = P.ids()
+    B, C = ids["bob"], ids["carol"]
+    imbo("alice", "group", "create", "t651")
+    g = P.group_id(P.computer_token(f"{L}/alice"), "t651")
+    imbo("alice", "group", "discoverable", "t651", "on")
+    imbo("alice", "group", "invite", "t651", str(B))
+    _, inv = api("bob", "GET", "/v1/requests")
+    r1 = next((r["id"] for r in inv.get("requests", []) if r.get("group", {}).get("id") == g), None)
+    s, b = apply("carol", g, "t651-ask")
+    r2 = b.get("request", {}).get("id")
+
+    rc1, bob_in = waiting("bob")
+    rc2, alice_in = waiting("alice")
+    check(651, 1, "bob sees the invite, alice the request to join",
+          rc1 == 0 and rc2 == 0 and request_line(bob_in, r1) and request_line(alice_in, r2),
+          f"g #{g} invite #{r1} join #{r2} | bob: {request_line(bob_in, r1)!r} | alice: {request_line(alice_in, r2)!r}")
+
+    rc, out = imbo("alice", "group", "dissolve", "t651", "--yes")
+    check(651, 2, "alice dissolves it", rc == 0 and "t651" in out, f"exit {rc}: {out}")
+
+    _, bob_in = waiting("bob")
+    _, alice_in = waiting("alice")
+    check(651, 3, "neither waits on it any more",
+          not request_line(bob_in, r1) and not request_line(alice_in, r2),
+          f"bob: {bob_in.splitlines()[:1]} | alice: {alice_in.splitlines()[:1]}")
+
+    invite, join = request_line(waiting("bob", "--all")[1], r1), request_line(waiting("carol", "--out", "--all")[1], r2)
+    check(651, 4, "both are listed as declined",
+          invite.endswith("declined") and join.endswith("declined"), f"bob: {invite!r} | carol out: {join!r}")
+
+    rc1, out1 = imbo("bob", "contact", "accept", str(r1))
+    rc2, out2 = imbo("bob", "contact", "decline", str(r1))
+    check(651, 5, "accepting it says the group went", rc1 == 1 and "was dissolved" in out1, f"exit {rc1}: {out1}")
+    check(651, 6, "declining it says it was handled", rc2 == 1 and "already declined" in out2, f"exit {rc2}: {out2}")
+
+    boxes = {who: re.sub(r"\s+", " ", imbo(who, "inbox", "--all")[1]) for who in ("bob", "carol")}
+    told = {who: [w for w in ("invite", "join", "declined", "dissolved") if w in box] for who, box in boxes.items()}
+    check(651, 7, "neither is told anything about it", not any(told.values()), f"{told} | {boxes}")
+
+    imbo("alice", "group", "create", "t651b")
+    imbo("alice", "group", "invite", "t651b", str(B))
+    _, inv = api("bob", "GET", "/v1/requests")
+    r3 = next((r["id"] for r in inv.get("requests", []) if r.get("group", {}).get("name") == "t651b"), None)
+    rc, out = imbo("bob", "group", "join", str(r3))
+    _, groups = imbo("bob", "group", "list")
+    check(651, 8, "a live group's invite still works",
+          rc == 0 and "t651b" in groups, f"invite #{r3} exit {rc}: {out} | groups: {re.sub(r'\s+', ' ', groups)}")
+
+
 def main():
     run = sys.argv[1]
-    want = sys.argv[2:] or ["610", "613", "629", "631", "633"]
+    want = sys.argv[2:] or ["610", "613", "629", "631", "633", "651"]
     head = os.environ.get("RUN_HEADER")
     root = os.path.dirname(os.path.dirname(HERE))
     for tc in want:

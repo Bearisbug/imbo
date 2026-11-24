@@ -54,10 +54,7 @@ async fn upload(paths: &[String]) -> anyhow::Result<Vec<FileView>> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let sp = Step::start(format!("Uploading {name}  {}", ui::dim(human_size(size))));
-        match local
-            .files_op(&LocalRequest::UploadFile { path: p.clone() })
-            .await
-        {
+        match local.upload(p).await {
             Ok(v) => {
                 let f: FileView = serde_json::from_value(v).map_err(|e| {
                     anyhow::anyhow!(

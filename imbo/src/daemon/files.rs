@@ -26,6 +26,11 @@ const REUSE: Duration = Duration::from_secs(50 * 60);
 /// Downloads leave at least this much free disk.
 const DISK_MARGIN: u64 = 1024 * 1024 * 1024;
 const TRIES: u32 = 3;
+/// A first look at a file from the user's folders may take this long. On
+/// macOS, opening one in Documents, Desktop, Downloads or on another volume
+/// waits for as long as nobody answers the system's question whether Imbo
+/// may read that folder, and the question comes back after every update.
+const LOOK: Duration = Duration::from_secs(10);
 
 /// Recent uploads by (SHA-256, name).
 pub type Recent = HashMap<(String, String), (FileView, Instant)>;
@@ -49,6 +54,43 @@ fn revoked(d: &D) -> Problem {
     )
 }
 
+/// `look` at the file `path` on a thread of its own, so a look that waits
+/// holds up nothing else here; the thread ends when the look does.
+pub(super) async fn looked<T: Send + 'static>(
+    path: &str,
+    look: impl FnOnce() -> Result<T, Problem> + Send + 'static,
+) -> Result<T, Problem> {
+    let (done, result) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        // Tests of the wait: the file never opens.
+        if crate::adapters::fault("file-wait") {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+        let _ = done.send(look());
+    });
+    match tokio::time::timeout(LOOK, result).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(_)) => Err(Problem::new(
+            ErrorCode::FileUnreadable,
+            format!("{path}: reading it failed."),
+        )),
+        Err(_) => {
+            warn!(path, "the file didn't open in 10 s");
+            Err(Problem::new(ErrorCode::FileUnreadable, waiting(path)))
+        }
+    }
+}
+
+fn waiting(path: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!(
+            "{path}: Imbo on this computer can't read it yet. macOS is probably asking on this computer's screen whether \"imbo\" may access that folder, and waits until someone there answers. To send the file now, copy it to a folder outside Documents, Desktop and Downloads, such as /tmp, and send the copy."
+        )
+    } else {
+        format!("{path}: it didn't open in 10 seconds.")
+    }
+}
+
 async fn hash(path: &Path) -> Result<(u64, String), Problem> {
     let p = path.to_path_buf();
     tokio::task::spawn_blocking(move || sha256_file(&p))
@@ -64,7 +106,9 @@ async fn hash(path: &Path) -> Result<(u64, String), Problem> {
 
 /// API-LOCAL-008.
 pub async fn upload(d: &D, path: &str) -> LocalResponse {
-    match try_upload(d, path).await {
+    let uploaded = try_upload(d, path).await;
+    crate::files::unstage(&d.home, path);
+    match uploaded {
         Ok(f) => LocalResponse::ok(201, json!(f), None),
         Err(p) => LocalResponse::err(p),
     }
@@ -72,7 +116,8 @@ pub async fn upload(d: &D, path: &str) -> LocalResponse {
 
 async fn try_upload(d: &D, path: &str) -> Result<FileView, Problem> {
     let creds = signed_in(d)?;
-    check_file(path)?;
+    let checked = path.to_string();
+    looked(path, move || check_file(&checked)).await?;
     let file = Path::new(path);
     let name = clean_file_name(
         &file

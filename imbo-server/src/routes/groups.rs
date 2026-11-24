@@ -175,6 +175,19 @@ pub(super) async fn cancel_group(
     .await
 }
 
+/// Close what still waits on a group that is going away: invites into it and
+/// requests to join it. Nobody is told (ENT-Request).
+pub(super) async fn close_requests(tx: &mut PgConnection, gid: i32) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE requests SET status = 'declined', decided_at = now()
+         WHERE group_id = $1 AND status = 'pending'",
+    )
+    .bind(gid)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
 /// A notice from the owner into `to`'s inbox, in the two accounts' direct
 /// conversation (ADR-028); `via` is where the owner did it, if they did.
 /// Returns the inbox agent and the message.
@@ -771,6 +784,7 @@ pub async fn dissolve(
     .fetch_one(&mut *tx)
     .await?;
     avatar::delete(&mut tx, &picture.into_iter().collect::<Vec<_>>()).await?;
+    close_requests(&mut tx, g.id).await?;
     let canceled = cancel_group(&mut tx, g.id, None, "group_dissolved").await?;
     let others: Vec<i32> = members.into_iter().filter(|a| *a != c.account_id).collect();
     // RULE-008, RULE-014: inactive members get no notice (INV-014).
