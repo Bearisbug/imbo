@@ -10,7 +10,7 @@ TAG=${1:?usage: deploy.sh <tag>}
 INSTANCE=${IMBO_INSTANCE:-i-09f359c6e35eba48f}
 export AWS_REGION="${AWS_REGION:-ap-east-1}"
 
-script="https://raw.githubusercontent.com/Bearisbug/imbo/$TAG/deploy/install.sh"
+script="https://raw.githubusercontent.com/imbo-dev/imbo/$TAG/deploy/install.sh"
 cmd="f=\$(mktemp) && curl -fsSL -o \"\$f\" $script && sh \"\$f\" $TAG; s=\$?; rm -f \"\$f\"; exit \$s"
 id=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript --comment "imbo-server $TAG" \
   --parameters "$(jq -n --arg c "$cmd" '{commands: [$c], executionTimeout: ["900"]}')" \

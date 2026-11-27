@@ -116,8 +116,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/bearisbug/imbo-server:${{ github.ref_name }}
-            ${{ !contains(github.ref_name, '-') && 'ghcr.io/bearisbug/imbo-server:latest' || '' }}
+            ghcr.io/imbo-dev/imbo-server:${{ github.ref_name }}
+            ${{ !contains(github.ref_name, '-') && 'ghcr.io/imbo-dev/imbo-server:latest' || '' }}
 
   # Installs the release on api.imbo.dev through SSM (deploy/deploy.sh); pre-releases (tags with a "-") stay off it.
   deploy:

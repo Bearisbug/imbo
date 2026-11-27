@@ -5,7 +5,7 @@
 # e.g. `sh -s -- --server https://imbo.example.com`.
 set -eu
 
-BASE="${IMBO_DOWNLOAD_BASE:-https://github.com/Bearisbug/imbo/releases/latest/download}"
+BASE="${IMBO_DOWNLOAD_BASE:-https://github.com/imbo-dev/imbo/releases/latest/download}"
 BIN_DIR="${IMBO_BIN_DIR:-$HOME/.local/bin}"
 SUPPORTED="macos-aarch64 macos-x86_64 linux-x86_64 linux-aarch64"
 

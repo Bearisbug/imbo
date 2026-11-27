@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::paths::{Home, exe};
 use crate::ui;
 
-const DEFAULT_BASE: &str = "https://github.com/Bearisbug/imbo/releases/latest/download";
+const DEFAULT_BASE: &str = "https://github.com/imbo-dev/imbo/releases/latest/download";
 /// `imbo update` tries a failed download this many more times, like install.sh:
 /// connections to GitHub sometimes drop mid-way.
 const RETRIES: u32 = 3;

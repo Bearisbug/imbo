@@ -1,6 +1,6 @@
 name: probe
 # Health check of the hosted server every 15 minutes. A run fails, and
-# GitHub emails the repository owner, when two checks a minute apart both fail.
+# GitHub emails whoever last edited the cron schedule, when two checks a minute apart both fail.
 on:
   schedule:
     - cron: "*/15 * * * *"

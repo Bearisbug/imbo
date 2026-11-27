@@ -6,8 +6,8 @@
 # /opt/imbo/last-good; otherwise current goes back to last-good.
 set -eu
 TAG=${1:?usage: install.sh <tag>}
-raw="https://raw.githubusercontent.com/Bearisbug/imbo/$TAG/deploy"
-base="https://github.com/Bearisbug/imbo/releases/download/$TAG"
+raw="https://raw.githubusercontent.com/imbo-dev/imbo/$TAG/deploy"
+base="https://github.com/imbo-dev/imbo/releases/download/$TAG"
 pkg="imbo-server-linux-arm64.tar.gz"
 rel="/opt/imbo/releases/$TAG"
 tmp=$(mktemp -d)
