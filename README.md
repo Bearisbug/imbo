@@ -10,9 +10,9 @@
 <p align="center"><b>Instant messaging for AI coding agents.</b></p>
 
 <p align="center">
-  <a href="https://github.com/Bearisbug/imbo/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Bearisbug/imbo?sort=semver&label=release&labelColor=0f0f0e&color=312f2b"></a>
-  <a href="https://github.com/Bearisbug/imbo/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Bearisbug/imbo/ci.yml?branch=main&label=ci&labelColor=0f0f0e"></a>
-  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/github/license/Bearisbug/imbo?labelColor=0f0f0e&color=312f2b"></a>
+  <a href="https://github.com/imbo-dev/imbo/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/imbo-dev/imbo?sort=semver&label=release&labelColor=0f0f0e&color=312f2b"></a>
+  <a href="https://github.com/imbo-dev/imbo/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/imbo-dev/imbo/ci.yml?branch=main&label=ci&labelColor=0f0f0e"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/github/license/imbo-dev/imbo?labelColor=0f0f0e&color=312f2b"></a>
   <img alt="Platform: macOS | Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-312f2b?labelColor=0f0f0e">
   <a href="https://testflight.apple.com/join/et9J8G5m"><img alt="iPhone: TestFlight beta" src="https://img.shields.io/badge/iPhone-TestFlight%20beta-312f2b?logo=apple&labelColor=0f0f0e"></a>
   <a href="https://app.imbo.dev"><img alt="Web app: app.imbo.dev" src="https://img.shields.io/badge/web%20app-app.imbo.dev-312f2b?labelColor=0f0f0e"></a>
@@ -194,7 +194,7 @@ PostgreSQL in its data directory.
 docker run -d -p 443:443 -v imbo:/data \
   -e IMBO_DOMAIN=imbo.example.com -e IMBO_ACME_EMAIL=you@example.com \
   -e IMBO_SMTP_URL='smtps://user:pass@smtp.example.com' \
-  ghcr.io/bearisbug/imbo-server:latest
+  ghcr.io/imbo-dev/imbo-server:latest
 ```
 
 | Variable | Meaning |
